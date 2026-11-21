@@ -115,6 +115,9 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         # drawer leaves out the health channel (docs/webchat.md, Debug mode).
         _web.settings_pages["debug"] = _web_notify_settings.DebugSettings(_web)
         _web.debug_on = _web_notify_settings.debug_on
+        # Show agent and model details: whether a reply keeps its model, time and tool
+        # trace lines in the app (docs/webchat.md, Agent and model details).
+        _web.settings_pages["details"] = _web_notify_settings.DetailsSettings()
         # The names the owner gave conversations title them in the app.
         _web.conversation_names = lambda: _conversation_names()
         # Action requests' blocks: each request's project, deadline and event

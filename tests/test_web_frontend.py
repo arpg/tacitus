@@ -2355,6 +2355,85 @@ def test_the_debug_page_saves_the_switch_and_tells_every_open_app(fe, notify_pag
     assert not [t for t in said if JARGON.search(t)]
 
 
+
+# ── a reply's agent and model details (docs/webchat.md) ───────────────
+
+def _scheduler_trace(tool_calls):
+    """ea-chat-bot.py's own _format_scheduler_trace, run out of its helper
+    block (as tests/test_scheduler_trace.py does: the module pulls in the
+    whole bot at load)."""
+    import re as _re
+    import tempfile
+    import types
+    src = (ROOT / "ea-chat-bot.py").read_text()
+    start = src.index("_SCHEDULER_TOOL_PATTERNS = [")
+    block = src[start:src.index("\n\n\n# Track in-flight requests", start)]
+    ns = {"re": _re, "json": json, "Path": Path, "EA_DIR": Path(tempfile.mkdtemp(prefix="ea-test-details-")),
+          "log": types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)}
+    exec(compile(block, "ea-chat-bot.py", "exec"), ns)
+    return ns["_format_scheduler_trace"](tool_calls)
+
+
+def test_a_reply_marks_where_its_agent_and_model_details_begin(fe):
+    """The usage line the bot appends to a reply, its rate-limit warning and
+    the scheduler's tool trace, as the functions that write them write them
+    (either order, or the trace alone), are the reply's details:
+    `details_at` is where they begin, in the app's string index (UTF-16, so
+    an emoji before it counts twice). The owner's words, a card, a reply
+    with a rule of its own and a reply with no details carry none."""
+    from claude_usage import format_usage_footer
+    body = "Tuesday works \U0001F4C5 for the review.\n\n---\nOne more thing: _EA_ is our lab's name."
+    cut = len(body.encode("utf-16-le")) // 2
+    usage = format_usage_footer({"session_percent_used": 10, "session_reset": "",
+                                 "daily_percent_used": 12}, 45.2, label="EA \u00b7 opus")
+    plain = format_usage_footer({"error": "fetch failed"}, 11, label="EA resident")
+    warned = plain + "\n_:warning: Rate limit near: 90% of the session used_"
+    cmd = "python3 /home/ea-bot/ea-system/preprocessor/scheduling_engine.py propose-meeting --duration 30"
+    trace = _scheduler_trace([("Bash", 1.7, "", '{"status":"ok","options":[]}',
+                               {"command": cmd, "description": "find times"})])
+    assert trace and trace.startswith("\u2500")
+    for text, want in ((body + usage, cut), (body + warned, cut), (body + usage + "\n\n" + trace, cut),
+                       (body + "\n\n" + trace, cut), (trace, 0), (body, None), (usage.strip(), 0)):
+        assert wf.details_at(text) == want, text
+        key = fe.post("main", text).thread_key
+        got = json.loads(owner(fe, "GET", f"/api/channels/main/threads/{key}")[2])[0]
+        assert got.get("details_at") == want, text
+    mine = fe.store.add_message("main", mid=None, thread_key=None, author="owner", kind="message",
+                                text=body + usage)
+    assert "details_at" not in mine
+
+
+def test_the_details_page_saves_the_switch_off_by_default(fe, notify_page, caplog):
+    """GET is the web block's `show_details` (off for a block from before
+    the switch); POST {"on": bool} writes it and keeps every other key. A
+    refusal is in plain words; a relayed request reads it and changes
+    nothing. The bot registers the page beside debug mode."""
+    mod, priv = notify_page
+    fe.settings_pages["details"] = mod.DetailsSettings()
+    assert "details" in json.loads(owner(fe, "GET", "/api/me")[2])["settings"]
+    path = "/api/settings/details"
+    assert json.loads(owner(fe, "GET", path)[2]) == {"on": False}
+    caplog.set_level("INFO", logger="chat.web")
+    status, _h, body = owner(fe, "POST", path, {"on": True})
+    assert status == 200 and json.loads(body) == {"on": True, "saved": True}
+    saved = json.loads((priv / "chat.json").read_text())
+    assert saved["web"]["show_details"] is True and saved["web"]["notify_push"]["extra"] == "kept"
+    assert (priv / "chat.json").stat().st_mode & 0o777 == 0o600
+    assert any("model details saved (header): on" in r.getMessage() for r in caplog.records)
+    assert json.loads(owner(fe, "GET", path, headers={"X-Tacitus-Relay": "1"})[2]) == {"on": True}
+    before = (priv / "chat.json").read_text()
+    said = []
+    for body in ({"on": "yes"}, {}, {"on": True, "extra": 1}):
+        status, _h, raw = owner(fe, "POST", path, body)
+        assert (status, json.loads(raw)["error"]) == (400, "Show agent and model details takes on or off.")
+        said.append(json.loads(raw)["error"])
+    status, _h, raw = owner(fe, "POST", path, {"on": False}, {"X-Tacitus-Relay": "1"})
+    assert status == 403 and "own web chat" in json.loads(raw)["error"]
+    assert (priv / "chat.json").read_text() == before
+    assert not [t for t in said if JARGON.search(t)]
+    bot = (ROOT / "ea-chat-bot.py").read_text()
+    assert '_web.settings_pages["details"] = _web_notify_settings.DetailsSettings()' in bot
+
 def test_a_relayed_device_that_may_chat_may_rename_and_archive(fe):
     """Room admin changes no mail and sends nothing: a chat action, which a
     device the relay lets chat may take, as a message."""

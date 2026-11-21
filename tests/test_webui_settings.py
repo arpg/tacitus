@@ -573,3 +573,52 @@ def test_notifications_in_settings_save_each_change_at_once(app):
     page.click("#open-settings")
     expect(page.locator(SHOWN_ITEMS)).to_have_text(["How Tacitus works"])
     assert not errors, errors
+
+
+DETAILS_REPLY = ("Tuesday at 2:00 works for both of you.\n\n---\n*EA · opus: 11s · 10% session*"
+                 "\n\n─────\n:calendar: propose-meeting (duration=30) → 3 options /1.7s")
+
+
+def test_agent_and_model_details_stay_out_of_a_reply_until_the_switch_shows_them(app):
+    """With the bot's "Show agent and model details" off, a reply shows its
+    words without the line that names the model and the time, or the
+    scheduler's tool trace, and a trace posted on its own shows nothing.
+    The switch in the Settings menu saves at once and draws the open
+    conversation again with them; the next visit starts with them. A bot
+    with no such switch leaves every reply whole."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app(details=False)
+    ask = stub.add(W.MAIN, "Find a time for the review", author="owner")
+    stub.add(W.MAIN, DETAILS_REPLY, thread_key=ask["thread_key"])
+    stub.add(W.MAIN, "─────\n:calendar: solve → ok /0.4s", thread_key=ask["thread_key"])
+    page.goto(page.url.split("#")[0] + f"#/{W.MAIN}/{ask['thread_key']}")
+    reply = page.locator("#messages .msg.bot").first
+    expect(reply).to_contain_text("Tuesday at 2:00 works for both of you.")
+    expect(page.locator("#messages")).not_to_contain_text("opus: 11s")
+    expect(page.locator("#messages")).not_to_contain_text("propose-meeting")
+    expect(page.locator("#messages .msg.bot:visible")).to_have_count(1)  # the trace alone is hidden
+    page.locator("#open-settings").click()
+    row, box = page.locator("#details-row"), page.locator("#show-details")
+    expect(row.locator(".s-label")).to_have_text("Show agent and model details")
+    assert not JARGON.search(row.inner_text()), row.inner_text()
+    expect(box).not_to_be_checked()
+    row.click()
+    expect(box).to_be_checked()
+    wait_for(lambda: stub.details_posts == [{"on": True}])
+    page.locator("#settings-close").click()
+    expect(page.locator("#messages")).to_contain_text("EA · opus: 11s")
+    expect(page.locator("#messages")).to_contain_text("solve")
+    expect(page.locator("#messages .msg.bot:visible")).to_have_count(2)
+    page.reload()
+    expect(page.locator("#messages")).to_contain_text("propose-meeting")
+    assert not errors, errors
+    # a bot without the switch: no row, and every reply whole
+    page, stub, errors = app()
+    ask = stub.add(W.MAIN, "Find a time", author="owner")
+    stub.add(W.MAIN, DETAILS_REPLY, thread_key=ask["thread_key"])
+    page.goto(page.url.split("#")[0] + f"#/{W.MAIN}/{ask['thread_key']}")
+    expect(page.locator("#messages")).to_contain_text("opus: 11s")
+    page.locator("#open-settings").click()
+    expect(page.locator("#details-row")).to_be_hidden()
+    assert not errors, errors

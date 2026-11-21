@@ -475,6 +475,35 @@ when a new poster under the `health` key or a digest is not in it):
 A loud alert (`alert.py`, a page watch), a card, the briefings and a
 failed update (the briefing's update line) never pass through the gate.
 
+## Agent and model details
+
+A reply in a conversation ends with a line that says which part of
+Tacitus wrote it, on which model, how long it took and how much of the
+plan it used (`---`, then `EA · opus: 11s · 10% session ...`, maybe a
+rate-limit warning under it: `claude_usage.format_usage_footer`). A
+reply that used the scheduling tools also ends with their trace (`─────`,
+then one `:calendar: propose-meeting (...) → 3 options /1.7s` line per
+call: `_format_scheduler_trace`). Most owners do not need them on every
+reply, so the web chat leaves them out unless the owner asks.
+
+- **Where the owner sets it.** The Settings menu has a "Show agent and
+  model details" switch, off by default, in the owner's own copy of the
+  app, where `/api/me` names the `details` page. It is the web block's
+  `show_details` in the owner-private `chat.json` (only a literal `true`
+  turns it on), saved at once
+  (`web_notify_settings.DetailsSettings`). Every copy of the app reads it
+  when it starts, before it draws a conversation, and when the menu
+  opens; a device away from home reads it and cannot change it.
+- **The cut.** The text stays in the store as the bot wrote it. The web
+  front end marks where the details begin (`details_at`, in the app's
+  string index, on each bot reply that ends with them:
+  `web_frontend.details_at`), and the app shows the reply up to there
+  while the switch is off. A trace posted on its own (one that did not fit
+  in the reply) is all details, so it does not show. Copy, search and
+  Slack are unchanged.
+- **A bot without the page** (an older bot, or a host that does not
+  register it) leaves every reply whole.
+
 ## Status light
 
 A light in the app's top bar answers one question: is everything working

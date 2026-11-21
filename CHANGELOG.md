@@ -6,6 +6,12 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A reply in the web chat no longer ends with the model and the time.**
+  The line under each reply that names the model, how long it took and
+  how much of the plan it used ("EA · opus: 11s"), and the scheduling
+  tools' trace under it, now show only when Settings, "Show agent and
+  model details" is on. It is off by default; the text stays as the bot
+  wrote it, so turning the switch on shows them on every reply again.
 - **New message and New room sit at the top of the menu.** A row under
   the menu's name, above Search, holds New message, which starts a new
   conversation with Tacitus from any place, and New room, which moved up

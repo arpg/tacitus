@@ -856,8 +856,8 @@ body.no-composer #composer, body.no-composer #new-thread { display: none; }
 .s-detail { font-size: 13px; color: var(--muted); }
 .s-item:active { background: var(--hover); }
 @media (hover: hover) { .s-item:hover { background: var(--hover); } }
-#debug-row::after { content: none; } /* a switch, not a page: its box sits where a page's arrow does */
-#debug-row input { position: absolute; top: 50%; right: 14px; width: 18px; height: 18px; margin: -9px 0 0; accent-color: var(--accent); }
+#debug-row::after, #details-row::after { content: none; } /* a switch, not a page: its box sits where a page's arrow does */
+#debug-row input, #details-row input { position: absolute; top: 50%; right: 14px; width: 18px; height: 18px; margin: -9px 0 0; accent-color: var(--accent); }
 #settings-conn { margin-top: 6px; }
 #settings-conn:empty, #notify-why:empty { display: none; }
 @media (max-width: 599px) {

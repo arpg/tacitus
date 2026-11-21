@@ -74,6 +74,12 @@ row carries `hidden`, as the bot's does with debug mode off; a POST to
 /api/settings/debug sets it, records the body in `debug_posts` and sends
 the room's row as a `channel` event, as the bot does.
 
+`details` (True or False; None, the default, leaves it out) adds the
+"Show agent and model details" switch to the Settings menu (/api/me names
+`details`); a POST to /api/settings/details sets it and records the body in
+`details_posts`. A bot reply carries `details_at` where its usage line or
+tool trace begins, from the bot's own web_frontend.details_at.
+
 `status` (a summary as the bot's status light gives it; None, the
 default, answers /api/status with 404, as a bot without the light does)
 serves the light: GET /api/status adds `details` (`status_details_ok`,
@@ -157,6 +163,18 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 WEBUI = Path(__file__).resolve().parent.parent / "botcore" / "botcore" / "chat" / "webui"
+
+
+def details_at(text: str) -> int | None:
+    """Where a bot reply's details begin, as the bot's web front end says
+    (botcore's web_frontend.details_at)."""
+    import sys
+    if str(WEBUI.parents[2]) not in sys.path:
+        sys.path.insert(0, str(WEBUI.parents[2]))
+    from botcore.chat.web_frontend import details_at as at
+    return at(text)
+
+
 # The bot's room colors (web_frontend.ROOM_COLORS).
 ROOM_COLORS = (
     "#56C1FF", "#73FDEA", "#88FA4E", "#FFF56D", "#FF968D", "#FF8AD8",
@@ -266,7 +284,7 @@ class Stub:
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
                  subscriptions: list | None = None, public_url: str | None = None,
                  rooms: bool | None = None, debug: bool | None = None, status: dict | None = None,
-                 home: dict | None = None):
+                 home: dict | None = None, details: bool | None = None):
         self.cond = threading.Condition()
         self.status = status
         self.home = home
@@ -291,6 +309,10 @@ class Stub:
             self.settings.append("debug")
         if home is not None:
             self.settings.append("home")
+        self.details = details
+        self.details_posts: list[dict] = []
+        if details is not None:
+            self.settings.append("details")
         self.push = push
         self.subscriptions = list(subscriptions or [])
         self.routing = json.loads(json.dumps(ROUTING))
@@ -392,6 +414,10 @@ class Stub:
                  "thread_key": thread_key or f"t{self.seq}", "author": author, "kind": kind,
                  "text": text, "card": card, "file": file, "reactions": list(reactions or []),
                  "owner_reactions": [], "deleted": False, "posted_at": now, "updated_at": now}
+            if author == "bot" and kind == "message" and text:
+                at = details_at(text)
+                if at is not None:
+                    m["details_at"] = at
             self.messages.append(m)
             if history:
                 self.old.add(m["seq"])
@@ -432,6 +458,14 @@ class Stub:
                     and (c.get("actions") or c.get("select")) and not c.get("undo"):
                 out[m["thread_key"]] = out.get(m["thread_key"], 0) + 1
         return out
+
+    def set_details(self, body) -> tuple[int, dict]:
+        """Show agent and model details as the bot saves it."""
+        self.details_posts.append(body)
+        if not isinstance(body, dict) or set(body) != {"on"} or not isinstance(body["on"], bool):
+            return 400, {"error": "Show agent and model details takes on or off."}
+        self.details = body["on"]
+        return 200, {"on": self.details, "saved": True}
 
     def set_debug(self, body) -> tuple[int, dict]:
         """Debug mode as the bot saves it: (status, the page's answer), and
@@ -948,6 +982,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, s.notify)
         if parts == ["settings", "debug"] and "debug" in s.settings:
             return self._json(200, {"on": s.debug})
+        if parts == ["settings", "details"] and "details" in s.settings:
+            return self._json(200, {"on": s.details})
         if parts == ["settings", "home"] and "home" in s.settings:
             return self._json(200, s.home_settings)
         if parts == ["home"] and s.home is not None:
@@ -1079,6 +1115,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, first)
         if parts == ["settings", "debug"] and "debug" in s.settings:
             return self._json(*s.set_debug(json.loads(self._body() or b"{}")))
+        if parts == ["settings", "details"] and "details" in s.settings:
+            return self._json(*s.set_details(json.loads(self._body() or b"{}")))
         if parts == ["home", "vote"] and s.home is not None:
             body = json.loads(self._body() or b"{}")
             if body.get("vote") not in ("up", "down") or not body.get("text"):

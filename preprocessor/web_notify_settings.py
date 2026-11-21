@@ -31,6 +31,14 @@ it the same way and has the front end show or hide the health channel
 on every open app (WebFrontend.debug_changed). Every notifier reads the
 file on each post (chat_notify.diagnostics_on), so a change counts from
 the next one. `chat_notify.py debug on|off` saves it from a shell.
+
+`DetailsSettings` is the page at /api/settings/details, the "Show agent
+and model details" switch in the Settings menu: the web block's `show_details` in
+the same file, off unless it is a literal true. GET is {"on": bool}; POST
+{"on": bool} saves it the same way. While it is off the app leaves out
+the end of a bot reply that names the model, the time and the plan's use
+("EA · opus: 11s"), and the scheduler's tool trace (botcore's
+web_frontend.details_at marks where they begin).
 """
 from __future__ import annotations
 
@@ -185,3 +193,40 @@ class DebugSettings:
         if callable(changed):
             changed()
         return {"on": on, "saved": True}
+
+
+def details_on() -> bool:
+    """Whether the web chat shows a reply's model details (the web block's
+    `show_details`, off unless a literal true)."""
+    web = (_ea_config.get_chat() or {}).get("web")
+    return isinstance(web, dict) and web.get("show_details") is True
+
+
+def save_details(on: Any, who: dict | None = None) -> bool:
+    """Write the web block's `show_details` into the owner-private
+    chat.json; the value saved. Raises NotifyRefused."""
+    if not isinstance(on, bool):
+        raise NotifyRefused("Show agent and model details takes on or off.")
+
+    def change(block: dict) -> None:
+        web = block.get("web")
+        if not isinstance(web, dict):
+            web = block["web"] = {}
+        web["show_details"] = on
+    _rewrite(change, "model details")
+    log.info("web chat: model details saved (%s): %s",
+             str((who or {}).get("credential") or "unknown")[:20], "on" if on else "off")
+    return on
+
+
+class DetailsSettings:
+    """Show agent and model details in the web chat's Settings menu, served by
+    botcore's WebFrontend at /api/settings/details."""
+
+    def get(self) -> dict:
+        return {"on": details_on()}
+
+    def save(self, body: dict, who: dict | None = None) -> dict:
+        if not isinstance(body, dict) or set(body) != {"on"}:
+            raise NotifyRefused("Show agent and model details takes on or off.")
+        return {"on": save_details(body["on"], who), "saved": True}

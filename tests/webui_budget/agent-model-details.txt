@@ -1,0 +1,1 @@
++31   Show agent and model details (the Settings switch, read before the first thread is drawn and saved at once, and each reply cut where the bot marks its model line and tool trace)
