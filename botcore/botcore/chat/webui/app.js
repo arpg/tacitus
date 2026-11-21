@@ -912,6 +912,8 @@ function renderChannels() {
   $('needs-count').textContent = String(need);
   $('needs-count').setAttribute('aria-label', `${need} ${need === 1 ? 'conversation needs' : 'conversations need'} you`);
   $('new-room').hidden = !mainChannel() || Boolean(S.me && S.me.rooms === false);
+  $('new-message').hidden = !mainChannel();
+  $('new-row').hidden = $('new-message').hidden && $('new-room').hidden;
 }
 
 // Recent: the latest conversations of every place, in the bot's order (newest first), so a conversation begun on one
@@ -4089,6 +4091,15 @@ function teaching() {
   });
   $('welcome-cards').addEventListener('click', (e) => { if (Date.now() - swiped < 500) e.stopPropagation(); }, true);
   for (const b of $('welcome').querySelectorAll('.example')) b.addEventListener('click', () => prefill(b));
+  // New message: a new conversation in Ask Tacitus from any place; the composer opens on it, as an example does.
+  $('new-message').addEventListener('click', () => {
+    const main = mainChannel();
+    if (!main) return;
+    goTo(hashFor(main.id, NEW_THREAD));
+    document.body.dataset.view = 'thread';
+    document.body.classList.remove('drawer');
+    $('text').focus();
+  });
   $('new-room').addEventListener('click', () => {
     $('room-name').value = '';
     roomError('');

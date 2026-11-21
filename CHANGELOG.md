@@ -6,6 +6,10 @@ repository that preceded it.
 
 ## Unreleased
 
+- **New message and New room sit at the top of the menu.** A row under
+  the menu's name, above Search, holds New message, which starts a new
+  conversation with Tacitus from any place, and New room, which moved up
+  from the foot of the menu. The status light stays beside the name.
 - **Each room in the web chat menu has a color.** A room is now a card
   outlined in its own color, last in the menu, and the open room has a
   bar in its color beside it and the same outline around its name at the
