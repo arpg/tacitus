@@ -1,0 +1,1 @@
++51   room colors (each room a card outlined in its color, last in the menu under a rule, the open room's bar and outlined name in the header, the color grid in its menu, and a right-click opening the menu)

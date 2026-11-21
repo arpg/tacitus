@@ -138,6 +138,7 @@ from typing import TYPE_CHECKING, Any
 
 from .base import AlreadyArchived, ChatError, ChatFrontend, NotArchived
 from .types import (
+    WEB_TRIGGER,
     ActionEvent,
     ChannelInfo,
     FileRef,
@@ -145,6 +146,7 @@ from .types import (
     MessageRef,
     RoomRef,
     Status,
+    ViewEvent,
 )
 
 if TYPE_CHECKING:
@@ -860,6 +862,10 @@ class ShadowFrontend(ChatFrontend):
         return self.primary.publish_home(user_id, view)
 
     def open_modal(self, trigger_id: str, view: dict) -> bool:
+        # A click on the web opens its window there; the primary's trigger
+        # ids never carry the web's prefix.
+        if str(trigger_id or "").startswith(WEB_TRIGGER):
+            return self.shadow.open_modal(trigger_id, view)
         return self.primary.open_modal(trigger_id, view)
 
     # LLM-facing: the primary's wording, since the core answers there
@@ -907,6 +913,8 @@ class ShadowFrontend(ChatFrontend):
         """The shadow's `inbound` hook; see the module docstring."""
         if isinstance(kind, ActionEvent):
             return self._web_action(kind)
+        if isinstance(kind, ViewEvent):
+            return self._web_view(kind)
         if isinstance(kind, InboundMessage):
             msg = kind
             raw = msg.raw or {}
@@ -1029,6 +1037,17 @@ class ShadowFrontend(ChatFrontend):
             self._mirror_channel(channel, archived=archived)
         return True
 
+    def _web_view(self, ev: ViewEvent) -> bool:
+        """Hand a window the owner saved on the web to the core as the
+        primary's owner."""
+        out = dataclasses.replace(ev, user_id=str(self.primary.owner_id),
+                                  raw={**(ev.raw or {}), "source": "web"})
+        try:
+            return self.registry.dispatch_view(out)
+        except Exception:
+            log.exception("shadow: the core failed on a web window %s", ev.callback_id)
+            return False
+
     def _web_action(self, ev: ActionEvent) -> bool:
         """Hand the owner's web click to the core as the primary's owner."""
         value = ev.value
@@ -1042,7 +1061,8 @@ class ShadowFrontend(ChatFrontend):
             if isinstance(action, dict):
                 value = action.get("value", "")
         out = dataclasses.replace(ev, user_id=str(self.primary.owner_id), value=value,
-                                  trigger_id="", raw={**(ev.raw or {}), "source": "web"})
+                                  trigger_id=ev.trigger_id if ev.trigger_id.startswith(WEB_TRIGGER)
+                                  else "", raw={**(ev.raw or {}), "source": "web"})
         try:
             return self.registry.dispatch_action(out)
         except Exception:

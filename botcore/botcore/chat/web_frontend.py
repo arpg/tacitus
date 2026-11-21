@@ -227,6 +227,7 @@ still reaches its conversation.
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import hmac
 import http.cookies
@@ -237,6 +238,7 @@ import logging
 import mimetypes
 import os
 import queue
+import random
 import re
 import secrets
 import select
@@ -277,6 +279,7 @@ from .cards import ConfirmationCard, action_text
 from .text import mrkdwn_to_markdown
 from .types import (
     THREAD_KEY_RE,
+    WEB_TRIGGER,
     ActionEvent,
     ChannelInfo,
     FileRef,
@@ -284,6 +287,7 @@ from .types import (
     MessageRef,
     RoomRef,
     Status,
+    ViewEvent,
 )
 
 log = logging.getLogger("chat.web")
@@ -385,6 +389,12 @@ OWNER_REACTIONS = {"+1": "\U0001f44d", "white_check_mark": "✅", "heart": "❤�
 # Seconds after posting in which the owner may edit or remove a message.
 EDIT_WINDOW_S = 15 * 60
 NONCE_TTL_S = 15 * 60
+# A window (a modal) a card button opens (WEB_TRIGGER): the app waits up to
+# MODAL_WAIT_S for the view and may save it within MODAL_TTL_S; a typed value
+# is at most MODAL_TEXT_MAX characters, Slack's own limit for a text input.
+MODAL_WAIT_S = 20
+MODAL_TTL_S = 30 * 60
+MODAL_TEXT_MAX = 3000
 NONCE_MAX_CHARS = 64
 # Search: the most hits one search answers, a hit's snippet, the longest query.
 SEARCH_CAP = 200
@@ -408,6 +418,15 @@ MUTE_DEFAULT_KEY = "muted_default:"
 # Channel ids the app's routes take for their own (`#/needs`, the Needs you
 # view): no channel may have one.
 RESERVED_CHANNEL_IDS = frozenset({"needs", "status"})
+# A room's color in the app's menu (docs/webchat.md, Rooms): the grid of
+# six columns the color menu shows, the greys last. A new room gets one of
+# the first 24 at random; the owner picks any of them from the room's menu.
+ROOM_COLORS = (
+    "#56C1FF", "#73FDEA", "#88FA4E", "#FFF56D", "#FF968D", "#FF8AD8",
+    "#00A2FF", "#16E7CF", "#61D836", "#FFD932", "#FF644E", "#FF42A1",
+    "#0076BA", "#00AB8E", "#1DB100", "#FEAE00", "#EE220C", "#D31876",
+    "#004D80", "#006C65", "#017100", "#F27200", "#B51800", "#970E53",
+    "#FFFFFF", "#D6D5D5", "#929292", "#5E5E5E", "#000000")
 # The longest room name the owner may give a room from the app; a room
 # that lives on Slack in shadow mode takes it too.
 ROOM_NAME_MAX = 60
@@ -550,6 +569,10 @@ CREATE TABLE IF NOT EXISTS light_notices(
 
 def _status_name(status: Status | str) -> str:
     return status.value if isinstance(status, Status) else str(status)
+
+
+def _new_room_color() -> str:
+    return random.choice(ROOM_COLORS[:24])
 
 
 def _loads(text: str | None) -> Any:
@@ -997,6 +1020,9 @@ class WebStore:
                 # new digest channel does (upsert_channel).
                 self._conn.execute("ALTER TABLE channels ADD COLUMN muted INT DEFAULT 0")
                 self._conn.execute("UPDATE channels SET muted=1 WHERE kind='digest'")
+            if "color" not in cols:
+                # A store from before room colors: each room gets one at start (color_rooms).
+                self._conn.execute("ALTER TABLE channels ADD COLUMN color TEXT")
             cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(push_subscriptions)")}
             if "last_seen" not in cols:
                 # A store from before: a subscription counts as posted when made.
@@ -1147,7 +1173,7 @@ class WebStore:
         last = self._one("SELECT MAX(posted_at) AS t FROM messages WHERE channel=?", (cid,))
         out = {"id": cid, "name": row["name"] or "", "kind": row["kind"] or "room",
                "archived": bool(row["archived"]), "description": row["description"] or "",
-               "muted": bool(row["muted"]),
+               "muted": bool(row["muted"]), "color": row["color"] or "",
                "last_at": last["t"] if last else None, **self._counts(cid)}
         if out["kind"] == "dm":
             out["waiting"] = sum(self.waiting_cards(cid).values())
@@ -2043,7 +2069,8 @@ class WebStore:
                    int(bool(mute)))
             if row is None:
                 self._conn.execute("INSERT INTO channels(id, name, kind, archived, description, "
-                                   "muted) VALUES (?,?,?,?,?,?)", (cid, *new))
+                                   "muted, color) VALUES (?,?,?,?,?,?,?)",
+                                   (cid, *new, _new_room_color() if kind == "room" else None))
             elif (row["name"], row["kind"], row["archived"], row["description"],
                   row["muted"]) != new:
                 self._conn.execute("UPDATE channels SET name=?, kind=?, archived=?, description=?, "
@@ -2067,6 +2094,28 @@ class WebStore:
                                    fields.get("archived", row["archived"]),
                                    fields.get("description", row["description"]),
                                    fields.get("muted", row["muted"]))
+
+    def set_color(self, cid: str, color: str) -> dict | None:
+        """Set a room's color; a `channel` event when it changed. None when
+        there is no such channel."""
+        def run() -> dict | None:
+            row = self._conn.execute("SELECT * FROM channels WHERE id=?", (cid,)).fetchone()
+            if row is None or (row["color"] or "") == color:
+                return self._channel_json(row) if row else None
+            self._conn.execute("UPDATE channels SET color=? WHERE id=?", (color, cid))
+            out = self._channel_json(self._conn.execute(
+                "SELECT * FROM channels WHERE id=?", (cid,)).fetchone())
+            self._emit("channel", cid, cid, out)
+            return out
+        return self._transaction(run)
+
+    def color_rooms(self) -> int:
+        """Give each room with no color one at random (a store from before
+        room colors, or a room a primary made); how many."""
+        rows = self._all("SELECT id FROM channels WHERE kind='room' AND (color IS NULL OR color='')")
+        for r in rows:
+            self.set_color(r["id"], _new_room_color())
+        return len(rows)
 
     def mute_once(self, cid: str) -> bool:
         """Mute channel `cid` the first time it is named here, once per
@@ -2899,6 +2948,9 @@ class WebFrontend(ChatFrontend):
         self._push: web_push.Pusher | None = None
         self._life_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
+        # trigger -> {"at", "view", "ready"}: the windows card buttons opened
+        self._modals: dict[str, dict] = {}
+        self._modals_lock = threading.Lock()
         self._rooms_lock = threading.Lock()
         # One pairing attempt at a time, so the pause after a wrong token
         # bounds the rate of guesses.
@@ -3190,6 +3242,7 @@ class WebFrontend(ChatFrontend):
             if self.inbound is None:
                 self._ensure_own_channels()
             self._mute_defaults()
+            self.store.color_rooms()
             cls = _Server6 if ":" in self.bind else _Server
             srv = cls((self.bind, self.port), _Handler, max_per_peer=self.peer_connections)
             srv.frontend = self
@@ -4380,6 +4433,100 @@ class WebFrontend(ChatFrontend):
     def llm_tool_grants(self) -> str:
         return ""
 
+    # windows (modals) a card button opens
+
+    def new_modal_trigger(self) -> str:
+        """A trigger for one click: open_modal takes a view only for a
+        trigger minted here, and the app that clicked fetches it."""
+        trigger = WEB_TRIGGER + secrets.token_urlsafe(16)
+        now = time.time()
+        with self._modals_lock:
+            for k in [k for k, v in self._modals.items() if now - v["at"] > MODAL_TTL_S]:
+                self._modals.pop(k, None)
+            self._modals[trigger] = {"at": now, "view": None, "ready": threading.Event()}
+        return trigger
+
+    def open_modal(self, trigger_id: str, view: dict) -> bool:
+        """Hold the view for the app whose click minted the trigger; one
+        view per click."""
+        with self._modals_lock:
+            slot = self._modals.get(str(trigger_id or ""))
+            if slot is None or slot["view"] is not None or not isinstance(view, dict):
+                return False
+            slot["view"] = view
+        slot["ready"].set()
+        return True
+
+    def modal_done(self, trigger: str) -> None:
+        """The core has handled the click: an app waiting for its window
+        hears now that it opened none."""
+        with self._modals_lock:
+            slot = self._modals.get(trigger)
+        if slot is not None:
+            slot["ready"].set()
+
+    def run_then_done(self, fn: Callable[[], None], trigger: str) -> None:
+        try:
+            fn()
+        finally:
+            self.modal_done(trigger)
+
+    def modal_view(self, trigger: str, wait_s: float = MODAL_WAIT_S) -> dict | None:
+        """The view the click opened, as the app shows it (no callback id
+        or metadata), after waiting up to wait_s; None when it opened none."""
+        with self._modals_lock:
+            slot = self._modals.get(trigger)
+        if slot is None:
+            raise _HttpError(404, "no such window")
+        slot["ready"].wait(wait_s)
+        view = slot["view"]
+        if view is None:
+            return None
+        return {k: v for k, v in view.items() if k not in ("private_metadata", "callback_id")}
+
+    def modal_submit(self, trigger: str, given: Any) -> Callable[[], None] | None:
+        """The owner saved a window: the values of its input blocks, in
+        Slack's shape, checked against the stored view, as a ViewEvent. The
+        callback id and metadata are the stored view's, never the browser's."""
+        with self._modals_lock:
+            slot = self._modals.get(trigger)
+        view = slot["view"] if slot else None
+        if view is None:
+            raise _HttpError(404, "This window has closed. Press the button again.")
+        given = given if isinstance(given, dict) else {}
+        values: dict = {}
+        for b in view.get("blocks") or []:
+            el = b.get("element") or {}
+            bid, aid = str(b.get("block_id") or ""), str(el.get("action_id") or "")
+            if b.get("type") != "input" or not bid or not aid:
+                continue
+            row = given.get(bid)
+            v = row.get(aid) if isinstance(row, dict) else None
+            v = v if isinstance(v, str) else ""
+            label = str((b.get("label") or {}).get("text") or "this field")
+            if el.get("type") == "static_select":
+                if v and v not in {str(o.get("value")) for o in el.get("options") or []}:
+                    raise _HttpError(400, f"No such choice for {label}.")
+                values[bid] = {aid: {"type": "static_select",
+                                     "selected_option": {"value": v} if v else None}}
+            else:
+                if len(v) > MODAL_TEXT_MAX:
+                    raise _HttpError(400, f"{label} is at most {MODAL_TEXT_MAX} characters.")
+                values[bid] = {aid: {"type": str(el.get("type") or "plain_text_input"),
+                                     "value": v}}
+            if not v.strip() and not b.get("optional"):
+                raise _HttpError(400, f"Fill in {label}.")
+        with self._modals_lock:
+            if self._modals.pop(trigger, None) is not slot:
+                raise _HttpError(404, "This window has closed. Press the button again.")
+        ev = ViewEvent(callback_id=str(view.get("callback_id") or ""), user_id=self.owner_id,
+                       private_metadata=str(view.get("private_metadata") or ""),
+                       values=values, raw={"source": "web"})
+        if self.inbound is not None:
+            self._hand_in(ev)
+            return None
+        return lambda: self._dispatch(ev)
+
     # shadow mode: the composite's writes, with the primary's ids
 
     def mirror_channel(self, id: str, name: str, kind: str, archived: bool = False, *,
@@ -4535,6 +4682,9 @@ class WebFrontend(ChatFrontend):
                 if isinstance(ev, ActionEvent):
                     if not self.registry.dispatch_action(ev):
                         log.info("web chat: no handler for action %s", ev.action_id)
+                elif isinstance(ev, ViewEvent):
+                    if not self.registry.dispatch_view(ev):
+                        log.info("web chat: no handler for window %s", ev.callback_id)
                 else:
                     self.registry.dispatch_message(ev)
             except Exception:
@@ -4716,7 +4866,8 @@ class WebFrontend(ChatFrontend):
                     pass
 
     def web_action(self, channel: str, msg_id: str, action_id: str,
-                   selected: str = "", text: str = "") -> Callable[[], None] | None:
+                   selected: str = "", text: str = "",
+                   trigger_id: str = "") -> Callable[[], None] | None:
         """Check a click against the stored card and build its ActionEvent;
         the value is the one stored with the card, never the browser's.
         `text` is the owner's line, kept only for an action the card
@@ -4745,7 +4896,7 @@ class WebFrontend(ChatFrontend):
                          card=MessageRef(channel, msg_id, row["thread_key"], row["posted_at"]),
                          value=value, source=source, selected=selected,
                          block_id=str(card.get("block_id") or ""), raw={"source": "web"},
-                         text=text)
+                         text=text, trigger_id=trigger_id)
         if self.inbound is not None:
             self._hand_in(ev)
             return None
@@ -4831,6 +4982,20 @@ class WebFrontend(ChatFrontend):
             except (AlreadyArchived, NotArchived):
                 pass
         return self.store.channel(channel) or ch
+
+    def web_color(self, channel: str, color: Any) -> dict:
+        """Give a room one of ROOM_COLORS: its row, sent to every open app as
+        a `channel` event. The color is this app's alone: in shadow mode the
+        primary is not told."""
+        ch = self.store.channel(channel)
+        if ch is None:
+            raise _HttpError(404, "There is no such place.")
+        if ch["kind"] != "room":
+            raise _HttpError(400, "Only a room has a color.")
+        color = str(color or "").strip().upper()
+        if color not in ROOM_COLORS:
+            raise _HttpError(400, "Pick one of the colors in the room's menu.")
+        return self.store.set_color(channel, color) or ch
 
     def web_mute(self, channel: str, muted: bool) -> dict:
         """Mute a channel, or unmute it: its row. A muted channel's unread
@@ -5156,6 +5321,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "light": fe.light is not None,
                                  "home": fe.home is not None})
                 return None
+            if n == 2 and segs[0] == "modals":
+                # The window a card click opened, once the core opens it.
+                self._json(200, {"modal": fe.modal_view(segs[1])})
+                return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
                 return None
@@ -5246,8 +5415,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._settings(method, segs[1])
             return None
         if method == "PATCH" and n == 2 and segs[0] == "channels":
-            # The owner renames a room: a chat action, like a message.
-            row, after = fe.web_rename(segs[1], self._read_json().get("name"))
+            # The owner renames a room or gives it a color: a chat action, like a message.
+            body = self._read_json()
+            if isinstance(body, dict) and set(body) == {"color"}:
+                self._json(200, fe.web_color(segs[1], body["color"]))
+                return None
+            row, after = fe.web_rename(segs[1], body.get("name"))
             self._json(200, row)
             return after
         if method == "POST":
@@ -5367,9 +5540,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(action_id, str) or not action_id:
                     raise _HttpError(400, "action_id is required")
                 selected, text = body.get("selected"), body.get("text")
+                trigger = fe.new_modal_trigger()
                 after = fe.web_action(segs[1], segs[2], action_id,
                                       selected if isinstance(selected, str) else "",
-                                      text if isinstance(text, str) else "")
+                                      text if isinstance(text, str) else "", trigger)
+                if after is None:
+                    fe.modal_done(trigger)
+                else:
+                    after = functools.partial(fe.run_then_done, after, trigger)
+                self._json(200, {"ok": True, "trigger": trigger})
+                return after
+            if n == 2 and segs[0] == "modals":
+                # Saving a window a card button opened (a draft's text): the
+                # same lock as the card's buttons.
+                self._refuse_relay_deny("act on a card")
+                after = fe.modal_submit(segs[1], self._read_json().get("values"))
                 self._json(200, {"ok": True})
                 return after
         raise _HttpError(404, "not found")

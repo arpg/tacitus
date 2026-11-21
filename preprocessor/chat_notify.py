@@ -10,6 +10,9 @@ ea-config.json):
     slack_webhooks.json in the private dir; only a process that is not
     the owner's falls back to ~/.ea/config. A webhook returns no message
     id, so beside a web chat shadow the post is not mirrored into it.
+    Beside a web chat shadow, a post to the EA channel (`ea-assistant`,
+    no blocks) goes through the composite instead, with the bot's token,
+    so the web chat gets a copy (_send_through_shadow).
   * web: the parts go into the web chat's store as the bot, all in one
     new thread, through the writer-only web front end
     (chat.load_frontend(for_cli=True)); the bot's tail thread pushes
@@ -228,6 +231,10 @@ def _load_webhooks() -> dict:
 
 
 def _send_slack(channel_key: str, parts: list[str], blocks: Optional[list]) -> bool:
+    if channel_key == "ea-assistant" and not blocks:
+        mirrored = _send_through_shadow(parts)
+        if mirrored is not None:
+            return mirrored
     webhooks = _load_webhooks()
     url = webhooks.get(channel_key)
     if not url:
@@ -253,6 +260,34 @@ def _send_slack(channel_key: str, parts: list[str], blocks: Optional[list]) -> b
             print(f"Slack post failed ({resp.status_code}): {resp.text}")
             all_ok = False
     return all_ok
+
+
+def _send_through_shadow(parts: list[str]) -> bool | None:
+    """Beside a web chat shadow, the parts through the composite into the
+    EA channel: the same posts on Slack, made with the bot's token, each
+    copied into the web chat under Slack's id. None when no shadow is
+    named, or the composite cannot be built or refuses the first part: the
+    caller then posts through the webhook. Once a part is out, a later
+    failure is False."""
+    if _chat_cfg().get("shadow") != "web" or not parts:
+        return None
+    try:
+        fe = _room_frontend()
+        channel = getattr(fe, "main_channel", "")
+        if getattr(fe, "shadow", None) is None or not channel:
+            return None
+        fe.post(channel, parts[0])
+    except Exception as e:
+        print(f"WARNING: no web chat copy of this post ({e}); posting to Slack alone")
+        return None
+    ok = True
+    for part in parts[1:]:
+        try:
+            fe.post(channel, part)
+        except Exception as e:
+            print(f"Slack post failed: {e}")
+            ok = False
+    return ok
 
 
 # ── The web chat's origin note ────────────────────────────────────────

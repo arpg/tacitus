@@ -56,10 +56,10 @@ def test_the_drawer_names_each_place_in_plain_words(app):
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
     links = page.locator("#channel-list > a.chan, #channel-list > .chan-row > a.chan")
-    expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Action requests", "Scheduling", "example-project",
-                                                   "Mail digests"])  # the two places to talk, then More by kind
+    expect(links.locator(".c-name")).to_have_text(["Ask Tacitus", "Action requests", "Scheduling", "Mail digests",
+                                                   "example-project"])  # the two places to talk, More by kind, rooms
     assert [links.nth(i).get_attribute("href") for i in range(5)] == [
-        "#/stream%3A9", "#/stream%3A7", "#/stream%3A11", "#/r1", "#/digests"]
+        "#/stream%3A9", "#/stream%3A7", "#/stream%3A11", "#/digests", "#/r1"]
     expect(page.locator("#channel-list details .c-name")).to_have_text("old-project")
     expect(page.locator("#new-thread")).to_have_text("New conversation")
     expect(page.locator("#back")).to_have_attribute("aria-label", "Back to conversations")
@@ -140,6 +140,33 @@ def test_card_buttons_post_to_the_actions_route(app):
     # The bot answers with a status line, which replaces the card.
     expect(page.locator(".card.status:has-text('Done: send')")).to_be_visible()
     assert page.locator("#messages .card button, #messages .card select").count() == 0
+    assert not errors, errors
+
+
+def test_a_card_button_that_opens_a_window_shows_it_and_saves_the_edit(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    stub.modal_views["send"] = {
+        "type": "modal", "title": {"type": "plain_text", "text": "Edit draft"},
+        "submit": {"type": "plain_text", "text": "Save"}, "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [{"type": "context", "elements": [{"type": "mrkdwn", "text": "*To:* pat@example.org"}]},
+                   {"type": "input", "block_id": "body_block", "label": {"type": "plain_text", "text": "Body"},
+                    "element": {"type": "plain_text_input", "action_id": "body", "multiline": True,
+                                "initial_value": "Hi Pat,\n\nThanks"}}]}
+    open_thread(page, "Draft a reply")
+    page.locator(".card").first.locator("button.primary").click()
+    dlg = page.locator("dialog#modal")
+    expect(dlg).to_be_visible()
+    expect(dlg.locator("h2")).to_have_text("Edit draft")
+    expect(dlg.locator(".sheet-note")).to_contain_text("To: pat@example.org")
+    field = dlg.locator("textarea")
+    expect(field).to_have_value("Hi Pat,\n\nThanks")
+    field.fill("Hi Pat,\n\nThanks a lot")
+    dlg.locator("button[type=submit]").click()
+    wait_for(lambda: stub.modal_saves)
+    assert stub.modal_saves == [{"trigger": "web:send",
+                                 "values": {"body_block": {"body": "Hi Pat,\n\nThanks a lot"}}}]
+    expect(dlg).to_be_hidden()
     assert not errors, errors
 
 

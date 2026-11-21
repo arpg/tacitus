@@ -632,7 +632,7 @@ a.file-link .file-name { color: var(--accent); }
 
 /* pairing a phone: the code is dark on light in either scheme */
 
-#phone, #settings, #status, #room, #welcome {
+#phone, #settings, #status, #room, #welcome, #modal {
   width: min(calc(100% - 32px), 420px);
   max-height: calc(100dvh - 32px);
   padding: 24px;
@@ -642,10 +642,14 @@ a.file-link .file-name { color: var(--accent); }
   color: var(--text);
   box-shadow: var(--shadow-lg);
 }
-#phone[open], #settings[open], #status[open], #room[open], #welcome[open] { animation: fade .18s var(--ease); } /* no transform: a dialog keeps its measured size */
+#phone[open], #settings[open], #status[open], #room[open], #welcome[open], #modal[open] { animation: fade .18s var(--ease); } /* no transform: a dialog keeps its measured size */
 @keyframes fade { from { opacity: 0; } }
-#phone::backdrop, #settings::backdrop, #status::backdrop, #room::backdrop, #welcome::backdrop { background: var(--scrim); }
-#phone form, #settings form, #status form, #room form, #welcome form { display: grid; gap: 12px; }
+#phone::backdrop, #settings::backdrop, #status::backdrop, #room::backdrop, #welcome::backdrop, #modal::backdrop { background: var(--scrim); }
+#phone form, #settings form, #status form, #room form, #welcome form, #modal form { display: grid; gap: 12px; }
+#modal { width: min(calc(100% - 32px), 640px); }
+#modal h2 { font-size: 20px; font-weight: 650; line-height: 1.25; margin: 0; }
+#modal textarea, #modal input, #modal select { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg); color: var(--text); font: inherit; font-size: 16px; }
+#modal textarea { resize: vertical; min-height: 12em; }
 #phone h2, #phone h3, #phone p, #settings h2, #settings h3, #settings p, #status h2, #status h3, #status p, #room h2, #room p, #welcome h2, #welcome p { margin: 0; }
 #phone h3, #settings h3, #status h3 { margin-top: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 #phone-qr { width: 100%; max-width: 280px; justify-self: center; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-m);
@@ -888,6 +892,25 @@ body.no-composer #composer, body.no-composer #new-thread { display: none; }
 .sheet-item:active { background: var(--hover); }
 @media (hover: hover) { .sheet-item:hover { background: var(--hover); } }
 @media (pointer: coarse) { .room-more { display: none; } .chan-row > .chan { padding-right: 10px; } } /* a long press opens the menu */
+
+/* Rooms (docs/webchat.md, Rooms): each a card outlined in its own color, with no fill, last in the menu under a rule.
+   The open room has a short bar in its color beside its card and a bold name; its name in the list's header sits
+   in the same outline. The right padding stays the row's, clear of the menu button. */
+.rooms-rule { margin: 8px 16px; border: 0; border-top: 1px solid var(--border); }
+.chan.room { position: relative; margin: 6px 8px; padding-block: 8px; padding-left: 13px;
+  border: 1px solid var(--room-color, var(--border)); border-radius: var(--r-l); background: transparent; }
+.chan.room.active { background: transparent; }
+.chan.room.active::before { content: ""; position: absolute; left: -7px; top: 22%; bottom: 22%; width: 3px;
+  border-radius: 2px; background: var(--room-color, var(--accent)); }
+@media (hover: hover) { .chan.room:hover { background: transparent; } }
+.archived .chan.room { opacity: .7; }
+.bar h1.room-title { flex: 0 1 auto; margin-right: auto; padding: 5px 13px; border: 1px solid var(--room-color, var(--border));
+  border-radius: var(--r-l); }
+/* A room's colors in its menu: the grid of six columns, the one in use ringed. */
+.swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 0 0 8px; }
+.swatch { aspect-ratio: 3 / 2; min-height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.swatch.on, .swatch:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+@media (pointer: coarse) { .swatch { min-height: 44px; } }
 @media (max-width: 599px) {
   #room-menu { width: 100%; max-width: none; margin: auto 0 0; border-width: 1px 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0; }
   #room-menu .sheet { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
@@ -1085,3 +1108,16 @@ a.h-row .h-title { text-decoration: underline; text-underline-offset: 2px; }
   .h-item.u-overdue:hover { border-left-color: var(--u-overdue); }
 }
 @media (pointer: coarse) { a.h-row { min-height: 44px; padding-block: 11px; } .h-done .btn, .h-report .btn { min-height: 44px; } }
+
+/* Jump to (Cmd+K or Ctrl+K): a field over a short list, near the top like a command bar */
+
+#jump { width: min(calc(100% - 32px), 520px); margin-top: 12vh; padding: 8px; border: 1px solid var(--border);
+  border-radius: var(--r-xl); background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); }
+#jump::backdrop { background: var(--scrim); }
+#jump input { width: 100%; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent;
+  color: var(--text); font: inherit; font-size: 16px; outline: none; }
+#jump ul { list-style: none; margin: 4px 0 0; padding: 0; max-height: 50vh; overflow-y: auto; }
+#jump li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: var(--r-m); cursor: pointer; }
+#jump li.on { background: var(--hover); }
+#jump .j-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#jump .j-where, #jump .j-none { color: var(--muted); font-size: 13px; white-space: nowrap; }

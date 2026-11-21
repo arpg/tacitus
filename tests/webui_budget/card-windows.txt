@@ -1,0 +1,1 @@
++62   a window a card button opens (Edit on a draft): the dialog with its lines, text fields and choices, Save and Cancel, and the fetch after the click
