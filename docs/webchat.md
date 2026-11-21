@@ -1594,6 +1594,15 @@ their threads no composer; a line stands in the composer's place (in
 Action requests: "Here you only tap buttons. To ask Tacitus something,
 use Ask Tacitus.", with a link).
 
+Keyboard shortcuts. Cmd+K, or Ctrl+K on Windows and Linux, opens Jump to
+from anywhere, the composer too: a field over the places (in the
+drawer's order) and the conversations the app holds (Recent and each
+place it has opened), filtered as the owner types; the arrows move,
+Enter or a click opens, Escape closes. `/` outside a text field opens
+Search (the button carries `aria-keyshortcuts="/"`); in a field it types
+a slash. Neither acts over another open dialog. No key presses a card's
+button: Send and Create stay a click or a tap.
+
 The owner's own actions. "Search" at the top of the drawer opens a
 field in the list's header ("Search your conversations"); the list then
 shows the hits, read 250 ms after typing stops (two letters at least, one

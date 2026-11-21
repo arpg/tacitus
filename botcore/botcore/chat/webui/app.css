@@ -1086,3 +1086,16 @@ a.h-row .h-title { text-decoration: underline; text-underline-offset: 2px; }
   .h-item.u-overdue:hover { border-left-color: var(--u-overdue); }
 }
 @media (pointer: coarse) { a.h-row { min-height: 44px; padding-block: 11px; } .h-done .btn, .h-report .btn { min-height: 44px; } }
+
+/* Jump to (Cmd+K or Ctrl+K): a field over a short list, near the top like a command bar */
+
+#jump { width: min(calc(100% - 32px), 520px); margin-top: 12vh; padding: 8px; border: 1px solid var(--border);
+  border-radius: var(--r-xl); background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); }
+#jump::backdrop { background: var(--scrim); }
+#jump input { width: 100%; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent;
+  color: var(--text); font: inherit; font-size: 16px; outline: none; }
+#jump ul { list-style: none; margin: 4px 0 0; padding: 0; max-height: 50vh; overflow-y: auto; }
+#jump li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: var(--r-m); cursor: pointer; }
+#jump li.on { background: var(--hover); }
+#jump .j-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#jump .j-where, #jump .j-none { color: var(--muted); font-size: 13px; white-space: nowrap; }
