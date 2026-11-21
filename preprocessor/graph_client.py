@@ -2868,10 +2868,26 @@ def _chat_token() -> Optional[str]:
 
 
 def _chat_get(path: str, token: str, params: dict) -> dict:
-    resp = requests.get(f"{GRAPH_URL}{path}", params=params, timeout=30,
+    url = path if path.startswith("http") else f"{GRAPH_URL}{path}"
+    if not url.startswith(GRAPH_URL + "/"):
+        raise ValueError("Teams URL is not on the Graph API host")
+    resp = requests.get(_check_endpoint(url), params=params, timeout=30,
                         headers={"Authorization": f"Bearer {token}"})
     resp.raise_for_status()
     return resp.json() or {}
+
+
+def _chat_items(path: str, token: str, params: dict):
+    """Read Graph pages lazily, so the window's cutoff stops pagination."""
+    seen = set()
+    while path:
+        if path in seen:
+            raise ValueError("Teams pagination repeated a page")
+        seen.add(path)
+        page = _chat_get(path, token, params)
+        yield from page.get("value", [])
+        path = page.get("@odata.nextLink")
+        params = {}
 
 
 def _graph_time(value: str):
@@ -2894,11 +2910,11 @@ def get_graph_teams_chats(days_back: int = 1, token: Optional[str] = None):
         return None
     me = _decode_jwt_payload(token).get("oid", "")
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
-    chats = _chat_get("/me/chats", token, {
+    chats = _chat_items("/me/chats", token, {
         "$expand": "members,lastMessagePreview",
         "$orderby": "lastMessagePreview/createdDateTime desc",
         "$top": 50,
-    }).get("value", [])
+    })
     out = []
     for chat in chats:
         last = _graph_time((chat.get("lastMessagePreview") or {}).get("createdDateTime"))
@@ -2909,11 +2925,13 @@ def get_graph_teams_chats(days_back: int = 1, token: Optional[str] = None):
             continue  # a meeting's chat belongs to the meeting
         others = [m for m in chat.get("members") or []
                   if m.get("userId") and m.get("userId") != me]
-        raw = _chat_get(f"/chats/{chat['id']}/messages", token, {
-            "$top": 20, "$orderby": "createdDateTime desc"}).get("value", [])
+        raw = _chat_items(f"/chats/{chat['id']}/messages", token, {
+            "$top": 20, "$orderby": "createdDateTime desc"})
         messages = []
         for m in raw:
             created = _graph_time(m.get("createdDateTime"))
+            if created is not None and created < cutoff:
+                break
             if m.get("messageType") != "message" or m.get("deletedDateTime") \
                     or created is None or created < cutoff:
                 continue

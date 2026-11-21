@@ -4,6 +4,7 @@ the other member, and says "not available" (None) without consent."""
 import base64
 import json
 import sys
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -11,6 +12,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "preprocessor"))
 import graph_client  # noqa: E402
 
 ME = "oid-me"
+
+
+def test_chat_and_message_pages_are_read_until_the_window_ends(monkeypatch):
+    chats_next = graph_client.GRAPH_URL + "/me/chats?$skiptoken=next"
+    messages_next = graph_client.GRAPH_URL + "/chats/c1/messages?$skiptoken=next"
+    calls = []
+    pages = {
+        "/me/chats": {"value": [_chat("c1", _ago(hours=1))], "@odata.nextLink": chats_next},
+        chats_next: {"value": [_chat("c2", _ago(hours=3)), _chat("old", _ago(days=3))],
+                     "@odata.nextLink": "must-not-fetch-chats"},
+        "/chats/c1/messages": {"value": [_msg("m1", _ago(hours=1))],
+                               "@odata.nextLink": messages_next},
+        messages_next: {"value": [_msg("m2", _ago(hours=2)), _msg("old", _ago(days=3))],
+                        "@odata.nextLink": "must-not-fetch-messages"},
+        "/chats/c2/messages": {"value": [_msg("m3", _ago(hours=3))]},
+    }
+
+    def get(path, token, params):
+        calls.append((path, params))
+        return pages[path]
+    monkeypatch.setattr(graph_client, "_chat_get", get)
+    chats = graph_client.get_graph_teams_chats(token=_token())
+    assert [c["chat_id"] for c in chats] == ["c1", "c2"]
+    assert [[m["id"] for m in c["messages"]] for c in chats] == [["m1", "m2"], ["m3"]]
+    assert (chats_next, {}) in calls and (messages_next, {}) in calls
+
+
+def test_chat_pagination_never_sends_the_token_to_another_host(monkeypatch):
+    def unexpected(*a, **kw):
+        pytest.fail("request sent to an untrusted host")
+    monkeypatch.setattr(graph_client.requests, "get", unexpected)
+    with pytest.raises(ValueError, match="Graph API host"):
+        graph_client._chat_get("https://example.org/v1.0/chats", "secret", {})
 
 
 def _token(oid=ME):
