@@ -12,6 +12,12 @@ repository that preceded it.
   tools' trace under it, now show only when Settings, "Show agent and
   model details" is on. It is off by default; the text stays as the bot
   wrote it, so turning the switch on shows them on every reply again.
+- **Each room in the web chat menu has a color.** A room is now a card
+  outlined in its own color, last in the menu, and the open room has a
+  bar in its color beside it and the same outline around its name at the
+  top of the list. A new room gets a color at random; a right-click on a
+  room (or its menu button, or a long press on a phone) opens its menu,
+  which now offers a grid of colors to pick another.
 - **A project room's part of the briefing is named by what it holds.**
   Each room's post from the morning briefing or the afternoon update now
   opens with its first item's title in plain words, with "and 2 more"

@@ -253,8 +253,8 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/manifest.sig.json` | the signed manifest of the app's files, without auth (Code integrity); 404 when the bot signs none |
 | GET | `/api/bundle` | the same document, for the owner: the route the relay reaches |
 | GET | `/api/app/{file}` | a file that the signed manifest names, its bytes as on disk (`headers.json` as the bot writes it), as an attachment with the sandbox policy and the type of its name; 404 for any other name. A phone off the tailnet, or on the relay's origin, takes a new release here, through the relay (Code integrity) |
-| GET | `/api/channels` | `[{"id","name","kind","archived","description","muted","last_at","unread","unread_threads","as_of"}]`; `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread); a row the drawer leaves out also has `"hidden": true` (Debug mode); the DM's row also has `waiting`, the cards there whose buttons still act (Action requests) |
-| PATCH | `/api/channels/{ch}` | `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
+| GET | `/api/channels` | `[{"id","name","kind","archived","description","muted","color","last_at","unread","unread_threads","as_of"}]`; `color` is a room's (Rooms; "" for a fixed place); `unread_threads` maps each thread with unread messages to its count, `unread` is their sum, and `as_of` is the last event the counts take in (Unread); a row the drawer leaves out also has `"hidden": true` (Debug mode); the DM's row also has `waiting`, the cards there whose buttons still act (Action requests) |
+| PATCH | `/api/channels/{ch}` | `{"color"}` alone → the room's row with that color, one of `ROOM_COLORS` in any case (400 for another color or a fixed place, 404 for an unknown place; a `channel` event when it changed; the same color answers the row as it is). `{"name"}` → the room's row: the owner renames a room (Rooms). Its spaces are collapsed and a leading `#` dropped; 400 for an empty name, one over 60 characters or one with a control character, and for a fixed place (kind `main`, `dm`, `sched` or `digest`); 404 for an unknown room; 409 for a name another channel has; the same name answers the row as it is. A chat action: a relayed device that may chat may take it |
 | POST | `/api/channels/{ch}/archive`, `/api/channels/{ch}/unarchive` | `{}` → the room's row with `archived` set or cleared; a room in that state already is answered as it is. 400 for a fixed place, 404 for an unknown room. A chat action, as the rename |
 | POST | `/api/channels/{ch}/mute`, `/api/channels/{ch}/unmute` | `{}` → the channel's row with `muted` set or cleared; a channel in that state already is answered as it is. 400 for the EA channel and the DM, 404 for an unknown channel. A chat action, as the rename (Muted channels) |
 | GET | `/api/channels/{ch}/threads?limit=50&before=<seq>` | thread parents, newest first, each with `reply_count`, `last_at` and the thread's state: `state`, `state_by`, `state_reason`, `state_at`, `stale` (State); `title` on a conversation the owner named (Recent) |
@@ -271,7 +271,7 @@ subset and escapes everything else; it never injects HTML from text.
 | DELETE | `/api/messages/{ch}/{id}` | → the message JSON, `deleted` true, text "" (`edits` and `owner_reactions` dropped), with an `update` event; the same rules as PATCH; a removed message answers as it is |
 | POST | `/api/channels/{ch}/files` | multipart `file` (one part, or up to 10 parts in order), optional `text`, `thread_key`, `nonce` → the stored `file` message of the first file, which carries the text; each other file is a `file` message of its own after it in the same thread (the stream brings them); dispatches one `InboundMessage` with `files=[FileRef, ...]`, every file in order. A `nonce` the browser sent before answers the same row and dispatches nothing, as for a message; 400 for more than 10 files |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
-| POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?, "text"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`); `text` is the owner's line, kept on one line of 300 characters at most and only for an action the card stored with `ask` |
+| POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?, "text"?}` → `{"ok": true, "trigger"}`; dispatches an `ActionEvent` (`source` `button` or `select`); `text` is the owner's line, kept on one line of 300 characters at most and only for an action the card stored with `ask` |
 | GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `light` events the status light's summary as `GET /api/status` gives it, without `details` (Status light), `home` events `{"at"}` or `{"report"}` (Home changed; each app reads `/api/home` again for its own zone), `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale", "tap"}` (`tap`: the state says only that a card waits, Action requests), `release` events `{"bundle"}` when the bot signs a new release of the app, `read` events `{"channel", "thread_key", "unread", "unread_threads", "as_of"}` when a thread read on some device changes the channel's counts, `thread_key` "" for the whole channel); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
@@ -1148,6 +1148,30 @@ the web front end implements it. A name the primary holds is a 409, and any othe
 502 that leaves the room as it was. Archiving needs no new verb: every
 frontend archives.
 
+## Windows
+
+A card button may open a window (a modal, Slack's view shape), as Edit on
+a draft's Send card does. Each click on the web gets a trigger
+(`WEB_TRIGGER`, `web:` and a random part) in its `ActionEvent` and in the
+route's answer. The core calls `open_modal(trigger, view)` as on Slack; the
+web front end takes a view only for a trigger it minted, one per click.
+
+| Method | Path | Body → answer |
+|---|---|---|
+| GET | `/api/modals/{trigger}` | → `{"modal": view or null}`, after the core has handled the click (at most 20 s); the view without `callback_id` and `private_metadata` |
+| POST | `/api/modals/{trigger}` | `{"values": {block_id: {action_id: "text or option value"}}}` → `{"ok": true}`; dispatches a `ViewEvent` as the owner |
+
+The app shows the view's context and section lines, and its input blocks:
+a text field (`plain_text_input`, multiline or not) or a choice
+(`static_select`). Save sends the values. The server builds the
+`ViewEvent` from the stored view: its `callback_id` and `private_metadata`,
+and only the values of its input blocks, in Slack's shape (`{"value": ...}`,
+or `{"selected_option": {"value": ...}}`). A required field left empty, a
+text longer than 3,000 characters or an option the view lacks is a 400,
+and the window stays open. A saved window closes (404 after); an unsaved
+one is dropped after 30 minutes. A device on the relay below "all" may
+not save a window, as it may not press a card button.
+
 ## Shadow mode (C)
 
 `ShadowFrontend(primary, shadow)`:
@@ -1185,8 +1209,9 @@ frontend archives.
 - Reads (`thread_replies`, `recent_messages`, `channel_info`,
   `channel_members`, `archived_map`, `message_posted_at`, `download`,
   `permalink`, `room_url`, `mention`, `is_dm`, `dm_channel`,
-  `prompt_strings`, `llm_tool_grants`, `publish_home`, `open_modal`) go
-  to the primary.
+  `prompt_strings`, `llm_tool_grants`, `publish_home`) go to the
+  primary. `open_modal` goes to the shadow for a web click's trigger
+  (Windows), else to the primary.
 - Inbound from the primary: the composite wraps the primary's registry
   dispatch so an owner `InboundMessage` is mirrored into the shadow
   (`author = "owner"`) before the core handles it and a `channel_rename`
@@ -1203,7 +1228,8 @@ frontend archives.
   this list, never by the prefix, which anything that posts as the bot
   could write. A click
   is dispatched as an `ActionEvent` whose `card` ref is already the
-  primary's. A file goes through `primary.upload` the same way. A room's
+  primary's, and keeps its web trigger; a window saved on the web is
+  dispatched as a `ViewEvent` with `user_id = primary.owner_id`. A file goes through `primary.upload` the same way. A room's
   rename or archive from the app goes to the primary (Rooms).
 - Tests use two `MemoryFrontend`s (or a `MemoryFrontend` primary and a
   real `WebFrontend` on an ephemeral port) and assert both sides hold
@@ -1282,7 +1308,11 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
   owner's, `direct.frontend()` raises, so alert.py stages the alert for
   the owner's `alert.py flush`. `send_direct` posts as `chat_notify.post`
   does to the `personal` key.
-- Not mirrored: a Slack webhook post (no message id comes back).
+- Not mirrored: a Slack webhook post (no message id comes back). Beside a
+  web shadow, `chat_notify` posts to the EA channel (`ea-assistant`, with
+  no blocks: the briefings and the cron reports) through the composite
+  instead, with the bot's token, so they are mirrored; a composite that
+  cannot be built or refuses the post leaves it to the webhook.
 
 **The bot's side.** The serving `WebFrontend` runs a tail thread that
 reads `SELECT MAX(seq) FROM events` every `tail_s` seconds (1) and hands
@@ -1368,14 +1398,26 @@ Needs you card's channel and a new conversation's box ("Ask Tacitus" in
 the main channel, "Message <name>" elsewhere) use the same names. The
 drawer is "Menu" to a screen reader.
 
+A room in the drawer is a card outlined in its own color, with no fill,
+and the rooms come last, under a rule after the other places of More. The
+open room has a short bar in its color beside its card, and its name in
+the list's header sits in the same outline. Each room has a color (the
+channel row's `color`): a new room gets one of the first 24 of the grid
+(`web_frontend.ROOM_COLORS`) at random, and a room from a store before
+colors gets one when the bot starts.
+
 A room's menu: each room in the drawer (and under Archived) has a small
 dots button, shown on hover or focus with a mouse ("Room options:
-<name>" to a screen reader); with a finger a long press on the room
-(600 ms, held still) opens the menu, and the tap that ends the press
+<name>" to a screen reader); a right-click on the room opens the same
+menu, and with a finger a long press on the room
+(600 ms, held still) opens it, and the tap that ends the press
 opens nothing, not even the sheet's button that opened under the
 finger. The fixed places (Ask Tacitus, Action requests, Scheduling, Mail
 digests, Needs you) have no menu. The menu is a dialog, a sheet docked
-to the bottom at phone width, titled with the room's name: "Rename room" and "Archive room", or "Bring back" alone for an
+to the bottom at phone width, titled with the room's name: the grid of
+colors (six columns, the greys last, the one in use pressed; a pick saves
+it with `PATCH /api/channels/<id>` `{"color": "#RRGGBB"}`, which takes
+one of `ROOM_COLORS` alone, and closes the menu), "Rename room" and "Archive room", or "Bring back" alone for an
 archived room, and Cancel. Rename room puts the name in a field with
 Cancel and Save; Save sends it with the bot's `ea-` mark kept when the
 old name had it, and a refusal ("Another room has that name.") stays
@@ -1592,6 +1634,15 @@ The digest channel and Action requests show no New conversation and
 their threads no composer; a line stands in the composer's place (in
 Action requests: "Here you only tap buttons. To ask Tacitus something,
 use Ask Tacitus.", with a link).
+
+Keyboard shortcuts. Cmd+K, or Ctrl+K on Windows and Linux, opens Jump to
+from anywhere, the composer too: a field over the places (in the
+drawer's order) and the conversations the app holds (Recent and each
+place it has opened), filtered as the owner types; the arrows move,
+Enter or a click opens, Escape closes. `/` outside a text field opens
+Search (the button carries `aria-keyshortcuts="/"`); in a field it types
+a slash. Neither acts over another open dialog. No key presses a card's
+button: Send and Create stay a click or a tap.
 
 The owner's own actions. "Search" at the top of the drawer opens a
 field in the list's header ("Search your conversations"); the list then

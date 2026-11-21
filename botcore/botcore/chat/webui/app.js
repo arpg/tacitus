@@ -107,6 +107,8 @@ function h(tag, attrs, ...kids) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
+    // A custom property through the CSSOM (a room's color): the page's CSP (style-src 'self') refuses a style attribute.
+    else if (k === 'css') for (const [prop, val] of Object.entries(v)) el.style.setProperty(prop, val);
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else el.setAttribute(k, v === true ? '' : String(v));
   }
@@ -660,13 +662,71 @@ async function act(msg, body, box) {
   controls.forEach((c) => { c.disabled = true; });
   note.textContent = 'Sending...';
   try {
-    await call('POST', `/cards/${enc(msg.channel)}/${enc(msg.id)}/actions`, body);
+    const r = await call('POST', `/cards/${enc(msg.channel)}/${enc(msg.id)}/actions`, body);
     note.textContent = 'Sent. The card updates when Tacitus answers.';
+    // A button that opens a window (Edit) answers it here once Tacitus has it.
+    const w = r && r.trigger ? await call('GET', `/modals/${enc(r.trigger)}`) : null;
+    if (w && w.modal) { note.textContent = ''; openModal(r.trigger, w.modal); }
   } catch (e) {
     note.textContent = e.status === 403 && T.relay ? noCards() : `Not sent: ${e.message}`;
   } finally {
     controls.forEach((c) => { c.disabled = false; });
   }
+}
+
+// A window a card button opened, in Slack's view shape: its text lines and
+// its inputs (text, or a choice); Save sends the inputs back to Tacitus.
+function openModal(trigger, view) {
+  let dlg = $('modal');
+  if (!dlg) {
+    dlg = h('dialog', { id: 'modal', 'aria-labelledby': 'modal-title' });
+    document.body.append(dlg);
+  }
+  const txt = (o) => String((o && o.text) || '');
+  const fields = [];
+  const form = h('form', { novalidate: true }, h('h2', { id: 'modal-title' }, txt(view.title) || 'Edit'));
+  for (const b of view.blocks || []) {
+    if (b.type === 'context') (b.elements || []).forEach((e) => form.append(cardText(txt(e), 'sheet-note')));
+    else if (b.type === 'section' && b.text) form.append(cardText(txt(b.text), 'card-line'));
+    else if (b.type === 'input' && b.element) {
+      const el = b.element;
+      const id = `modal-f${fields.length}`;
+      let input;
+      if (el.type === 'static_select') {
+        const at = el.initial_option ? el.initial_option.value : '';
+        input = h('select', { id }, b.optional ? h('option', { value: '' }, '') : null,
+          (el.options || []).map((o) => h('option', { value: o.value, selected: o.value === at }, txt(o.text))));
+      } else {
+        input = h(el.multiline ? 'textarea' : 'input', { id, maxlength: 3000, rows: el.multiline ? 12 : null });
+        input.value = el.initial_value || '';
+      }
+      fields.push([b.block_id, el.action_id, input]);
+      form.append(h('label', { for: id }, txt(b.label)), input);
+    }
+  }
+  const err = h('p', { class: 'error', 'aria-live': 'polite' });
+  const save = h('button', { type: 'submit', class: 'btn primary' }, txt(view.submit) || 'Save');
+  form.append(err, h('div', { class: 'dialog-actions' },
+    h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, txt(view.close) || 'Cancel'), save));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const values = {};
+    for (const [bid, aid, input] of fields) (values[bid] ||= {})[aid] = input.value;
+    save.disabled = true;
+    err.textContent = '';
+    try {
+      await call('POST', `/modals/${enc(trigger)}`, { values });
+      dlg.close();
+      toast('Saved. The card updates when Tacitus answers.');
+    } catch (x) {
+      err.textContent = x.message;
+    } finally {
+      save.disabled = false;
+    }
+  });
+  dlg.replaceChildren(form);
+  if (!dlg.open) dlg.showModal();
+  (fields[0] ? fields[0][2] : save).focus();
 }
 
 const noCards = () => (T.rec && T.rec.hosted ? 'Approve this in Tacitus on your phone: this computer'
@@ -809,7 +869,8 @@ function readSoon() {
 function renderChannels() {
   const box = $('channel-list');
   // Under Recent, Ask Tacitus and Action requests in that order; the other places under More, where a channel with
-  // unread messages rises to the top and the rest keep their kind order, then their names. A muted one keeps its
+  // unread messages rises to the top and the rest keep their kind order, then their names; the rooms come last, under a
+  // rule, each a card outlined in its own color (docs/webchat.md, Rooms). A muted one keeps its
   // place, shows its count in grey and adds nothing to the menu's count or the title. A hidden one (the health
   // channel while debug mode is off) is left out, its count and its conversations in Recent too.
   const loud = (c) => (!c.muted && countFor(c) ? 1 : 0);
@@ -819,19 +880,22 @@ function renderChannels() {
   const item = (c) => {
     const n = countFor(c);
     if (!c.archived && !c.muted) total += n;
+    const room = c.kind === 'room';
     return roomRow(c, h('a', {
-      class: 'chan' + (c.id === S.channel && !S.needsView && !S.homeView ? ' active' : '') + (n && !c.muted ? ' unread' : '')
-        + (c.muted ? ' muted' : ''),
-      href: hashFor(c.id), title: c.description || null,
-    }, h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '✓' : '#'),
+      class: 'chan' + (room ? ' room' : '') + (c.id === S.channel && !S.needsView && !S.homeView ? ' active' : '')
+        + (n && !c.muted ? ' unread' : '') + (c.muted ? ' muted' : ''),
+      href: hashFor(c.id), title: c.description || null, css: room && c.color ? { '--room-color': c.color } : null,
+    }, room ? null : h('span', { class: 'c-icon', 'aria-hidden': 'true' }, c.kind === 'dm' ? '✓' : '#'),
     h('span', { class: 'c-name' }, channelName(c)),
     n ? h('span', { class: 'badge' + (c.muted ? ' muted' : ''), 'aria-label': c.kind === 'dm' ? `${n} waiting for you`
       : `${n} unread${c.muted ? ', muted' : ''}` }, String(n)) : null));
   };
   const open = rows.filter((c) => !c.archived), top = (c) => c.kind === 'main' || c.kind === 'dm';
-  const more = open.filter((c) => !top(c)).map(item);
+  const more = open.filter((c) => !top(c) && c.kind !== 'room').map(item);
+  const rooms = open.filter((c) => c.kind === 'room').map(item);
   box.replaceChildren(...recentPart(), ...open.filter(top).sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]).map(item),
-    ...(more.length ? [h('h2', { class: 'nav-head' }, 'More'), ...more] : []));
+    ...(more.length || rooms.length ? [h('h2', { class: 'nav-head' }, 'More'), ...more] : []),
+    ...(more.length && rooms.length ? [h('hr', { class: 'rooms-rule' })] : []), ...rooms);
   const old = rows.filter((c) => c.archived);
   if (old.length) {
     box.append(h('details', { class: 'archived', open: old.some((c) => c.id === S.channel) },
@@ -1550,6 +1614,15 @@ function defaultChannel() {
   return open.find((c) => c.kind === 'main') || open.find((c) => c.kind === 'dm') || open[0] || S.channels[0];
 }
 
+// The list's header names the place; a room's name sits in the same outline, in its color, as its card in the menu.
+function showChannelName(c) {
+  const el = $('channel-name'), room = Boolean(c && c.kind === 'room');
+  el.textContent = typeof c === 'string' ? c : channelName(c);
+  el.classList.toggle('room-title', room);
+  if (room && c.color) el.style.setProperty('--room-color', c.color);
+  else el.style.removeProperty('--room-color');
+}
+
 async function route() {
   if (!S.ready) return;
   const { ch, tk, id } = parseHash();
@@ -1575,7 +1648,7 @@ async function route() {
   S.thread = needs || home ? '' : tk;
   document.body.classList.remove('drawer');
   document.body.dataset.view = S.thread ? 'thread' : 'threads';
-  $('channel-name').textContent = home ? 'Home' : S.needsView ? 'Needs you' : channelName(chan(ch));
+  showChannelName(home ? 'Home' : S.needsView ? 'Needs you' : chan(ch));
   $('new-thread').hidden = S.needsView || home;
   if (home) S.homeFocus = tk;
   composerView();
@@ -1713,7 +1786,7 @@ function apply(type, data, seq = 0) {
     // history the bot copies in when it starts): the open channel reads its
     // threads again. Another channel reads them when it is opened.
     if (data.id === S.channel) {
-      if (!S.needsView) $('channel-name').textContent = channelName(chan(data.id));
+      if (!S.needsView) showChannelName(chan(data.id));
       loadThreads(data.id);
     }
     return;
@@ -2296,6 +2369,72 @@ function ownerActions() {
     else if (S.editing && document.activeElement === $('text')) endEdit();
     else if (S.search) { closeSearch(); $('search-open').focus(); }
   });
+  // Cmd+K (Ctrl+K on Windows and Linux) jumps to a place or a conversation, from anywhere, the
+  // reply box too; / opens search outside a text field. Neither acts over another open dialog.
+  document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.defaultPrevented || !S.ready || S.halted) return;
+    const other = document.querySelector('dialog[open]:not(#jump)');
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+      if (other) return;
+      e.preventDefault();
+      openJump();
+    } else if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !other
+      && !e.target.closest?.('input, textarea, select, [contenteditable]')) {
+      e.preventDefault();
+      openSearch();
+    }
+  });
+}
+
+// Jump to: the places and the conversations the app holds (Recent and each place it has opened),
+// filtered by the words typed; the arrows move, Enter or a click opens, Escape closes.
+function openJump() {
+  let dlg = $('jump');
+  if (!dlg) {
+    dlg = h('dialog', { id: 'jump', 'aria-label': 'Jump to' });
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+    document.body.append(dlg);
+  }
+  const shown = (c) => c && !c.archived && !c.hidden;
+  const all = [
+    ...S.channels.filter(shown).sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9)
+      || channelName(a).localeCompare(channelName(b))).map((c) => ({ title: channelName(c), where: '', hash: hashFor(c.id) })),
+    ...new Map([...S.recent, ...[...S.threads.values()].flatMap((t) => t.list)]
+      .filter((r) => shown(chan(r.channel)) && conversation(r, chan(r.channel)))
+      .map((r) => [tkey(r.channel, threadOf(r)), { title: threadTitle(r), where: channelName(chan(r.channel)),
+        hash: hashFor(r.channel, threadOf(r)) }])).values(),
+  ];
+  const field = h('input', { type: 'search', placeholder: 'Jump to a place or conversation', autocomplete: 'off',
+    'aria-label': 'Jump to', role: 'combobox', 'aria-controls': 'jump-list', 'aria-expanded': 'true' });
+  const list = h('ul', { id: 'jump-list', role: 'listbox', 'aria-label': 'Places and conversations' });
+  let hits = [], at = 0;
+  const go = (it) => { dlg.close(); closeSearch(); goTo(it.hash); };
+  const draw = () => {
+    const q = norm(field.value);
+    hits = (q ? all.filter((it) => norm(`${it.title} ${it.where}`).includes(q)) : all).slice(0, 12);
+    at = Math.min(at, Math.max(hits.length - 1, 0));
+    list.replaceChildren(...hits.map((it, i) => h('li', { id: `jump-${i}`, role: 'option', class: i === at ? 'on' : null,
+      'aria-selected': String(i === at), onclick: () => go(it) },
+    h('span', { class: 'j-title' }, it.title), it.where ? h('span', { class: 'j-where' }, it.where) : null)));
+    if (!hits.length) list.append(h('li', { class: 'j-none' }, 'Nothing matches.'));
+    if (hits.length) field.setAttribute('aria-activedescendant', `jump-${at}`); else field.removeAttribute('aria-activedescendant');
+  };
+  field.addEventListener('input', () => { at = 0; draw(); });
+  field.addEventListener('keydown', (e) => {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && hits.length) {
+      e.preventDefault();
+      at = (at + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length;
+      draw();
+      $(`jump-${at}`).scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter' && !e.isComposing && hits[at]) {
+      e.preventDefault();
+      go(hits[at]);
+    }
+  });
+  dlg.replaceChildren(field, list);
+  draw();
+  if (!dlg.open) dlg.showModal();
+  field.focus();
 }
 
 /* -- Notifications (Web Push) --------------------------------------- */
@@ -3759,6 +3898,12 @@ function roomRow(c, link) {
       'aria-haspopup': 'dialog', onclick: () => roomMenu(c.id) }));
 }
 
+// The colors a room's menu offers, as the bot's ROOM_COLORS: six columns, the greys last.
+const ROOM_COLORS = ['#56C1FF', '#73FDEA', '#88FA4E', '#FFF56D', '#FF968D', '#FF8AD8',
+  '#00A2FF', '#16E7CF', '#61D836', '#FFD932', '#FF644E', '#FF42A1', '#0076BA', '#00AB8E', '#1DB100', '#FEAE00',
+  '#EE220C', '#D31876', '#004D80', '#006C65', '#017100', '#F27200', '#B51800', '#970E53',
+  '#FFFFFF', '#D6D5D5', '#929292', '#5E5E5E', '#000000'];
+
 function roomMenu(id, mode = 'menu') {
   const c = chan(id), dlg = $('room-menu');
   if (!c || !hasMenu(c)) return;
@@ -3774,8 +3919,13 @@ function roomMenu(id, mode = 'menu') {
       error, h('div', { class: 'dialog-actions' }, cancel, h('button', { type: 'submit', class: 'btn primary danger' }, 'Archive'))],
     menu: () => {
       const mute = item(c.muted ? 'Unmute' : 'Mute', () => roomDo(c, c.muted ? 'unmute' : 'mute'));
+      const now = (c.color || '').toUpperCase();
+      const colors = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Color' }, ROOM_COLORS.map((col, i) =>
+        h('button', { type: 'button', class: 'swatch' + (col === now ? ' on' : ''), css: { background: col },
+          'aria-label': `Color ${i + 1} of ${ROOM_COLORS.length}`, 'aria-pressed': String(col === now),
+          onclick: () => roomDo(c, 'color', col) })));
       return [...(c.kind !== 'room' ? [mute] : c.archived ? [item('Bring back', () => roomDo(c, 'unarchive'))]
-        : [item('Rename room', () => roomMenu(id, 'rename')), mute, item('Archive room', () => roomMenu(id, 'archive'), 'danger')]),
+        : [colors, item('Rename room', () => roomMenu(id, 'rename')), mute, item('Archive room', () => roomMenu(id, 'archive'), 'danger')]),
       ...(c.kind === 'room' && c.archived ? [] : [h('p', { class: 'sheet-note' }, c.muted
         ? 'Muted: its new messages do not add to the count on the menu.'
         : 'Mute it to keep its new messages off the count on the menu.')]), error, cancel];
@@ -3788,7 +3938,7 @@ function roomMenu(id, mode = 'menu') {
   if (field) { field.focus(); field.select(); }
 }
 
-async function roomDo(c, verb) {
+async function roomDo(c, verb, color) {
   const dlg = $('room-menu');
   let body;
   if (verb === 'rename') {
@@ -3797,11 +3947,11 @@ async function roomDo(c, verb) {
     if (typed === channelName(c)) { dlg.close(); return; }
     // The drawer shows a room without the bot's "ea-" mark; its new name keeps the mark.
     body = { name: /^ea-./.test(c.name || '') && !typed.startsWith('ea-') ? `ea-${typed}` : typed };
-  }
+  } else if (verb === 'color') body = { color };
   const buttons = [...dlg.querySelectorAll('button')];
   buttons.forEach((b) => { b.disabled = true; });
   try {
-    const row = verb === 'rename' ? await call('PATCH', `/channels/${enc(c.id)}`, body)
+    const row = body ? await call('PATCH', `/channels/${enc(c.id)}`, body)
       : await call('POST', `/channels/${enc(c.id)}/${verb}`);
     if (row && row.id) apply('channel', row);
     dlg.close();
@@ -3833,7 +3983,13 @@ function roomMenus() {
   // Nor does it press the sheet's button that opened under the finger: the sheet takes a click after a press of its own.
   dlg.addEventListener('pointerdown', () => { swallow = false; }, true);
   dlg.addEventListener('click', (e) => { if (swallow) { swallow = false; e.preventDefault(); e.stopPropagation(); } }, true);
-  list.addEventListener('contextmenu', (e) => { if (e.target.closest('.chan-row') && (timer || Date.now() - fired < 800)) e.preventDefault(); });
+  // A right-click on a place with a menu opens it, as the long press does with a finger.
+  list.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('.chan-row');
+    if (!row) return;
+    e.preventDefault();
+    if (!timer && Date.now() - fired >= 800) roomMenu(row.dataset.room);
+  });
 }
 
 /* -- Teaching: the welcome, the examples, New room, empty lists ------ */

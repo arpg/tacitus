@@ -32,7 +32,8 @@ RECENT = "#channel-list .recent .recent-item"
 
 # The drawer's list from the top: Recent, each place by its name, More, Archived.
 PARTS = """[...$('channel-list').children].map((el) => el.matches('section.recent') ? 'Recent'
-  : el.matches('h2') ? el.textContent : el.matches('details') ? 'Archived' : el.querySelector('.c-name').textContent)"""
+  : el.matches('h2') ? el.textContent : el.matches('hr') ? '---' : el.matches('details') ? 'Archived'
+  : el.querySelector('.c-name').textContent)"""
 
 
 def _talk(stub):
@@ -63,7 +64,7 @@ def test_recent_heads_the_drawer_and_opens_a_conversation_in_place(app, size):
     page.reload()
     page.wait_for_selector(RECENT, state="attached")  # in the drawer, shut on a phone
     assert page.evaluate(PARTS) == ["Recent", "Ask Tacitus", "Action requests", "More", "Scheduling",
-                                    "example-project", "Mail digests", "Archived"]
+                                    "Mail digests", "---", "example-project", "Archived"]
     rows = page.locator(RECENT)
     expect(rows).to_have_count(5)
     expect(rows.first.locator(".r-title")).to_have_text("A quick ask from before.")
