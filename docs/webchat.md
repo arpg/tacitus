@@ -1253,7 +1253,11 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
   owner's, `direct.frontend()` raises, so alert.py stages the alert for
   the owner's `alert.py flush`. `send_direct` posts as `chat_notify.post`
   does to the `personal` key.
-- Not mirrored: a Slack webhook post (no message id comes back).
+- Not mirrored: a Slack webhook post (no message id comes back). Beside a
+  web shadow, `chat_notify` posts to the EA channel (`ea-assistant`, with
+  no blocks: the briefings and the cron reports) through the composite
+  instead, with the bot's token, so they are mirrored; a composite that
+  cannot be built or refuses the post leaves it to the webhook.
 
 **The bot's side.** The serving `WebFrontend` runs a tail thread that
 reads `SELECT MAX(seq) FROM events` every `tail_s` seconds (1) and hands
