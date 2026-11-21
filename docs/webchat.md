@@ -271,7 +271,7 @@ subset and escapes everything else; it never injects HTML from text.
 | DELETE | `/api/messages/{ch}/{id}` | → the message JSON, `deleted` true, text "" (`edits` and `owner_reactions` dropped), with an `update` event; the same rules as PATCH; a removed message answers as it is |
 | POST | `/api/channels/{ch}/files` | multipart `file` (one part, or up to 10 parts in order), optional `text`, `thread_key`, `nonce` → the stored `file` message of the first file, which carries the text; each other file is a `file` message of its own after it in the same thread (the stream brings them); dispatches one `InboundMessage` with `files=[FileRef, ...]`, every file in order. A `nonce` the browser sent before answers the same row and dispatches nothing, as for a message; 400 for more than 10 files |
 | GET | `/api/files/{id}` | the bytes, `Content-Disposition: attachment` |
-| POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?, "text"?}` → `{"ok": true}`; dispatches an `ActionEvent` (`source` `button` or `select`); `text` is the owner's line, kept on one line of 300 characters at most and only for an action the card stored with `ask` |
+| POST | `/api/cards/{ch}/{id}/actions` | `{"action_id", "value"?, "selected"?, "text"?}` → `{"ok": true, "trigger"}`; dispatches an `ActionEvent` (`source` `button` or `select`); `text` is the owner's line, kept on one line of 300 characters at most and only for an action the card stored with `ask` |
 | GET | `/api/events` | SSE; `Last-Event-ID` or `?since=<seq>` replays from that seq; `id:` is the event seq; `event:` is the type; `data:` is the message JSON (`channel` events carry the channel row, `light` events the status light's summary as `GET /api/status` gives it, without `details` (Status light), `home` events `{"at"}` or `{"report"}` (Home changed; each app reads `/api/home` again for its own zone), `thread_state` events `{"channel", "thread_key", "state", "by", "reason", "at", "stale", "tap"}` (`tap`: the state says only that a card waits, Action requests), `release` events `{"bundle"}` when the bot signs a new release of the app, `read` events `{"channel", "thread_key", "unread", "unread_threads", "as_of"}` when a thread read on some device changes the channel's counts, `thread_key` "" for the whole channel); a `: ping` comment every 20 s |
 | POST | `/api/pair` | `{"token"}` → sets the cookie |
 | GET | `/api/push/vapid` | `{"key": "<base64url P-256 point>"}`, the `applicationServerKey`; 404 when push is off |
@@ -1119,6 +1119,30 @@ the web front end implements it. A name the primary holds is a 409, and any othe
 502 that leaves the room as it was. Archiving needs no new verb: every
 frontend archives.
 
+## Windows
+
+A card button may open a window (a modal, Slack's view shape), as Edit on
+a draft's Send card does. Each click on the web gets a trigger
+(`WEB_TRIGGER`, `web:` and a random part) in its `ActionEvent` and in the
+route's answer. The core calls `open_modal(trigger, view)` as on Slack; the
+web front end takes a view only for a trigger it minted, one per click.
+
+| Method | Path | Body → answer |
+|---|---|---|
+| GET | `/api/modals/{trigger}` | → `{"modal": view or null}`, after the core has handled the click (at most 20 s); the view without `callback_id` and `private_metadata` |
+| POST | `/api/modals/{trigger}` | `{"values": {block_id: {action_id: "text or option value"}}}` → `{"ok": true}`; dispatches a `ViewEvent` as the owner |
+
+The app shows the view's context and section lines, and its input blocks:
+a text field (`plain_text_input`, multiline or not) or a choice
+(`static_select`). Save sends the values. The server builds the
+`ViewEvent` from the stored view: its `callback_id` and `private_metadata`,
+and only the values of its input blocks, in Slack's shape (`{"value": ...}`,
+or `{"selected_option": {"value": ...}}`). A required field left empty, a
+text longer than 3,000 characters or an option the view lacks is a 400,
+and the window stays open. A saved window closes (404 after); an unsaved
+one is dropped after 30 minutes. A device on the relay below "all" may
+not save a window, as it may not press a card button.
+
 ## Shadow mode (C)
 
 `ShadowFrontend(primary, shadow)`:
@@ -1156,8 +1180,9 @@ frontend archives.
 - Reads (`thread_replies`, `recent_messages`, `channel_info`,
   `channel_members`, `archived_map`, `message_posted_at`, `download`,
   `permalink`, `room_url`, `mention`, `is_dm`, `dm_channel`,
-  `prompt_strings`, `llm_tool_grants`, `publish_home`, `open_modal`) go
-  to the primary.
+  `prompt_strings`, `llm_tool_grants`, `publish_home`) go to the
+  primary. `open_modal` goes to the shadow for a web click's trigger
+  (Windows), else to the primary.
 - Inbound from the primary: the composite wraps the primary's registry
   dispatch so an owner `InboundMessage` is mirrored into the shadow
   (`author = "owner"`) before the core handles it and a `channel_rename`
@@ -1174,7 +1199,8 @@ frontend archives.
   this list, never by the prefix, which anything that posts as the bot
   could write. A click
   is dispatched as an `ActionEvent` whose `card` ref is already the
-  primary's. A file goes through `primary.upload` the same way. A room's
+  primary's, and keeps its web trigger; a window saved on the web is
+  dispatched as a `ViewEvent` with `user_id = primary.owner_id`. A file goes through `primary.upload` the same way. A room's
   rename or archive from the app goes to the primary (Rooms).
 - Tests use two `MemoryFrontend`s (or a `MemoryFrontend` primary and a
   real `WebFrontend` on an ephemeral port) and assert both sides hold

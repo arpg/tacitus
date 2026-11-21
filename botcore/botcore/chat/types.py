@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 THREAD_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:%-]{0,399}$")
+# The trigger of a click on the web chat: a window (modal) it opens shows
+# there, never on the primary.
+WEB_TRIGGER = "web:"
 
 # Confirmation codes use an alphabet without 0/O and 1/I, so a code read
 # off a phone screen cannot be mistyped between look-alike characters.

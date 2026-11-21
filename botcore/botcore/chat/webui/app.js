@@ -660,13 +660,71 @@ async function act(msg, body, box) {
   controls.forEach((c) => { c.disabled = true; });
   note.textContent = 'Sending...';
   try {
-    await call('POST', `/cards/${enc(msg.channel)}/${enc(msg.id)}/actions`, body);
+    const r = await call('POST', `/cards/${enc(msg.channel)}/${enc(msg.id)}/actions`, body);
     note.textContent = 'Sent. The card updates when Tacitus answers.';
+    // A button that opens a window (Edit) answers it here once Tacitus has it.
+    const w = r && r.trigger ? await call('GET', `/modals/${enc(r.trigger)}`) : null;
+    if (w && w.modal) { note.textContent = ''; openModal(r.trigger, w.modal); }
   } catch (e) {
     note.textContent = e.status === 403 && T.relay ? noCards() : `Not sent: ${e.message}`;
   } finally {
     controls.forEach((c) => { c.disabled = false; });
   }
+}
+
+// A window a card button opened, in Slack's view shape: its text lines and
+// its inputs (text, or a choice); Save sends the inputs back to Tacitus.
+function openModal(trigger, view) {
+  let dlg = $('modal');
+  if (!dlg) {
+    dlg = h('dialog', { id: 'modal', 'aria-labelledby': 'modal-title' });
+    document.body.append(dlg);
+  }
+  const txt = (o) => String((o && o.text) || '');
+  const fields = [];
+  const form = h('form', { novalidate: true }, h('h2', { id: 'modal-title' }, txt(view.title) || 'Edit'));
+  for (const b of view.blocks || []) {
+    if (b.type === 'context') (b.elements || []).forEach((e) => form.append(cardText(txt(e), 'sheet-note')));
+    else if (b.type === 'section' && b.text) form.append(cardText(txt(b.text), 'card-line'));
+    else if (b.type === 'input' && b.element) {
+      const el = b.element;
+      const id = `modal-f${fields.length}`;
+      let input;
+      if (el.type === 'static_select') {
+        const at = el.initial_option ? el.initial_option.value : '';
+        input = h('select', { id }, b.optional ? h('option', { value: '' }, '') : null,
+          (el.options || []).map((o) => h('option', { value: o.value, selected: o.value === at }, txt(o.text))));
+      } else {
+        input = h(el.multiline ? 'textarea' : 'input', { id, maxlength: 3000, rows: el.multiline ? 12 : null });
+        input.value = el.initial_value || '';
+      }
+      fields.push([b.block_id, el.action_id, input]);
+      form.append(h('label', { for: id }, txt(b.label)), input);
+    }
+  }
+  const err = h('p', { class: 'error', 'aria-live': 'polite' });
+  const save = h('button', { type: 'submit', class: 'btn primary' }, txt(view.submit) || 'Save');
+  form.append(err, h('div', { class: 'dialog-actions' },
+    h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, txt(view.close) || 'Cancel'), save));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const values = {};
+    for (const [bid, aid, input] of fields) (values[bid] ||= {})[aid] = input.value;
+    save.disabled = true;
+    err.textContent = '';
+    try {
+      await call('POST', `/modals/${enc(trigger)}`, { values });
+      dlg.close();
+      toast('Saved. The card updates when Tacitus answers.');
+    } catch (x) {
+      err.textContent = x.message;
+    } finally {
+      save.disabled = false;
+    }
+  });
+  dlg.replaceChildren(form);
+  if (!dlg.open) dlg.showModal();
+  (fields[0] ? fields[0][2] : save).focus();
 }
 
 const noCards = () => (T.rec && T.rec.hosted ? 'Approve this in Tacitus on your phone: this computer'

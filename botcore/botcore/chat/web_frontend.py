@@ -227,6 +227,7 @@ still reaches its conversation.
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import hmac
 import http.cookies
@@ -277,6 +278,7 @@ from .cards import ConfirmationCard, action_text
 from .text import mrkdwn_to_markdown
 from .types import (
     THREAD_KEY_RE,
+    WEB_TRIGGER,
     ActionEvent,
     ChannelInfo,
     FileRef,
@@ -284,6 +286,7 @@ from .types import (
     MessageRef,
     RoomRef,
     Status,
+    ViewEvent,
 )
 
 log = logging.getLogger("chat.web")
@@ -385,6 +388,12 @@ OWNER_REACTIONS = {"+1": "\U0001f44d", "white_check_mark": "✅", "heart": "❤�
 # Seconds after posting in which the owner may edit or remove a message.
 EDIT_WINDOW_S = 15 * 60
 NONCE_TTL_S = 15 * 60
+# A window (a modal) a card button opens (WEB_TRIGGER): the app waits up to
+# MODAL_WAIT_S for the view and may save it within MODAL_TTL_S; a typed value
+# is at most MODAL_TEXT_MAX characters, Slack's own limit for a text input.
+MODAL_WAIT_S = 20
+MODAL_TTL_S = 30 * 60
+MODAL_TEXT_MAX = 3000
 NONCE_MAX_CHARS = 64
 # Search: the most hits one search answers, a hit's snippet, the longest query.
 SEARCH_CAP = 200
@@ -2899,6 +2908,9 @@ class WebFrontend(ChatFrontend):
         self._push: web_push.Pusher | None = None
         self._life_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
+        # trigger -> {"at", "view", "ready"}: the windows card buttons opened
+        self._modals: dict[str, dict] = {}
+        self._modals_lock = threading.Lock()
         self._rooms_lock = threading.Lock()
         # One pairing attempt at a time, so the pause after a wrong token
         # bounds the rate of guesses.
@@ -4380,6 +4392,100 @@ class WebFrontend(ChatFrontend):
     def llm_tool_grants(self) -> str:
         return ""
 
+    # windows (modals) a card button opens
+
+    def new_modal_trigger(self) -> str:
+        """A trigger for one click: open_modal takes a view only for a
+        trigger minted here, and the app that clicked fetches it."""
+        trigger = WEB_TRIGGER + secrets.token_urlsafe(16)
+        now = time.time()
+        with self._modals_lock:
+            for k in [k for k, v in self._modals.items() if now - v["at"] > MODAL_TTL_S]:
+                self._modals.pop(k, None)
+            self._modals[trigger] = {"at": now, "view": None, "ready": threading.Event()}
+        return trigger
+
+    def open_modal(self, trigger_id: str, view: dict) -> bool:
+        """Hold the view for the app whose click minted the trigger; one
+        view per click."""
+        with self._modals_lock:
+            slot = self._modals.get(str(trigger_id or ""))
+            if slot is None or slot["view"] is not None or not isinstance(view, dict):
+                return False
+            slot["view"] = view
+        slot["ready"].set()
+        return True
+
+    def modal_done(self, trigger: str) -> None:
+        """The core has handled the click: an app waiting for its window
+        hears now that it opened none."""
+        with self._modals_lock:
+            slot = self._modals.get(trigger)
+        if slot is not None:
+            slot["ready"].set()
+
+    def run_then_done(self, fn: Callable[[], None], trigger: str) -> None:
+        try:
+            fn()
+        finally:
+            self.modal_done(trigger)
+
+    def modal_view(self, trigger: str, wait_s: float = MODAL_WAIT_S) -> dict | None:
+        """The view the click opened, as the app shows it (no callback id
+        or metadata), after waiting up to wait_s; None when it opened none."""
+        with self._modals_lock:
+            slot = self._modals.get(trigger)
+        if slot is None:
+            raise _HttpError(404, "no such window")
+        slot["ready"].wait(wait_s)
+        view = slot["view"]
+        if view is None:
+            return None
+        return {k: v for k, v in view.items() if k not in ("private_metadata", "callback_id")}
+
+    def modal_submit(self, trigger: str, given: Any) -> Callable[[], None] | None:
+        """The owner saved a window: the values of its input blocks, in
+        Slack's shape, checked against the stored view, as a ViewEvent. The
+        callback id and metadata are the stored view's, never the browser's."""
+        with self._modals_lock:
+            slot = self._modals.get(trigger)
+        view = slot["view"] if slot else None
+        if view is None:
+            raise _HttpError(404, "This window has closed. Press the button again.")
+        given = given if isinstance(given, dict) else {}
+        values: dict = {}
+        for b in view.get("blocks") or []:
+            el = b.get("element") or {}
+            bid, aid = str(b.get("block_id") or ""), str(el.get("action_id") or "")
+            if b.get("type") != "input" or not bid or not aid:
+                continue
+            row = given.get(bid)
+            v = row.get(aid) if isinstance(row, dict) else None
+            v = v if isinstance(v, str) else ""
+            label = str((b.get("label") or {}).get("text") or "this field")
+            if el.get("type") == "static_select":
+                if v and v not in {str(o.get("value")) for o in el.get("options") or []}:
+                    raise _HttpError(400, f"No such choice for {label}.")
+                values[bid] = {aid: {"type": "static_select",
+                                     "selected_option": {"value": v} if v else None}}
+            else:
+                if len(v) > MODAL_TEXT_MAX:
+                    raise _HttpError(400, f"{label} is at most {MODAL_TEXT_MAX} characters.")
+                values[bid] = {aid: {"type": str(el.get("type") or "plain_text_input"),
+                                     "value": v}}
+            if not v.strip() and not b.get("optional"):
+                raise _HttpError(400, f"Fill in {label}.")
+        with self._modals_lock:
+            if self._modals.pop(trigger, None) is not slot:
+                raise _HttpError(404, "This window has closed. Press the button again.")
+        ev = ViewEvent(callback_id=str(view.get("callback_id") or ""), user_id=self.owner_id,
+                       private_metadata=str(view.get("private_metadata") or ""),
+                       values=values, raw={"source": "web"})
+        if self.inbound is not None:
+            self._hand_in(ev)
+            return None
+        return lambda: self._dispatch(ev)
+
     # shadow mode: the composite's writes, with the primary's ids
 
     def mirror_channel(self, id: str, name: str, kind: str, archived: bool = False, *,
@@ -4535,6 +4641,9 @@ class WebFrontend(ChatFrontend):
                 if isinstance(ev, ActionEvent):
                     if not self.registry.dispatch_action(ev):
                         log.info("web chat: no handler for action %s", ev.action_id)
+                elif isinstance(ev, ViewEvent):
+                    if not self.registry.dispatch_view(ev):
+                        log.info("web chat: no handler for window %s", ev.callback_id)
                 else:
                     self.registry.dispatch_message(ev)
             except Exception:
@@ -4716,7 +4825,8 @@ class WebFrontend(ChatFrontend):
                     pass
 
     def web_action(self, channel: str, msg_id: str, action_id: str,
-                   selected: str = "", text: str = "") -> Callable[[], None] | None:
+                   selected: str = "", text: str = "",
+                   trigger_id: str = "") -> Callable[[], None] | None:
         """Check a click against the stored card and build its ActionEvent;
         the value is the one stored with the card, never the browser's.
         `text` is the owner's line, kept only for an action the card
@@ -4745,7 +4855,7 @@ class WebFrontend(ChatFrontend):
                          card=MessageRef(channel, msg_id, row["thread_key"], row["posted_at"]),
                          value=value, source=source, selected=selected,
                          block_id=str(card.get("block_id") or ""), raw={"source": "web"},
-                         text=text)
+                         text=text, trigger_id=trigger_id)
         if self.inbound is not None:
             self._hand_in(ev)
             return None
@@ -5156,6 +5266,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "light": fe.light is not None,
                                  "home": fe.home is not None})
                 return None
+            if n == 2 and segs[0] == "modals":
+                # The window a card click opened, once the core opens it.
+                self._json(200, {"modal": fe.modal_view(segs[1])})
+                return None
             if segs == ["push", "vapid"]:
                 self._json(200, {"key": self._pusher().vapid.public_key})
                 return None
@@ -5367,9 +5481,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(action_id, str) or not action_id:
                     raise _HttpError(400, "action_id is required")
                 selected, text = body.get("selected"), body.get("text")
+                trigger = fe.new_modal_trigger()
                 after = fe.web_action(segs[1], segs[2], action_id,
                                       selected if isinstance(selected, str) else "",
-                                      text if isinstance(text, str) else "")
+                                      text if isinstance(text, str) else "", trigger)
+                if after is None:
+                    fe.modal_done(trigger)
+                else:
+                    after = functools.partial(fe.run_then_done, after, trigger)
+                self._json(200, {"ok": True, "trigger": trigger})
+                return after
+            if n == 2 and segs[0] == "modals":
+                # Saving a window a card button opened (a draft's text): the
+                # same lock as the card's buttons.
+                self._refuse_relay_deny("act on a card")
+                after = fe.modal_submit(segs[1], self._read_json().get("values"))
                 self._json(200, {"ok": True})
                 return after
         raise _HttpError(404, "not found")
