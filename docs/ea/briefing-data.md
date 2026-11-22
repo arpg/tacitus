@@ -22,6 +22,14 @@ The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:
   with the reason `window opens today`, plus `at <time>` when its
   description names a clock time: it was parked for this day.
 - `everything_else`: actionable but not top-ranked — digest as one line.
+- `letter_cases`: one entry per letter the user was asked to write
+  (letters.py, letter_surface.py): `line` (the whole line, at the
+  case's keep level), `name`, `next_due`, `due_in`, `overdue`,
+  `submitted`, `total`, `undated`, `new` (no answer yet) and its open
+  `destinations` (name, due, state). Its destinations' rows and mail are
+  in no other list; a case due within 2 days ranks in `today_top` with
+  the ref `letter:<case id>`. `letter_cases_finished`: the cases whose
+  last destination was submitted since yesterday.
 - `handled_by_reply`: items the user already answered by email (matched
   against sent mail, in-thread or same person+subject). Never surface as
   open; recap in one line.

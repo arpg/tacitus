@@ -408,6 +408,20 @@ def _render_room_picker(card: ConfirmationCard) -> list[dict]:
     return blocks + _footer(card)
 
 
+def _render_letter(card: ConfirmationCard) -> list[dict]:
+    """A letter case: title, lines and fields as a plain card, the buttons,
+    and the menu of the other destinations after them (a "Submitted
+    another one" pick)."""
+    blocks = _title_and_lines(card)
+    if card.fields:
+        blocks.append(_fields_section(card.fields))
+    elements = [_button(a) for a in card.actions]
+    if card.select is not None and card.select.options:
+        elements.append(_select_element(card.select))
+    blocks.append(_actions_block(card, elements))
+    return blocks + _footer(card)
+
+
 def _render_browser(card: ConfirmationCard) -> list[dict]:
     # A form approval must show the whole bound payload. The generic
     # status renderer truncates long cards; plain text also prevents a
@@ -433,6 +447,8 @@ RENDERERS = {
     "bulk": _render_plain,
     "close": _render_plain,
     "replies": _render_plain,
+    "letter_ask": _render_plain,
+    "letter": _render_letter,
     "room_picker": _render_room_picker,
     "room": _render_room_picker,
 }

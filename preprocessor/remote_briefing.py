@@ -96,6 +96,7 @@ import draft_gate  # noqa: E402
 import institution as _institution  # noqa: E402
 import keep_gate  # noqa: E402
 import ledger as _ledger  # noqa: E402
+import letter_surface  # noqa: E402
 import remote_llm  # noqa: E402
 import sched_render  # noqa: E402
 
@@ -107,7 +108,7 @@ EXIT_OFF = 3
 AGENTS = ("morning-briefing", "afternoon-catchup")
 MAX_TOP, MAX_FLEX, MAX_DRAFTS, MAX_ESCALATE = 5, 4, 8, 3
 MAX_BACKLOG, MAX_BACKLOG_DECISIONS, MAX_QUEUE_NAMES = 8, 3, 5
-CAPS = {"R": 30, "D": 15, "V": 10, "L": 40}
+CAPS = {"R": 30, "D": 15, "V": 10, "L": 40, "C": 20}
 SOON_DAYS = 3
 ESCALATE_AGAIN = timedelta(days=7)
 QUEUE_MAX_AGE = timedelta(hours=72)
@@ -266,6 +267,8 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                                                      keep_gate.label_level(row))}
             if item["ledger_id"]:
                 seen_rows.add(item["ledger_id"])
+            if letter_surface.is_letter_row(row):
+                continue  # one line for its letter case (the C refs), never a reply
             if isinstance(row.get("close_proposal"), dict):
                 continue  # looks done: on the "Looks done?" line, not an ask
             if (optional or _attend_only(item["ask"])) and on_calendar(item["title"], d, b, today):
@@ -280,6 +283,8 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
         if not lid or lid in seen_rows or isinstance(o.get("close_proposal"), dict):
             continue
         seen_rows.add(lid)
+        if letter_surface.is_letter_row(o):
+            continue  # a letter's destination: its case is one C ref
         if _ledger.waiting_on_reply(o, today):
             continue  # his question is out: on the "Waiting on replies" line
         if o.get("merged_into"):
@@ -334,6 +339,12 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                                   or (brief or {}).get("latest") or ""),
                   "subject": str((brief or {}).get("subject") or ""),
                   "keep_level": keep_gate.label_level(o)})
+    # One item per letter case (letter_surface): its line is code's, its
+    # date the nearest open due date; the preprocessor took its
+    # destinations' rows and mail out of every list above.
+    for e in b.get("letter_cases") or []:
+        if isinstance(e, dict) and e.get("case"):
+            add("C", letter_surface.candidate(e))
     return out
 
 
@@ -404,7 +415,8 @@ def top_refs(b: dict, cands: dict[str, dict]) -> list[dict]:
     out = []
     for t in b.get("today_top") or []:
         ref = next((k for k, c in cands.items()
-                    if t.get("ref") and t.get("ref") in (c.get("message_id"), c.get("ledger_id"))), "")
+                    if t.get("ref") and t.get("ref") in (c.get("message_id"), c.get("ledger_id"),
+                                                         f"letter:{c.get('case') or ''}")), "")
         if ref:
             out.append({"ref": ref, "reason": t.get("reason") or ""})
     return out
@@ -438,6 +450,7 @@ He wants an ordered do-list fitted to the gaps in his day, then the flexes, then
 - flexes: at most 4 more refs, one short line each.
 - drafts: replies he would send that the item's summary and ask already answer: a yes, an answer he gave before, a link or a form, an intro, a meeting he already agreed. For each, what the reply must say in one or two sentences. When their ask is a question only he can answer (what he plans, what he needs, his use case, his preference), the reply only thanks them and says he will follow up; never answer for him, and never repeat their own message back to them. Never draft for money, a contract or a legal matter; a dean or a program officer; a decline; a decision only he can make; mail where he is only copied. Those go to needs_you.
 - An item with `owner_said` is a thread he already decided, in his words. Never draft against it and never put it on the do-list; when it says no reply goes out, leave it to code, which asks him once.
+- An item of kind `letter` is one letter he writes for a person, with all its destinations. It is work with dates, never a reply: it goes in get_done_today when its next date is close, else in flexes or nowhere (code lists it on its own line). Never in drafts, needs_you or escalate.
 - needs_you: refs with the decision in one line, and what happens once he decides.
 - escalate: at most 3 refs that need more than a reply or a decision: a document to write, a multi-step task, a reply the summary does not say enough to write. Give why, and the task for the assistant. Never an item marked `kept`: it stays on his own model, so it goes to needs_you.
 A ref goes in at most one of drafts, needs_you and escalate.
@@ -450,7 +463,7 @@ AFTERNOON_PROMPT = """You write a professor's short afternoon update for his ass
 It is {now}. The morning briefing already covered the day.
 
 - since_morning: at most 4 refs of mail that came in since the morning (R, D and V refs) and needs him, one short line each. Leave out what can wait. Never an item with `wrote_since` or `in_slack`: his sent mail or the EA channel already shows him on it, and the update lists those separately.
-- pending: at most 4 open items (any ref) with no action today that still need him, one short line each.
+- pending: at most 4 open items (any ref) with no action today that still need him, one short line each. An item of kind `letter` is a letter he writes, never a reply; code lists the letters due soon itself.
 Write short plain sentences. Never write an em-dash. Use only the items given, and pick them by ref.
 
 {rules}"""
@@ -604,6 +617,8 @@ def check_plan(obj: dict, cands: dict[str, dict], *, morning: bool) -> dict:
         # the EA channel) leaves "since this morning" for its own line.
         since, motion = [], []
         for p in picks("since_morning", 8):
+            if letter_surface.is_case(cands[p["ref"]]):
+                continue  # a letter case is no mail; the update lists it by date
             (motion if in_motion(cands[p["ref"]]) else since).append(p)
         return {"since_morning": since[:4], "pending": picks("pending", 4), "in_motion": motion[:4]}
     # No reply is drafted to an item he has already answered, in its thread
@@ -622,6 +637,10 @@ def check_plan(obj: dict, cands: dict[str, dict], *, morning: bool) -> dict:
     # do-list its line is code's own (_top_line), never an action made up.
     def his(items):
         return [p for p in items if not cands[p["ref"]].get("waiting")]
+    # A letter case is work with dates: on the do-list or the flexes, never
+    # a draft, a decision or a hand-off (letter_surface).
+    def work(items):
+        return [p for p in items if not letter_surface.is_case(cands[p["ref"]])]
     plan = {"get_done_today": owed(picks("get_done_today", MAX_TOP + 3))[:MAX_TOP],
             "flexes": [p for p in his(picks("flexes", MAX_FLEX + 2))
                        if not draft_gate.no_reply_said(cands[p["ref"]].get("owner_said"))][:MAX_FLEX],
@@ -629,9 +648,9 @@ def check_plan(obj: dict, cands: dict[str, dict], *, morning: bool) -> dict:
                        if cands[p["ref"]]["kind"] in ("reply", "dropped", "rsvp")
                        and not in_motion(cands[p["ref"]])]}
     used = {p["ref"] for p in plan["drafts"]}
-    plan["needs_you"] = [p for p in owed(picks("needs_you", 8)) if p["ref"] not in used]
+    plan["needs_you"] = [p for p in work(owed(picks("needs_you", 8))) if p["ref"] not in used]
     used |= {p["ref"] for p in plan["needs_you"]}
-    esc = [p for p in his(picks("escalate", MAX_ESCALATE)) if p["ref"] not in used]
+    esc = [p for p in work(his(picks("escalate", MAX_ESCALATE))) if p["ref"] not in used]
     # A thread kept from hosted models below Summary is never handed to
     # one (keep_gate), whatever the model picked: it is the owner's, in
     # code's own words, and the plan's words about the mail stay out.
@@ -1285,9 +1304,27 @@ def _kept_text(c: dict, *, draft: bool = False) -> str:
 def _hide_kept(cands: dict[str, dict], lists: dict) -> dict:
     """`lists` with each kept item's line in code's fixed words, whatever
     the plan or the review wrote for it."""
-    return {sec: [(r, _kept_text(cands[r], draft=sec == "draft") if _kept(cands[r]) else line)
+    return {sec: [(r, _kept_text(cands[r], draft=sec == "draft")
+                   if _kept(cands[r]) and not letter_surface.is_case(cands[r]) else line)
                   for r, line in items]
             for sec, items in lists.items()}
+
+
+def _cased(cands: dict[str, dict], lists: dict, when=None) -> dict:
+    """`lists` with each letter case's line in code's words
+    (letter_surface.post_line), whatever section it is in; on the do-list
+    with its window (`when`, {ref: window})."""
+    when = when or {}
+    return {sec: [(r, letter_surface.post_line(cands[r], when.get(r, "") if sec == "top" else "")
+                   if letter_surface.is_case(cands[r]) else line) for r, line in items]
+            for sec, items in lists.items()}
+
+
+def _with_letters(cands: dict[str, dict], lists: dict) -> dict:
+    """`lists` and the Letters list: each case no section names, nearest
+    due date first."""
+    shown = {r for items in lists.values() for r, _l in items}
+    return dict(lists, letters=letter_surface.letters_section(cands, shown))
 
 
 def _row_kept(o: dict) -> bool:
@@ -1378,13 +1415,15 @@ def shown_refs(cands: dict[str, dict], plan: dict, drafts: list[dict], escalated
         listed += [d["ref"] for d in drafts] + [e["ref"] for e in escalated]
         listed += _soon_refs(cands, today, set(listed))
         lists = _morning_lists(cands, plan, drafts, escalated, {}, today)
+        listed += [r for r, _l in lists.get("letters") or []]
     else:
         listed = [p["ref"] for k in ("since_morning", "in_motion", "pending")
                   for p in plan.get(k) or []]
         listed += [d["ref"] for d in drafts]
         tomorrow = today + timedelta(days=1)
         listed += [r for r, c in cands.items() if _date(c.get("due")) == tomorrow]
-        lists = _afternoon_lists(cands, plan, {}, drafts)
+        lists = _afternoon_lists(cands, plan, {}, drafts, today)
+        listed += [r for r, _l in lists.get("letters") or []]
     listed += queue_view(cands, drafts, lists).get("named") or []
     return [r for r in dict.fromkeys(listed) if r in cands]
 
@@ -1488,6 +1527,7 @@ def _morning_lists(cands: dict[str, dict], plan: dict, drafts: list[dict],
         "escalated": [(e["ref"], f"{_line_of(cands[e['ref']])}: {_clean(e.get('why'), 140)}")
                       for e in escalated],
     }
+    lists = _with_letters(cands, _cased(cands, lists, {p["ref"]: p.get("when") or "" for p in top}))
     return _hide_kept(cands, _reviewed(cands, _one_per_thread(cands, lists), audit))
 
 
@@ -1523,7 +1563,8 @@ def _one_per_thread(cands: dict[str, dict], lists: dict) -> dict:
     return out
 
 
-def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict, drafts=()) -> dict:
+def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict, drafts=(),
+                     today: date | None = None) -> dict:
     """The afternoon post's sections as {key: [(ref, line)]}. `drafts` are
     the reply queue's from this run: a staged one is a "draft" line, a
     decision joins "pending" unless its thread is already in the post."""
@@ -1545,6 +1586,14 @@ def _afternoon_lists(cands: dict[str, dict], plan: dict, audit: dict, drafts=())
             lists["draft"].append((d["ref"], _draft_line(c, d)))
         elif not _thread_keys(c) & shown:
             lists["pending"].append((d["ref"], f"{_line_of(c)}: {_clean(d.get('decision'), 180)}"))
+    lists = _cased(cands, lists)
+    # The afternoon names a letter case only when a date is today or past
+    # (tomorrow's are in the Tomorrow preview).
+    named = {r for items in lists.values() for r, _l in items}
+    today = today or _now().astimezone(_tz()).date()
+    lists["letters"] = [(r, letter_surface.post_line(c)) for r, c in cands.items()
+                        if letter_surface.is_case(c) and r not in named and _date(c.get("due"))
+                        and _date(c.get("due")) <= today]
     return _hide_kept(cands, _reviewed(cands, lists, audit))
 
 
@@ -1557,8 +1606,11 @@ def room_entries(cands: dict[str, dict], lists: dict) -> list[dict]:
             out.append({"ref": ref, "section": sec, "line": line,
                         "ledger_id": c.get("ledger_id") or "",
                         "conversation_id": c.get("conversation_id") or "",
-                        "title": c.get("title") or "", "summary": c.get("summary") or "",
-                        "keep_level": c.get("keep_level") or ""})
+                        "title": letter_surface.room_title(c) or c.get("title") or "",
+                        "summary": c.get("summary") or "",
+                        "keep_level": c.get("keep_level") or "",
+                        **({"kind": "letter", "letter_rows": c.get("letter_rows") or []}
+                           if letter_surface.is_case(c) else {})})
     return out
 
 
@@ -1590,6 +1642,9 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
     if lists["flex"]:
         out += ["", ":leaves: *Flexes* (fine today, fine tomorrow)"]
         out += [f"- {line}" for _r, line in lists["flex"]]
+    if lists.get("letters"):
+        out += ["", f":memo: *Letters you are writing* ({len(lists['letters'])})"]
+        out += [f"- {line}" for _r, line in lists["letters"]]
     cal = _calendar(b, today)
     if cal:
         out += ["", ":clipboard: " + " · ".join(cal)]
@@ -1607,6 +1662,9 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
     ok = lists["draft"]
     if ok:
         handled.append(f"{len(ok)} draft(s) staged")
+    finished = letter_surface.finished_words(b.get("letter_cases_finished") or [])
+    if finished:
+        handled.append(finished)
     if handled:
         out += ["", ":white_check_mark: *Quietly handled*: " + "; ".join(handled) + "."]
     out += _waiting_line(b, today)
@@ -1660,8 +1718,8 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
     drafts = list(drafts)
     gone = set(audit.get("closed") or []) | set(audit.get("parked") or [])
     skip = {r for r, c in cands.items() if c.get("ledger_id") in gone}
-    lists = _afternoon_lists(cands, plan, audit, drafts)
     local = now.astimezone(_tz())
+    lists = _afternoon_lists(cands, plan, audit, drafts, local.date())
     out = [f":coffee: *Afternoon Update, {local:%a %b} {local.day}*"]
     if stale:
         out.append(":warning: The mail sync failed this run; this update uses older data.")
@@ -1687,13 +1745,16 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
         when = "all day" if e.get("isAllDay") else (sched_render.clock(start) if start else "")
         tom.append(f"- {when} {_clean(e.get('subject'), 80)}")
     tomorrow = local.date() + timedelta(days=1)
-    tom += [f"- Due tomorrow: {_kept_text(c) if _kept(c) else _line_of(c)}" for r, c in cands.items()
-            if _date(c.get("due")) == tomorrow and r not in skip]
+    tom += [f"- Due tomorrow: {letter_surface.post_line(c) if letter_surface.is_case(c) else _kept_text(c) if _kept(c) else _line_of(c)}"
+            for r, c in cands.items() if _date(c.get("due")) == tomorrow and r not in skip]
     if tom:
         out += ["", "*Tomorrow preview:*"] + tom[:10]
     if lists["pending"]:
         out += ["", "*Pending your response:*"]
         out += [f"- {line}" for _r, line in lists["pending"]]
+    if lists.get("letters"):
+        out += ["", f":memo: *Letters due* ({len(lists['letters'])}):"]
+        out += [f"- {line}" for _r, line in lists["letters"]]
     if lists["draft"]:
         out += ["", f":envelope: *Drafts ready* ({len(lists['draft'])}): Send, Edit or Handled on "
                     f"each block in {_card_place()}"]
@@ -1843,7 +1904,7 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
     morning = agent == "morning-briefing"
     local = now.astimezone(_tz())
     lists = (_morning_lists(cands, plan, drafts, escalated, audit, local.date()) if morning
-             else _afternoon_lists(cands, plan, audit, drafts))
+             else _afternoon_lists(cands, plan, audit, drafts, local.date()))
     entries = room_entries(cands, lists)
     import briefing_review
     review = (audit or {}).get("review")
@@ -2085,11 +2146,13 @@ def home_view(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dict]
     today = now.astimezone(_tz()).date()
     audit = checked or {}
     lists = (_morning_lists(cands, plan, drafts, escalated, audit, today) if agent == "morning-briefing"
-             else _afternoon_lists(cands, plan, audit, drafts))
+             else _afternoon_lists(cands, plan, audit, drafts, today))
     items = []
     for sec in HOME_SECTIONS.get(agent, ()):
         for ref, line in lists.get(sec) or []:
             c = cands.get(ref) or {}
+            if letter_surface.is_case(c):
+                continue  # Home lists each case from the store (letter_surface.home_left)
             # A kept item is its fixed line alone (_hide_kept made it), with
             # its level: no title, no sender beside it.
             kept = c.get("keep_level") if _kept(c) else ""

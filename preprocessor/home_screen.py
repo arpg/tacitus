@@ -695,10 +695,22 @@ def left(src: Sources) -> list[dict]:
                         "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
                         "mins": MINUTES["item"], "ask": f'About "{title}": ', "_lid": ref,
                         "_conv": str((row or {}).get("conversation_id") or "")})
+    out = _letters_left(out, src)
     rank = {"overdue": 0, "soon": 1, "calm": 2}
-    kinds = {"request": 0, "question": 1, "reply": 2, "item": 3}
+    kinds = {"request": 0, "question": 1, "reply": 2, "item": 3, "letter": 3}
     out.sort(key=lambda x: (rank.get(x["urgency"], 2), kinds[x["kind"]], x["due"] or float("inf")))
     return out[:LEFT_MAX]
+
+
+def _letters_left(out: list[dict], src: Sources) -> list[dict]:
+    """One item per letter case, kind `letter`, in place of its rows,
+    threads and cards (letter_surface.home_left); `out` as it is without
+    the store."""
+    try:
+        import letter_surface
+    except ModuleNotFoundError:  # imported as preprocessor.home_screen
+        from preprocessor import letter_surface
+    return letter_surface.home_left(out, src, cases=getattr(src, "letters", None))
 
 
 def question(src: Sources) -> dict | None:

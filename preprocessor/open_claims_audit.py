@@ -549,6 +549,13 @@ def prepare(*, agent: str, post: str, briefing: dict | None,
     notes and last action can say it is done. `claude_safe` drops kept
     mail from the evidence before the prompt is written."""
     open_entries = open_entries if open_entries is not None else ledger_mod.get_open_entries()
+    # A letter's destination is done only on its submission (letters.py):
+    # what a post says about it is never asked here (letter_surface).
+    try:
+        import letter_surface
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import letter_surface
+    open_entries = [e for e in open_entries if not letter_surface.is_letter_row(e)]
     today_top = (briefing or {}).get("today_top") or []
     found = extract_claims(post, open_entries, today_top, now=now)
     shown = _rendered_claims(rendered or [], open_entries, found, now)

@@ -54,6 +54,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import keep_gate  # noqa: E402
 import ledger as _ledger  # noqa: E402
+import letter_surface  # noqa: E402
 import remote_briefing as rb  # noqa: E402
 import remote_llm  # noqa: E402
 
@@ -61,7 +62,7 @@ RUNS = "audits.jsonl"
 AGENT = "weekly-audit"
 EXIT_OFF = 3
 MAX_CRITICAL, MAX_IMPORTANT, MAX_PATTERNS, MAX_HANDOFFS = 8, 8, 4, 3
-CAPS = {"L": 60, "D": 10}
+CAPS = {"L": 60, "D": 10, "C": 20}
 _PENDING = ("open", "snoozed", "follow_up")
 
 
@@ -84,7 +85,9 @@ def _date(s) -> date | None:
 def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
     """{ref: item}: the pending ledger rows, soonest deadline first, then
     the dropped threads no row covers."""
-    pending = [o for o in rows if (o.get("status") or "open") in _PENDING]
+    # A letter's destinations are one item, its case (the C refs below).
+    pending = [o for o in rows if (o.get("status") or "open") in _PENDING
+               and not letter_surface.is_letter_row(o)]
     far = date.max
 
     def order(o):
@@ -126,6 +129,12 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
             "ask": rec.get("ask") or "", "conversation_id": conv,
             "message_id": t.get("message_id") or "", "keep_level": keep_gate.label_level(t),
             "received": t.get("received") or "", "subject": t.get("subject") or "", "brief": None}
+    for n, e in enumerate([e for e in b.get("letter_cases") or [] if isinstance(e, dict)
+                           and e.get("case")][:CAPS["C"]], 1):
+        c = letter_surface.candidate(e)
+        due = _date(c.get("due"))
+        c.update(status="open", days_left=(due - today).days if due else None)
+        out[f"C{n}"] = c
     return out
 
 
@@ -238,6 +247,8 @@ def fallback_plan(cands: dict[str, dict]) -> dict:
 # ── the post ──────────────────────────────────────────────────────────
 
 def _line(c: dict, why: str) -> str:
+    if letter_surface.is_case(c):
+        return f"• {letter_surface.post_line(c)}"  # code's line, at the case's keep level
     if rb._kept(c):
         # Code's fixed words alone (keep_gate.kept_line): hosted turns read
         # the channel this post lands in.
@@ -287,9 +298,11 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
         out.extend(["", title] + (rows or ["• Nothing this week."]))
     section("🔴 Critical (action this week):", plan.get("critical") or [])
     section("🟡 Important (action soon):", plan.get("important") or [])
+    # A letter case's submitted destinations are one line (letter_surface).
+    done_rows = letter_surface.collapse_rows(closed, open_only=False)
     out.extend(["", "🟢 Completed this week:"]
                + ([f"• {keep_gate.KEPT_NAME}" if rb._row_kept(c) else
-                   f"• {rb._clean(c.get('description'), 120)}" for c in closed[:15]]
+                   f"• {rb._clean(c.get('description'), 120)}" for c in done_rows[:15]]
                   or ["• Nothing closed this week."]))
     out.extend(["", "💰 Reimbursement status:"]
                + ([f"• {keep_gate.KEPT_NAME}" if rb._row_kept(r) else

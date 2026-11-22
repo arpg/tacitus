@@ -89,6 +89,14 @@ If any of these are true, include a nudge in the update:
   ":sunrise: Early start tomorrow: [event] at [time]"
 - Friday afternoon: ":clipboard: Weekend preview: [Saturday/Sunday events]"
 
+### 4.4. Letter cases
+
+`letter_cases` has one entry per letter the user writes. Name a case
+only when its next date is today, tomorrow or past: print its `line` as
+it is, once, under `:memo: *Letters due*`. Never one line per portal
+mail, never as a reply owed. A row with a `letter` field is a
+destination of a case: never list it on its own.
+
 ### 4.5. Work the reply queue
 
 `reply_backlog` in the briefing JSON lists the threads that have waited
