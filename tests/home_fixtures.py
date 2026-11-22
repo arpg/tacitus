@@ -87,6 +87,39 @@ def _day(ts: float) -> str:
     return f"{d:%b} {d.day}"
 
 
+def _rows(today: date, now: float) -> dict:
+    """The open rows behind the items, as the lanes read them (metadata
+    merged): what each item's quick briefing is built from."""
+    tomorrow = (today + timedelta(days=1)).isoformat()
+    sent = datetime.fromtimestamp(now - 5 * 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "deadline-w1": {"id": "deadline-w1", "type": "deadline", "status": "open",
+                        "description": "Send the workshop review", "deadline": tomorrow,
+                        "from_name": "Jo Rivera", "from_email": "jo.rivera@example.org",
+                        "conversation_id": "conv-w1", "last_action": "",
+                        "thread_brief": {"ask": "Send your review of the four workshop papers",
+                                         "deadline": tomorrow, "subject": "Workshop reviews",
+                                         "needs_reply": False, "message_count": 2}},
+        "task-s2": {"id": "task-s2", "type": "task", "status": "open",
+                    "description": "Send the slides to the committee", "conversation_id": "",
+                    "notes": "You said you would send them this week.",
+                    "last_action": f"{today.isoformat()}: asked the committee for its slide template"},
+        "task-q1": {"id": "task-q1", "type": "task", "status": "open", "description": "Committee seat",
+                    "from_name": "Sam Rivera", "conversation_id": "conv-q1"},
+        "response-r1": {"id": "response-r1", "type": "response_needed", "status": "open",
+                        "description": "Needs response: Seminar date", "from_name": "Sam Rivera",
+                        "conversation_id": "conv-r1",
+                        "thread_brief": {"ask": "Pick a date in March for the seminar", "scheduling": "request",
+                                         "subject": "Seminar date", "needs_reply": True, "message_count": 1}},
+        "response-r2": {"id": "response-r2", "type": "response_needed", "status": "open",
+                        "description": "Needs response: Data access form", "from_name": "Alex Kim",
+                        "conversation_id": "conv-r2",
+                        "thread_brief": {"ask": "Sign the data access form and send it back",
+                                         "subject": "Data access form", "needs_reply": True,
+                                         "last_from_user": sent, "message_count": 3}},
+    }
+
+
 def sources(state: str = "normal", dm: str = "dm", main: str = "main") -> H.Sources:
     """One state's sources; `dm` and `main` are the channel ids of Action
     requests and Ask Tacitus (the stub's own, in the browser tests)."""
@@ -110,14 +143,18 @@ def sources(state: str = "normal", dm: str = "dm", main: str = "main") -> H.Sour
                                 when_="Thu 9:30 AM", posted=at(11, 5), dm=dm)],
             "done": [answered("w40", "Sent to Lee Example.", at(10, 40), dm)]}
     replies = [{"id": "response-r1", "subject": "Seminar date", "from_name": "Sam Rivera", "age_days": 2,
-                "conversation_id": "conv-r1"},
+                "conversation_id": "conv-r1", "type": "response_needed",
+                "ask": "Pick a date in March for the seminar", "scheduling": "request"},
                {"id": "response-r2", "subject": "Data access form", "from_name": "Alex Kim", "age_days": 4,
-                "conversation_id": "conv-r2"}]
+                "conversation_id": "conv-r2", "type": "response_needed",
+                "ask": "Sign the data access form and send it back", "scheduling": "none"}]
+    rows = _rows(today, now)
     gone = [closed("row-c1", "Parking permit renewal", at(7, 15), "lapsed"),
             closed("row-c2", "Reply to the visit request", at(10, 40), "linked_send", "conv-w40"),
             closed("row-c3", "Newsletter sign-up", at(12, 2), "detector_sibling"),
             closed("row-c4", "Room booking for Friday", at(12, 30), "user_confirmed")]
-    src = H.Sources(now=now, zone=ZONE, briefing=briefing, requests=reqs, replies=replies,
+    gone[0]["last_action"] = "The permit date passed, so it lapsed."
+    src = H.Sources(now=now, zone=ZONE, briefing=briefing, requests=reqs, replies=replies, rows=rows,
                     open_ids={"deadline-w1", "task-s2", "response-r1", "response-r2"}, closed=gone,
                     light="ok", reports=[{"kind": "morning-briefing", "text": REPORT, "at": at(4, 5)}],
                     checkin={"prev": at(8, 12), "last": now},

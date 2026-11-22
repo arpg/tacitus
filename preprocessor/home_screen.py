@@ -38,6 +38,13 @@ afternoon update are handed to Home instead of a post
 Home's "This morning's briefing", and one short push opens Home. With
 Home off, on Slack, or while Home's tick has not run in five minutes,
 they post as before.
+
+An item opened in place: each item Home lists carries its `ref`, and
+home_items.py builds the quick briefing and the choices for it and runs a
+choice (GET /api/home/item, POST /api/home/act, POST /api/home/undo; Home's
+item, act and undo). A Done, Not needed, Waiting or Later takes the item
+off Home at once and is written when its undo window ends (`hidden`, the
+tick).
 """
 from __future__ import annotations
 
@@ -213,6 +220,9 @@ class Sources:
     recent: list = field(default_factory=list)
     tone: str = DEFAULT_TONE
     dm: str = "dm"
+    # The refs of the items a choice on Home took off the list while its
+    # undo window runs (home_items.Acts): left out of the payload.
+    hidden: set = field(default_factory=set)
 
 
 def _today(src: Sources) -> date:
@@ -564,7 +574,8 @@ def left(src: Sources) -> list[dict]:
         urgency = str(r.get("urgency") or "calm")
         base = {"id": f"request:{r.get('id')}", "kind": "request",
                 "label": _plain(r.get("action"), 40) or "Request", "urgency": urgency, "due": due,
-                "fire": _fire(urgency, due, now), "mins": MINUTES["request"], "href": _request_href(r, src.dm)}
+                "fire": _fire(urgency, due, now), "mins": MINUTES["request"], "href": _request_href(r, src.dm),
+                "_rid": str(r.get("id") or ""), "_lid": ids[0] if len(ids) == 1 else "", "_conv": convs[0] if convs else ""}
         if is_kept(r.get("keep_level")):
             card = r.get("card") if isinstance(r.get("card"), dict) else {}
             out.append({**base, "title": kept_title(r["keep_level"], subject=_plain(r.get("what"), 100),
@@ -602,7 +613,7 @@ def left(src: Sources) -> list[dict]:
                             "label": label, "title": _plain(words, 300) or kept_title(level), "detail": "",
                             "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
                             "mins": MINUTES["question" if asks else "item"], "kept": level,
-                            **({"link": link} if link else {})})
+                            **({"link": link} if link else {}), "_lid": lid, "_conv": conv})
                 continue
             head = _plain(it.get("head"), 120)
             line = str(it.get("line") or "")
@@ -614,7 +625,7 @@ def left(src: Sources) -> list[dict]:
                         "kind": "question" if asks else "item", "label": label, "title": title or "An item",
                         "detail": detail if detail != title else "", "urgency": urgency, "due": due,
                         "fire": _fire(urgency, due, now), "mins": MINUTES["question" if asks else "item"],
-                        "ask": f'About "{head or title}": '})
+                        "ask": f'About "{head or title}": ', "_lid": lid, "_conv": conv})
     for e in src.replies or []:
         if not isinstance(e, dict):
             continue
@@ -635,7 +646,7 @@ def left(src: Sources) -> list[dict]:
                                             who=_plain(e.get("from_name") or e.get("from"), 60),
                                             subject=_plain(e.get("subject"), 100)),
                         "detail": waited, "urgency": urgency, "due": None, "fire": False,
-                        "mins": MINUTES["reply"], "kept": level})
+                        "mins": MINUTES["reply"], "kept": level, "_lid": lid, "_conv": conv})
             continue
         title = _plain(e.get("subject") or e.get("description"), 120) or "A reply"
         who = _plain(e.get("from_name") or e.get("from"), 60)
@@ -644,12 +655,12 @@ def left(src: Sources) -> list[dict]:
                         "title": _plain(queued["note"], 200), "detail": " · ".join(
                             x for x in (title, f"From {who}" if who else "", waited) if x),
                         "urgency": urgency, "due": None, "fire": False, "mins": MINUTES["question"],
-                        "ask": f'About the reply to "{title}": '})
+                        "ask": f'About the reply to "{title}": ', "_lid": lid, "_conv": conv})
             continue
         out.append({"id": f"reply:{lid}", "kind": "reply", "label": "Reply owed", "title": title,
                     "detail": " · ".join(x for x in (f"From {who}" if who else "", waited) if x),
                     "urgency": urgency, "due": None, "fire": False, "mins": MINUTES["reply"],
-                    "ask": f'About the reply to "{title}": '})
+                    "ask": f'About the reply to "{title}": ', "_lid": lid, "_conv": conv})
     if not kept_views:
         merged = {o.get("id") for o in (src.briefing or {}).get("open_obligations") or []
                   if isinstance(o, dict) and o.get("merged_into")}
@@ -676,12 +687,14 @@ def left(src: Sources) -> list[dict]:
                                                 who=_plain(row.get("from_name") or row.get("from_email"), 60),
                                                 subject=_plain(brief.get("subject"), 100)),
                             "detail": "", "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
-                            "mins": MINUTES["item"], "kept": row["keep_level"]})
+                            "mins": MINUTES["item"], "kept": row["keep_level"], "_lid": ref,
+                            "_conv": str(row.get("conversation_id") or "")})
                 continue
             out.append({"id": f"item:{ref or hashlib.sha1(title.encode()).hexdigest()[:10]}", "kind": "item",
                         "label": "To do", "title": title, "detail": _plain(t.get("reason"), 120),
                         "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
-                        "mins": MINUTES["item"], "ask": f'About "{title}": '})
+                        "mins": MINUTES["item"], "ask": f'About "{title}": ', "_lid": ref,
+                        "_conv": str((row or {}).get("conversation_id") or "")})
     rank = {"overdue": 0, "soon": 1, "calm": 2}
     kinds = {"request": 0, "question": 1, "reply": 2, "item": 3}
     out.sort(key=lambda x: (rank.get(x["urgency"], 2), kinds[x["kind"]], x["due"] or float("inf")))
@@ -739,7 +752,9 @@ def done(src: Sources, since: float | None = None) -> list[dict]:
             convs.add(conv)
         out.append({"id": f"closed:{row.get('id')}", "kind": "closed", "by": _closed_by(row),
                     "title": kept_name() if is_kept(row.get("keep_level"))
-                    else _plain(row.get("description"), 120) or "An item", "at": at})
+                    else _plain(row.get("description"), 120) or "An item", "at": at,
+                    **({"kept": row["keep_level"]} if is_kept(row.get("keep_level")) else {}),
+                    "_lid": str(row.get("id") or ""), "_conv": conv})
     reqs = src.requests or {}
     for r in list(reqs.get("waiting") or []) + list(reqs.get("done") or []):
         if not isinstance(r, dict):
@@ -750,7 +765,8 @@ def done(src: Sources, since: float | None = None) -> list[dict]:
         if card.get("kind") in DRAFT_KINDS and r.get("waiting") and posted and start <= posted <= src.now + 60:
             out.append({"id": f"drafted:{r.get('id')}", "kind": "drafted", "by": "tacitus",
                         "title": kept_name() if is_kept(r.get("keep_level"))
-                        else _plain(r.get("what"), 120) or "A reply", "at": posted, "href": href})
+                        else _plain(r.get("what"), 120) or "A reply", "at": posted, "href": href,
+                        "_rid": str(r.get("id") or "")})
         if r.get("kind") == "status" and not r.get("waiting") and not r.get("working") and changed \
                 and start <= changed <= src.now + 60:
             _ids, cv = _card_keys(card)
@@ -759,7 +775,8 @@ def done(src: Sources, since: float | None = None) -> list[dict]:
             convs.update(cv)
             out.append({"id": f"answered:{r.get('id')}", "kind": "answered", "by": "you",
                         "title": kept_name() if is_kept(r.get("keep_level"))
-                        else _plain(r.get("text"), 120) or "A request", "at": changed, "href": href})
+                        else _plain(r.get("text"), 120) or "A request", "at": changed, "href": href,
+                        "_rid": str(r.get("id") or "")})
     out.sort(key=lambda x: -x["at"])
     return out[:DONE_MAX]
 
@@ -1093,7 +1110,7 @@ def build(src: Sources) -> dict:
     template's; Home.payload() puts the model's line in where it has one."""
     evs = events(src)
     md = mode(src, evs)
-    todo = left(src)
+    todo = [x for x in left(src) if x["id"] not in src.hidden]
     got = done(src)
     today = _today(src)
     if md["kind"] == "normal":
@@ -1128,7 +1145,7 @@ def build(src: Sources) -> dict:
         "tally": {"done": len(got), "left": len(shown)},
         "left": [_public(x) for x in shown],
         "held": [_public(x) for x in held],
-        "done": got,
+        "done": [_public(d) for d in got],
         # The gap is for fitting the list in: none with nothing left, or on vacation.
         "next": gap if (gap and shown and md["kind"] != "vacation") else None,
         "since": since(src, todo, done(src, _ts((src.checkin or {}).get("prev")) or src.now)),
@@ -1164,7 +1181,12 @@ def mode_line(md: dict, shown: int, held: int, today: date) -> str:
 
 
 def _public(x: dict) -> dict:
-    return {k: v for k, v in x.items() if k not in ("mins",)}
+    """An item as the app gets it: its `ref` (the id GET /api/home/item
+    takes), and nothing of the bot's own (`mins`, the `_` keys that name
+    the row, the reply, the request behind it)."""
+    out = {k: v for k, v in x.items() if k != "mins" and not k.startswith("_")}
+    out["ref"] = x["id"]
+    return out
 
 
 def signature(p: dict) -> str:
@@ -1252,6 +1274,11 @@ class Home:
         self._asked: dict[str, float] = {}
         self._asking: set = set()
         self.settings = home_settings(getattr(fe, "cfg", {}))
+        items = _items()
+        # What only the bot runs for a choice on an item (the Replies card's
+        # draft turn and Not needed, an Outlook link): ea-chat-bot.py sets them.
+        self.hooks = items.Hooks()
+        self.acts = items.Acts(self)
 
     # sources
 
@@ -1350,7 +1377,9 @@ class Home:
         now = self.clock()
         if hit and now - hit[0] < FRESH_S and not checkin:
             return hit[1]
-        p = build(self.sources(key))
+        src = self.sources(key)
+        src.hidden = self._hidden()
+        p = build(src)
         self._greet(p)
         self._cache[key] = (now, p)
         return p
@@ -1406,13 +1435,21 @@ class Home:
 
     def tick(self) -> dict:
         """One look with the owner's home clock, and a `home` event when Home
-        changed (the front end marks the store after it: Home runs)."""
+        changed (the front end marks the store after it: Home runs). A choice
+        on an item whose undo window passed is written first (one a restart
+        left behind too)."""
+        try:
+            self.acts.commit_due()
+        except Exception as e:
+            log.warning("home: a choice on an item was not written: %s", e)
         self._cache.pop("", None)
         p = self.payload()
         sig = signature(p)
         if sig != self._meta("sig").get("sig"):
             self._meta_set("sig", {"sig": sig})
             self.fe.home_changed()
+        if self.background:
+            _prewarm(self.fe, p.get("left"))
         return p
 
     # the owner's vote on the greeting
@@ -1429,6 +1466,72 @@ class Home:
             self._meta_set("greeting", {})
             self._cache.clear()
         return {"ok": True, "vote": "up" if up else "down"}
+
+    # an item opened in place (home_items)
+
+    def _hidden(self) -> set:
+        try:
+            return set(self.acts.pending())
+        except Exception as e:
+            log.warning("home: the choices that wait for an undo could not be read: %s", e)
+            return set()
+
+    def changed(self) -> None:
+        """A choice changed what Home lists: read it again, and tell the apps."""
+        self._cache.clear()
+        try:
+            self.fe.home_changed()
+        except Exception as e:
+            log.warning("home: the apps were not told Home changed: %s", e)
+
+    def item(self, ref: str, device_zone: str = "") -> dict | None:
+        """GET /api/home/item: the item `ref` names, built at once (the quick
+        briefing and the choices), or None when Home does not list it."""
+        key = device_zone if _valid_zone(device_zone) else ""
+        src = self.sources(key)
+        return _items().item(src, ref, fe=self.fe, pending=self.acts.pending().get(ref))
+
+    def act(self, ref: str, choice: str, arg: str = "", version: str = "") -> tuple[dict, Callable | None]:
+        """POST /api/home/act: (the answer, a call to run once it is sent)."""
+        return self.acts.act(ref, choice, arg, version)
+
+    def undo(self, token: str) -> dict:
+        """POST /api/home/undo."""
+        return self.acts.undo(token)
+
+    def deeper(self, ref: str) -> dict | None:
+        """POST /api/home/deeper: start the item's deeper briefing
+        (home_deeper.start): {"ok", "state", "note"?}; None when Home does
+        not list the item."""
+        items = _items()
+        src = self.sources("")
+        f = items.find(src, ref)
+        if f is None:
+            return None
+        return items.deeper_start(self.fe, f, items.shape(f, src, fe=self.fe))
+
+
+def _items():
+    """home_items, beside this module."""
+    if __package__:
+        from . import home_items
+    else:  # preprocessor/ on sys.path
+        import home_items
+    return home_items
+
+
+def _prewarm(fe, left) -> None:
+    """The deeper briefings of the first items of Left for you, ahead of a
+    tap, where they cost no hosted plan (home_deeper.prewarm). Never
+    raises."""
+    try:
+        try:
+            import home_deeper
+        except ModuleNotFoundError:  # imported as preprocessor.home_screen
+            from preprocessor import home_deeper
+        home_deeper.prewarm(fe, left)
+    except Exception as e:
+        log.debug("home: no prewarm: %s", e)
 
 
 def _valid_zone(name: str) -> bool:
@@ -1458,7 +1561,7 @@ def _ledger_reads(zone: ZoneInfo, now: float) -> tuple[list, dict, list]:
         import sqlite3
         conn.row_factory = sqlite3.Row
         closed = [dict(r) for r in conn.execute(
-            "SELECT id, description, closed_at, conversation_id, metadata FROM ledger WHERE status IN "
+            "SELECT id, description, closed_at, conversation_id, metadata, last_action FROM ledger WHERE status IN "
             "('completed', 'closed') AND source IS NULL AND closed_at >= ? ORDER BY closed_at DESC LIMIT 200",
             (cutoff,))]
     finally:
