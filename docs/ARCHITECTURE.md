@@ -599,7 +599,18 @@ with no tagger call, the word match alone, where a generic name word scores
 nothing and a tie that name words decide places nothing. A row a project
 room's turn adds is linked to the room's project as it is written (the bot
 sets `EA_ROOM_PROJECT` for the turn; `ledger.py add` and `update` read it).
-The nightly reconcile links rows by the same test. Items the
+The nightly reconcile links rows by the same test. A letter case
+(`letters.py`; `letter_surface.py` builds what shows) is one item in all
+of this: the preprocessor takes its destinations' rows and mail out of
+every list and the ranking (`letter_surface.without`, `apply_briefing`),
+adds `letter_cases` with one code-built line per case at its keep level,
+and ranks a case due within two days into `today_top` (ref
+`letter:<case id>`). The remote lane gives each case a `C` ref that only
+the do-list or the flexes may take, prints code's line wherever it goes
+(the date banner when its next date is within three days, else the
+Letters list), and the pre-send review refuses to drop it or rewrite its
+line while a destination is open. A room places a case only by its rows'
+project links and names it by its person and kind. Items the
 remote model cannot handle go to a queue the bot drains each tick
 (`_remote_escalation_tick`): the pending hand-offs (up to two, the rest
 next tick) share one EA topic and one Claude session, which reads each

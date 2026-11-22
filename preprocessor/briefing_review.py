@@ -69,6 +69,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+import letter_surface  # noqa: E402
 
 REVIEW_LOG = "briefing-reviews.jsonl"
 LATEST = "briefing-review-latest.json"
@@ -94,10 +95,11 @@ SECTION_NAMES = {
     "due": "the date banner at the top", "followup": "a Follow-up due line",
     "since": "Since this morning", "pending": "Pending your response",
     "critical": "Critical", "important": "Important", "also": "Also open here (a room post)",
+    "letters": "Letters you are writing (one line per letter case)",
 }
 # Highest first: of two items on one row, the one in the earlier section stays.
 SECTION_RANK = ("top", "needs", "escalated", "critical", "since", "flex", "important",
-                "pending", "due", "followup")
+                "pending", "due", "letters", "followup")
 # The owner's own act on a row: a close with one of these is their decision.
 USER_CLOSE_SIGNALS = ("user_stated", "user_handled", "user_dashboard", "user_rule")
 # How far back the owner's own close of a thread holds a new draft on it.
@@ -143,6 +145,7 @@ Rules:
 - His own words (a `quote`, an `owner_said`) outrank the assistant's notes.
 - An item's `placement` is its own: `no_project` keeps it out of every room, `linked_to` keeps it in those rooms, and `owner_moved` is his move. Never move an item against it.
 - When the records do not settle it, keep the item.
+- An item with `letter_case` is one letter he writes for a person, with all its destinations. It is done only when every destination is submitted, and a reply in a thread is never a submission: never drop it and never rewrite its line. You may move it.
 - `why` is one short sentence for him, in plain words.
 - `notes` is at most 3 short sentences about the post as a whole; [] when there is nothing to say.
 
@@ -209,10 +212,9 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
     (ref, line) pairs, the follow-up lines (refs F1..) and each room's
     "Also open here" rows (refs A1..). Each item carries its ledger id
     and conversation id where it has them, and the rooms its ref goes to."""
-    order = [s for s in ("due", "top", "since", "critical", "flex", "important", "draft", "needs",
-                         "pending", "escalated") if s in lists] + \
-            [s for s in lists if s not in ("due", "top", "since", "critical", "flex", "important",
-                                           "draft", "needs", "pending", "escalated")]
+    known = ("due", "top", "since", "critical", "flex", "letters", "important", "draft", "needs",
+             "pending", "escalated")
+    order = [s for s in known if s in lists] + [s for s in lists if s not in known]
     rooms_of: dict[str, list[str]] = {}
     for p in room_posts or []:
         for r in p.get("refs") or []:
@@ -241,6 +243,10 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
                           "kept": keep_gate.kept(c.get("keep_level")),
                           "rooms": rooms_of.get(ref, []),
                           "owner_said": [d for d in c.get("owner_said") or [] if isinstance(d, dict)]})
+            case = letter_surface.review_record(c)
+            if case:
+                # One letter case with all its destinations: no reply makes it done.
+                items[-1]["letter_case"] = case
             by_ref[ref] = items[-1]
     for n, f in enumerate(follow_ups or [], 1):
         if isinstance(f, dict) and f.get("id"):
@@ -626,6 +632,10 @@ def item_record(it: dict, ledger: dict, *, level: str, projects: list[str], draf
         # Placement is the owner's or a room's own fact, not mail: it goes
         # at every keep level.
         out["placement"] = view
+    if it.get("letter_case"):
+        # Names, destinations, dates and states only, at the case's own
+        # keep level (letter_surface.entry): never the letter or materials.
+        out["letter_case"] = it["letter_case"]
     if not lid:
         out["row"] = None
         said = _owner_said_view(it, out)
@@ -877,6 +887,10 @@ def check_verdicts(obj: dict, packet: dict, *, agent: str, items: list[dict] | N
             continue
         if act not in ACTIONS:
             no(v, "unknown action")
+            continue
+        against = letter_surface.review_refusal(rec, act)
+        if against:
+            no(v, against)
             continue
         why = _one(v.get("why"), 160)
         if why and not _numbers_known(why, rec):
@@ -1714,7 +1728,7 @@ def review_post(agent: str, text: str, b: dict, *, cands: dict, plan: dict, draf
         return audit()
     today = now.astimezone(rb._tz()).date()
     lists = (rb._morning_lists(cands, plan, drafts, escalated, {}, today) if agent == "morning-briefing"
-             else rb._afternoon_lists(cands, plan, {}, drafts))
+             else rb._afternoon_lists(cands, plan, {}, drafts, today))
     try:
         posts = (rooms or rb.room_slices)(agent, cands, plan, drafts, escalated, {}, b,
                                           now=now, dry_run=True) or []

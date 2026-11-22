@@ -533,6 +533,17 @@ def _clock_time_in(text: str) -> str:
     return re.sub(r"\s+", "", m.group(1)).lower() if m else ""
 
 
+def _letter_view(open_obligations: list) -> dict:
+    """The letter cases the briefing shows (letter_surface.briefing_view),
+    {} without the store or on any failure: the briefing goes on as if
+    there were none."""
+    try:
+        return _letter_surface.briefing_view(open_obligations)
+    except Exception as e:
+        print(f"  Letter cases skipped: {str(e)[:160]}", file=sys.stderr)
+        return {}
+
+
 def briefing_rows(open_obligations: list, today_top: list, cap: int = 30) -> list:
     """The open rows the briefing JSON carries: the rows today_top names
     first, in its order, then the rest in theirs, `cap` in all. The lanes
@@ -2141,6 +2152,7 @@ def compute_merged_availability(
 # Obligations ledger management (SQLite via ledger.py)
 # -------------------------------------------------------------------
 import ledger as _ledger_mod
+import letter_surface as _letter_surface
 import ea_config as _ea_config
 import scheduled_sends as _scheduled_sends_mod
 
@@ -2913,11 +2925,14 @@ def run_full_daily(force_full: bool = False) -> dict:
     except Exception as e:
         print(f"  Merge marks skipped: {e}", file=sys.stderr)
 
+    # Letter cases (letter_surface): one item per case. Its destinations'
+    # rows and their mail never rank or list on their own.
+    letter_view = _letter_view(open_obligations)
     # Deterministic priority queue: ranking happens HERE, in code, so the
     # briefing leads with what needs doing instead of enumerating.
     today_top, everything_else = build_today_top(
-        needs_resp_delta, dropped_delta, deadlines, pending_rsvps,
-        open_obligations, load_vip_senders())
+        *_letter_surface.without(letter_view, needs_resp_delta, dropped_delta, deadlines,
+                                 pending_rsvps, open_obligations), load_vip_senders())
     if today_top:
         print(f"  Priority queue: {len(today_top)} today-top item(s), "
               f"{len(everything_else)} in the digest", file=sys.stderr)
@@ -3032,7 +3047,7 @@ def run_full_daily(force_full: bool = False) -> dict:
         "recent_teams_dms": teams_summary,
     }
 
-    return briefing
+    return _letter_surface.apply_briefing(briefing, letter_view)
 
 
 def run_scheduling_check() -> dict:
@@ -3309,7 +3324,7 @@ def run_full_weekly() -> dict:
         "pending_rsvps": pending_rsvps[:15],
     }
 
-    return briefing
+    return _letter_surface.apply_briefing(briefing, _letter_view(open_obligations))
 
 
 def run_list_digest() -> dict:

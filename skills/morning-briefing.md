@@ -414,6 +414,21 @@ is when it happens: once held, the row is done or stale, never overdue.
 A reminder the user wrote back on after its date is history. `today_top`
 marks both as "its [date] date passed; ..." with no OVERDUE; follow it.
 
+### 8a-1. Letter cases (from preprocessor)
+
+`letter_cases` holds one entry per letter the user was asked to write
+(a recommendation, a reference, a nomination), with all its
+destinations. Each entry's `line` is the whole line; print it as it is,
+never one line per portal mail, and never under Drafts ready, Needs you
+or the reply queue: a letter is work with dates, not a reply. An entry
+whose next date is within 3 days, or past (`overdue`), goes in the date
+banner (DUE SOON or OVERDUE); the rest go on one Letters list after the
+flexes, nearest date first. A row with a `letter` field in `ledger.py
+list` is a destination of one of these cases: never brief it on its own,
+and never propose to close it because of a reply in its thread. A
+`letter_cases_finished` entry is one "Quietly handled" clause. Never
+quote a letter's text or the person's materials.
+
 ### 8b. Pending RSVPs (from preprocessor)
 
 If `pending_rsvps` in the briefing JSON has entries:
@@ -500,6 +515,9 @@ line on what's next on the radar.]
 :leaves: *Flexes* (fine today, fine tomorrow)
 - [max 4 one-liners: the rest of today_top plus anything from
   everything_else you'd promote; everything else stays unsaid]
+
+:memo: *Letters you are writing* ([N])
+- [each `letter_cases` line not in the banner, as it is (step 8a-1)]
 
 :clipboard: [ONE compressed calendar line: "9:30 X · 11 Y · 2 Z"]
 
