@@ -1174,6 +1174,61 @@ def scheduling_rules_lists_canonical_four(output: str, context: dict) -> dict:
 
 
 # Registry for promptfoo: function name -> callable
+_LETTER_RULE = "Never draft an email reply to a letter request"
+_LETTER_DECISION = re.compile(r"will you write|write it\?|yes,? ask for materials|yes\s*/\s*no|"
+                              r"\byes\b.{0,40}\bno\b", re.I)
+
+
+def letter_request_one_decision(output: str, context: dict) -> dict:
+    """HARD SUCCESS: a letter request gets one decision, never a reply
+    draft (docs/ea/letters.md).
+
+    Prompt-only mode: the briefing skill carries the rule and the request
+    reaches the prompt. Full mode: no reply is drafted or suggested for
+    the request or the portal's mail, and the owner is asked the one
+    decision (will you write it? yes / ask for materials / no)."""
+    fixture_path = context.get("vars", {}).get("fixture_path", "")
+    try:
+        with open(fixture_path) as f:
+            fixture = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        return {"pass": False, "score": 0.0, "reason": f"fixture not read: {e}"}
+    person = "rowan"
+    if output.startswith("{"):
+        try:
+            data = json.loads(output)
+        except ValueError:
+            data = {}
+        skill = data.get("skill_instructions", "")
+        items = (data.get("briefing_data") or {}).get("new_needs_response") or []
+        problems = []
+        if _LETTER_RULE not in skill:
+            problems.append("the briefing skill does not carry the letter rule")
+        if not any(person in json.dumps(i).lower() for i in items):
+            problems.append("the request did not reach the prompt")
+        if problems:
+            return {"pass": False, "score": 0.0, "reason": "; ".join(problems)}
+        return {"pass": True, "score": 1.0, "reason": "rule and request are in the prompt"}
+    low = output.lower()
+    if person not in low:
+        return {"pass": False, "score": 0.0, "reason": "the letter request is not in the briefing"}
+    problems = []
+    for m in re.finditer(person, low):
+        item = _item_text(low, m.start())
+        hits = _reply_suggestions(item) + _affirmative_new_draft(item)
+        hits += [h for h in re.findall(r"draft(?:ed)? (?:a |the )?(?:yes|acceptance|reply|response)[^.]{0,40}", item)
+                 if not _NEGATIONS.search(item[:item.find(h)][-60:])]
+        if hits:
+            problems.append(f"reply drafted or suggested: {hits[0]!r}")
+            break
+    if not _LETTER_DECISION.search(low):
+        problems.append("the owner is not asked whether to write it")
+    del fixture
+    if problems:
+        return {"pass": False, "score": 0.0, "reason": "; ".join(problems)}
+    return {"pass": True, "score": 1.0, "reason": "one decision, no reply draft"}
+
+
 ASSERTIONS = {
     "no_overdue_completed": no_overdue_completed,
     "cc_only_no_reply_suggestion": cc_only_no_reply_suggestion,
@@ -1197,6 +1252,7 @@ ASSERTIONS = {
     "no_dead_scheduling_tools": no_dead_scheduling_tools,
     "scheduling_rules_has_canonical_block": scheduling_rules_has_canonical_block,
     "scheduling_rules_lists_canonical_four": scheduling_rules_lists_canonical_four,
+    "letter_request_one_decision": letter_request_one_decision,
 }
 
 

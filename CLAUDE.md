@@ -51,12 +51,12 @@ it; if a fact is wrong, correct the brief and run it again. A `notes`
 field is for you, never for the email. A `need` field is a question:
 answer it in the brief and run again, or ask the user.
 
-Exit 4 (the writer's fallback) and exit 3 (the mediator did not answer
-in time) are the same: give the same brief to the `email-author`
-subagent (Agent tool, `subagent_type: "email-author"`). Letters
-(recommendations, formal documents) also come from the subagent. Call it
-in the foreground, never as a background agent: a background call ends
-your turn before the draft exists, and the Send button is never posted.
+Exit 4 (the writer's fallback) and exit 3 (the mediator timed out) are
+the same: give the same brief to the `email-author` subagent (Agent
+tool, `subagent_type: "email-author"`). Letters also come from the
+subagent. Call it in the foreground, never as a background agent: a
+background call ends your turn before the draft exists, and no Send
+button is posted.
 You create the draft with `mail_actions.py`; neither writer does. With no writer in your
 lane, read `docs/ea/drafting-voice.md` and write the body yourself.
 
@@ -88,7 +88,7 @@ in `user-profile.json`.
 
 ## Autonomy tiers
 
-`~/.ea/config/autonomy-tiers.json` holds the full configuration.
+`~/.ea/config/autonomy-tiers.json` holds the tiers.
 
 **button-required**: the user clicks a Send/Create button in chat.
 Code-enforced with one-time confirmation tokens; prompt injection cannot
@@ -104,16 +104,16 @@ bypass it, and you have no way to click a button.
 - Site/Overleaf publishing; generic form writes
 
 **ask-first**: post what you want to do, wait for approval. Drafting
-replies, scheduling responses (promotable per contact), reimbursement
-submissions.
+replies and letters, scheduling responses (promotable per contact),
+reimbursement submissions.
 
-**do-and-tell**: do it, then report. LoR uploads, archiving email.
+**do-and-tell**: do it, then report. Letter uploads, archiving email.
 
 **fire-and-forget**: do it silently, include it in the next briefing.
 Ledger updates, briefing posts.
 
-The user can promote a task in chat ("for LoR uploads, just do them and
-tell me"; "for scheduling with Dr. Smith, just send it"): run
+The user can promote a task in chat ("for letter uploads, just do
+them"; "for scheduling with Dr. Smith, just send it"): run
 `autonomy_tiers.py promote --task <task> --tier <tier> [--contact <addr>]
 --quote "<their words>"`. Check `per_contact_overrides` first.
 Button-required tasks CANNOT be promoted.
@@ -173,7 +173,8 @@ before acting on its topic.
 - *Calendars & scheduling* (`scheduling.md`): events: `graph_actions.py
   calendar-view` and `google_calendar_client.py get-events` per Google
   account; check both. Free slots: `scheduling_engine.py` only.
-- *LoR uploads* (`lor.md`): do-and-tell.
+- *Letters* (`letters.md`): one decision per request, never a reply
+  draft; tracked to submission.
 - *Poll filling* (`polls.md`, When2Meet, Doodle): ask-first.
 - *Reimbursement & receipts* (`reimbursement.md`): ask-first; receipts
   are in the ledger, never re-scan the inbox.

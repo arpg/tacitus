@@ -18,7 +18,9 @@ reports. A short answer in the conversation does not.
 material as a local file and in the chat with the user: reviews of manuscripts or
 proposals, panel material, letters of recommendation, tenure and personnel
 letters, student records, and anything under a confidentiality rule or an NDA.
-When you are not sure, keep it local and ask.
+When you are not sure, keep it local and ask. `open` and `update` refuse a file
+under `~/.ea/letters/` unless the owner asked for a review there
+(`--owner-asked "<their words>"`).
 
 **Open a review.**
 1. Write the draft to `~/.ea/docs/<project>/<name>.md`, in the user's voice

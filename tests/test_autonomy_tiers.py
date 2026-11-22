@@ -135,6 +135,26 @@ def test_from_a_sandbox_the_promotion_is_staged_and_applied_with_the_users_words
         prefs.STAGED_FILE, prefs.REFUSED_FILE, at._resident_io.write_refused = saved
 
 
+def test_a_task_an_older_config_lacks_is_added_when_promoted():
+    """draft_letter came after many installs wrote their config: its
+    promotion adds it from the default, and show lists it."""
+    tmp = Path(tempfile.mkdtemp(prefix="ea-tiers-"))
+    path = _config(tmp)
+    rc, out = _run(["show", "--task", "draft_letter"], TIERS_FILE=path)
+    assert rc == 0 and out["task_tiers"]["draft_letter"]["tier"] == "ask-first"
+    assert out["task_tiers"]["draft_letter"]["default"] is True
+    rc, out = _run(["promote", "--task", "draft_letter", "--tier", "do-and-tell",
+                    "--quote", "just draft my letters ahead of time"], TIERS_FILE=path)
+    assert rc == 0 and out["promoted"]["was"] == "ask-first"
+    row = json.loads(path.read_text())["task_tiers"]["draft_letter"]
+    assert row["tier"] == "do-and-tell" and row["promoted"]["quote"] == "just draft my letters ahead of time"
+    template = json.loads((ROOT / "config" / "autonomy-tiers.json").read_text())["task_tiers"]
+    assert template["draft_letter"]["tier"] == "ask-first"
+    rc, out = _run(["promote", "--task", "no_such_task", "--tier", "do-and-tell", "--quote", "x"],
+                   TIERS_FILE=path)
+    assert rc == 2
+
+
 def test_the_verb_is_granted_where_preferences_is_and_the_core_names_it():
     for path, needle in ((ROOT / "run-agent.sh", "preprocessor/autonomy_tiers.py *)"),
                          (ROOT / "ea-chat-bot.py", "preprocessor/autonomy_tiers.py *),"),
