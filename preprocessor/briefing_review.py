@@ -749,13 +749,17 @@ def prompt_text(agent: str, packet: dict, *, profile: str, now: datetime, rules:
 # ── code's checks ─────────────────────────────────────────────────────
 
 def hard_checks(items: list[dict], ledger: dict, *, today: date, snapshots: dict | None = None,
-                keep_parked: bool = False) -> dict:
+                keep_parked: bool = False, pending: dict | None = None) -> dict:
     """{ref: verdict} from code alone, before any model: a draft on a
     conversation the owner closed in their own words is held; an item
     whose row is closed or snoozed leaves the post (`keep_parked`: the
     weekly audit lists snoozed rows on purpose); a row shown twice stays
-    in its first section only; audit text in a line is cut."""
+    in its first section only; audit text in a line is cut. `pending`
+    ({ledger id: choice}, home_items.pending_rows): the owner's Done, Not
+    needed, Waiting or Later on Home whose write waits for its undo window
+    counts as written: the row leaves the post, its draft is held."""
     snapshots = snapshots or {}
+    pending = pending or {}
     out: dict[str, dict] = {}
     seen: dict[str, str] = {}
     rank = {s: i for i, s in enumerate(SECTION_RANK)}
@@ -763,6 +767,16 @@ def hard_checks(items: list[dict], ledger: dict, *, today: date, snapshots: dict
         ref, lid, sec = it["ref"], it.get("ledger_id") or "", it["section"]
         row = _row(lid, ledger, snapshots) if lid else {}
         status = row.get("status") or "open"
+        chose = pending.get(lid) if lid else None
+        if chose:
+            done = chose in ("done", "not_needed")
+            if "draft" in (it.get("sections") or [sec]):
+                out[ref] = {"action": "hold-draft", "by": "code", "why": HOME_CHOSE[chose]}
+                continue
+            if sec != "also":
+                out[ref] = {"action": "drop", "kind": "closed" if done else "snoozed", "by": "code",
+                            "why": HOME_CHOSE[chose]}
+                continue
         if "draft" in (it.get("sections") or [sec]):
             conv = row.get("conversation_id") or it.get("conversation_id") or ""
             since = (today - timedelta(days=USER_CLOSE_DAYS)).isoformat()
@@ -795,6 +809,25 @@ def hard_checks(items: list[dict], ledger: dict, *, today: date, snapshots: dict
         if clean != (it.get("line") or "") and sec != "also":
             out[ref] = {"action": "strip", "by": "code", "line": clean, "why": "audit text in the line"}
     return out
+
+
+# Why an item leaves the post when the owner just chose for it on Home.
+HOME_CHOSE = {"done": "you marked it done on Home", "not_needed": "you said on Home that no reply is needed",
+              "later": "you set it aside on Home", "waiting": "you marked it as waiting on someone on Home"}
+
+
+def home_pending() -> dict:
+    """The owner's choices on Home that wait for their undo window
+    (home_items.pending_rows); {} when they cannot be read."""
+    try:
+        try:
+            import home_items
+        except ModuleNotFoundError:  # imported as preprocessor.briefing_review
+            from preprocessor import home_items
+        return home_items.pending_rows()
+    except Exception as e:
+        print(f"briefing_review: Home's pending choices unreadable: {str(e)[:160]}", file=sys.stderr)
+        return {}
 
 
 def _parked(row: dict, today: date) -> str:
@@ -1450,7 +1483,7 @@ def review_briefing(agent: str, text: str, b: dict, *, cands: dict, lists: dict,
         ledger = {"rows": {}, "events": {}, "by_conv": {}, "naming": {}}
         levels, projects, placements = {i: "local" for i in ids}, {}, {}
     hard = hard_checks(items, ledger, today=today, snapshots=snapshots,
-                       keep_parked=agent == "weekly-audit")
+                       keep_parked=agent == "weekly-audit", pending=home_pending())
     who = who or judge()
     review: dict = {"model": who}
     checked: dict = {}

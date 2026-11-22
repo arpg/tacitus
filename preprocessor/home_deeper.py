@@ -1365,10 +1365,13 @@ def conversation_place(fe, row: dict | None) -> str:
     room the row is linked to (briefing_rooms.rooms: bound, not archived,
     in the owner's record), else the EA channel."""
     lid = str((row or {}).get("id") or "")
+    main = str(getattr(fe, "main_channel", "") or "main")
     try:
         hi = _mod("home_items")
         conv = str((row or {}).get("conversation_id") or _brief(row or {}).get("conversation_id") or "")
-        return str(hi._room(fe, hi.Found(item={}, lid=lid, conv=conv)))
+        room = str(hi._room(fe, hi.Found(item={}, lid=lid, conv=conv)))
+        if room and room != main:  # _room answers the EA channel when it finds no room
+            return room
     except Exception:
         pass
     proj = _project(lid) if lid else None
@@ -1379,7 +1382,7 @@ def conversation_place(fe, row: dict | None) -> str:
                 return str(room["channel"])
         except Exception:
             pass
-    return str(getattr(fe, "main_channel", "") or "main")
+    return main
 
 
 def seed_text(job: dict, item: dict | None, row: dict | None) -> str:
