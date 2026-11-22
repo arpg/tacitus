@@ -619,3 +619,17 @@ def test_a_new_message_on_a_submitted_letters_thread_does_not_reopen_its_row(tmp
             "subject": "Re: Letter", "body_preview": "Thank you!"}
     assert preprocess._reopen_mail_row_if_newer("task-sub1", item, {"description": "x", "notes": ""}) is False
     assert ledger.get_entry("task-sub1")["status"] == "completed"
+
+
+def test_a_moved_date_moves_the_row_and_is_recorded_with_its_actor(conn):
+    _add(conn, "task-n", conv="conv-n", deadline="2026-12-01")
+    cid = letters.ensure_case(conn, "Sam Ortiz")
+    did = letters.add_destination(conn, cid, "Northfield University", "2026-12-01", ledger_id="task-n")
+    out = letters.set_due(conn, did, "2026-12-15", actor="cli:chat")
+    assert out == {"dest": did, "due": "2026-12-15", "was": "2026-12-01"}
+    assert _row(conn, "task-n")["deadline"] == "2026-12-15"
+    ev = conn.execute("SELECT kind, state, actor, evidence FROM letter_events WHERE kind = 'due'").fetchone()
+    assert (ev["state"], ev["actor"]) == ("2026-12-15", "cli:chat")
+    assert json.loads(ev["evidence"]) == {"from": "2026-12-01", "to": "2026-12-15"}
+    with pytest.raises(ValueError):
+        letters.set_due(conn, did, "soon")

@@ -53,6 +53,7 @@ prompt or a hosted-read channel never sees what the keep level holds back.
     letters.py add-destination --case <id> --name <name> [--due YYYY-MM-DD]
                                [--method portal|email|upload|unknown] [--link <url>]
                                [--ledger-id <id>]
+    letters.py set-due --dest <id> --due YYYY-MM-DD
     letters.py materials --case <id> --kind <cv|statement|list|draft|transcript|other>
                          --ref <path or message id>
     letters.py record-draft --case <id> --file <path> [--dest <id>]
@@ -697,6 +698,29 @@ def _sync_row_date(conn, dest_id: str) -> None:
     if r is not None and r["status"] != "completed" and not r["deadline"]:
         conn.execute("UPDATE ledger SET deadline = ?, updated_at = ? WHERE id = ?",
                      (d["due"], _now(), d["ledger_id"]))
+
+
+def set_due(conn, dest_id: str, due: str, *, actor: str = "") -> dict:
+    """A destination's new date (YYYY-MM-DD, or "" for none): its row's
+    deadline follows, and the change is an event with its actor (a moved
+    date starts its own reminder ladder). Returns {"dest", "due", "was"}."""
+    ensure_schema(conn)
+    d = conn.execute("SELECT * FROM letter_destinations WHERE id = ?", (dest_id,)).fetchone()
+    if d is None:
+        raise ValueError(f"no letter destination {dest_id}")
+    new = _day(due)
+    if due and not new:
+        raise ValueError("due must be YYYY-MM-DD")
+    now = _now()
+    conn.execute("UPDATE letter_destinations SET due = ?, updated_at = ? WHERE id = ?",
+                 (new, now, dest_id))
+    r = _row(conn, d["ledger_id"])
+    if r is not None and r["status"] != "completed":
+        conn.execute("UPDATE ledger SET deadline = ?, updated_at = ? WHERE id = ?",
+                     (new or None, now, d["ledger_id"]))
+    _event(conn, d["case_id"], "due", dest_id=dest_id, state=new, actor=actor,
+           evidence={"from": d["due"], "to": new})
+    return {"dest": dest_id, "due": new, "was": d["due"]}
 
 
 def add_material(conn, case_id: str, kind: str, path_or_message_id: str, *, actor: str = "") -> bool:
@@ -1989,6 +2013,9 @@ def main(argv=None) -> int:
     s.add_argument("--method", default="unknown", choices=METHODS)
     s.add_argument("--link", default="")
     s.add_argument("--ledger-id", default="")
+    s = sub.add_parser("set-due", allow_abbrev=False)
+    s.add_argument("--dest", required=True)
+    s.add_argument("--due", required=True, help="YYYY-MM-DD, or \"\" for no date")
     s = sub.add_parser("materials", allow_abbrev=False)
     s.add_argument("--case", required=True)
     s.add_argument("--kind", required=True, choices=MATERIAL_KINDS)
@@ -2051,6 +2078,8 @@ def main(argv=None) -> int:
         elif args.cmd == "add-destination":
             res = {"destination": add_destination(conn, args.case, args.name, args.due, args.method,
                                                   args.link, args.ledger_id, actor=actor)}
+        elif args.cmd == "set-due":
+            res = set_due(conn, args.dest, args.due, actor=actor)
         elif args.cmd == "materials":
             res = {"added": add_material(conn, args.case, args.kind, args.ref, actor=actor)}
         elif args.cmd == "record-draft":
