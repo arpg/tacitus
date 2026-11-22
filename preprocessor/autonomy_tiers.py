@@ -32,6 +32,14 @@ import resident_io as _resident_io  # noqa: E402
 EA_DIR = Path(os.environ.get("EA_DIR", Path.home() / ".ea"))
 TIERS_FILE = EA_DIR / "config" / "autonomy-tiers.json"
 TIERS = ("button-required", "ask-first", "do-and-tell", "fire-and-forget")
+# Tasks the code knows that an older config may lack. A promotion of one
+# adds it with this default first, so an install from before the task
+# existed can still promote it in chat.
+DEFAULT_TASKS = {
+    "draft_letter": {"tier": "ask-first",
+                     "note": "Draft a letter someone asked the owner to write, ahead of its date, "
+                             "without the owner asking in that turn (docs/ea/letters.md)."},
+}
 SOURCES = ("chat", "edit")
 SANDBOX_ERRNOS = (errno.EACCES, errno.EPERM, errno.EROFS)
 
@@ -49,6 +57,9 @@ def promote_in(data: dict, *, task: str, tier: str, contact: str = "", quote: st
     """Change `data` in place; returns what changed. ValueError when the
     promotion is not one the config allows."""
     tasks = data.get("task_tiers") or {}
+    if task not in tasks and task in DEFAULT_TASKS:
+        tasks = data.setdefault("task_tiers", tasks)
+        tasks[task] = dict(DEFAULT_TASKS[task])
     if task not in tasks or not isinstance(tasks[task], dict):
         raise ValueError(f"no task {task!r}; tasks: {', '.join(k for k in tasks if not k.startswith('_'))}")
     if tier not in TIERS:
@@ -118,6 +129,8 @@ def _cmd_promote(args, argv: list[str]) -> int:
 def _cmd_show(args, argv: list[str]) -> int:
     data = load()
     tasks = {k: v for k, v in (data.get("task_tiers") or {}).items() if not k.startswith("_")}
+    for name, row in DEFAULT_TASKS.items():
+        tasks.setdefault(name, dict(row, default=True))
     if args.task:
         if args.task not in tasks:
             print(json.dumps({"error": f"no task {args.task!r}"}))

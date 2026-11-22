@@ -45,6 +45,15 @@ it. The rules that matter most:
 - Names come from the thread or the ledger exactly as written. Never
   guess a surname.
 
+A letter brief (it starts with `LETTER:`) is a letter about a person, in
+the user's voice: their evaluation. Read every file it names. Earlier
+letters for the same person give facts the user already stated; letters
+for other people give voice and length only. Every claim about the person
+comes from the brief or its files: where you need a fact or a judgment
+you do not have, write `[ASK: <the question>]` in its place. Never write
+a rating, a rank or a percentile the brief does not give. Write
+`{{program}}` and `{{addressee}}` when the brief says to.
+
 Output format: the body, starting with the greeting line and ending with
 the sign-off, as plain text. If something essential is missing (the
 recipient, what the reply must say), return one line beginning with

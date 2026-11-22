@@ -94,7 +94,8 @@
       "is_thread_reply": true,
       "expected": {
         "modules": [
-          "drafting"
+          "drafting",
+          "lor"
         ],
         "skills": [
           "compose-letter"
@@ -106,7 +107,8 @@
         "real"
       ],
       "tier": "easy",
-      "source": "2026-03-31"
+      "source": "2026-03-31",
+      "notes": "A nomination letter is a letter case: the letters guide loads."
     },
     {
       "id": "thread-007",
@@ -1280,13 +1282,14 @@
       "expected": {
         "modules": [
           "drafting",
+          "lor",
           "triage"
         ],
         "skills": [
           "compose-letter",
           "triage"
         ],
-        "needs_mcp": true
+        "needs_mcp": false
       },
       "tags": [
         "multi-action",
@@ -1294,7 +1297,7 @@
       ],
       "tier": "hard",
       "source": "synthetic",
-      "notes": "2 verbs (archive + draft) + sequencing ('then') = multi. Correctly detected."
+      "notes": "2 verbs (archive + draft) + sequencing ('then') = multi. Correctly detected. 'reference letter' / 'letter of support' load the letters guide (docs/ea/letters.md); its tools are Bash, so no MCP."
     },
     {
       "id": "multi-007",
@@ -1816,19 +1819,20 @@
       "is_thread_reply": false,
       "expected": {
         "modules": [
-          "drafting"
+          "drafting",
+          "lor"
         ],
         "skills": [
           "compose-letter"
         ],
-        "needs_mcp": true
+        "needs_mcp": false
       },
       "tags": [
         "skill-detection",
         "synthetic"
       ],
       "tier": "easy",
-      "notes": "'letter of support' and 'letterhead' → compose-letter. No module → needs MCP."
+      "notes": "'letter of support' and 'letterhead' → compose-letter. No module → needs MCP. 'reference letter' / 'letter of support' load the letters guide (docs/ea/letters.md); its tools are Bash, so no MCP."
     },
     {
       "id": "skill-reply-001",
@@ -2573,6 +2577,54 @@
       ],
       "tier": "medium",
       "notes": "a bare calendar write is neither module"
+    },
+    {
+      "id": "letter-case-001",
+      "message": "Rowan Vale asked me for a recommendation letter for three PhD programs. The first is due Dec 1.",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "lor"
+        ],
+        "context": {
+          "needs_lor_workflow": true
+        },
+        "skills": [
+          "compose-letter"
+        ],
+        "needs_mcp": false
+      },
+      "tags": [
+        "lor",
+        "letters"
+      ],
+      "tier": "medium",
+      "source": "synthetic",
+      "notes": "A new letter request: the letters guide (one decision, no reply draft) loads; the reply skill does not."
+    },
+    {
+      "id": "letter-case-002",
+      "message": "She ran the evening shift for a year and never missed a close. Put that in the letter for Rowan.",
+      "is_thread_reply": false,
+      "expected": {
+        "modules": [
+          "lor"
+        ],
+        "context": {
+          "needs_lor_workflow": true
+        },
+        "skills": [
+          "compose-letter"
+        ],
+        "needs_mcp": false
+      },
+      "tags": [
+        "lor",
+        "letters"
+      ],
+      "tier": "medium",
+      "source": "synthetic",
+      "notes": "The owner dictates points for a letter: the letters guide and compose-letter load."
     }
   ],
   "build_claude_md_cases": [
@@ -2588,7 +2640,7 @@
           "RECORD THE WORK IN THE SAME TURN YOU DO IT"
         ],
         "must_not_contain": [
-          "### Letter of Recommendation uploads",
+          "### Letters someone asked the owner to write",
           "### Travel reimbursement",
           "## Scheduled sends",
           "BJUST",
@@ -2597,7 +2649,7 @@
           "Budget Justification"
         ],
         "must_contain_replacements": [
-          "*LoR uploads*",
+          "*Letters*",
           "*Poll filling*",
           "*Reimbursement & receipts*",
           "*Snooze / scheduled sends / follow-ups*"
@@ -2612,7 +2664,7 @@
       ],
       "assertions": {
         "must_contain": [
-          "### Letter of Recommendation uploads",
+          "### Letters someone asked the owner to write",
           "## Your role"
         ],
         "must_not_contain": [
@@ -2625,7 +2677,7 @@
           "*Snooze / scheduled sends / follow-ups*"
         ]
       },
-      "notes": "Only LoR preserved"
+      "notes": "Only the letters guide appended"
     },
     {
       "id": "claude-md-003",
@@ -2639,11 +2691,11 @@
           "## Your role"
         ],
         "must_not_contain": [
-          "### Letter of Recommendation uploads",
+          "### Letters someone asked the owner to write",
           "## Scheduled sends"
         ],
         "must_contain_replacements": [
-          "*LoR uploads*",
+          "*Letters*",
           "*Reimbursement & receipts*",
           "*Snooze / scheduled sends / follow-ups*"
         ]
@@ -2665,7 +2717,7 @@
       ],
       "assertions": {
         "must_contain": [
-          "### Letter of Recommendation uploads",
+          "### Letters someone asked the owner to write",
           "### Scheduling poll filling",
           "### Travel reimbursement",
           "## Scheduled sends"
@@ -2690,10 +2742,10 @@
           "## Your role"
         ],
         "must_not_contain": [
-          "### Letter of Recommendation uploads"
+          "### Letters someone asked the owner to write"
         ],
         "must_contain_replacements": [
-          "*LoR uploads*",
+          "*Letters*",
           "*Poll filling*"
         ]
       },
@@ -2715,7 +2767,7 @@
           "## Usage tracking",
           "## Inbox as completion signal",
           "### Gmail drafts and sending",
-          "### Letter of Recommendation uploads",
+          "### Letters someone asked the owner to write",
           "### Travel reimbursement",
           "## Scheduled sends"
         ],
@@ -2725,7 +2777,7 @@
           "*Pre-send review*",
           "*Inbox completion signal*",
           "*Gmail drafts*",
-          "*LoR uploads*",
+          "*Letters*",
           "*Poll filling*",
           "*Reimbursement & receipts*",
           "*Snooze / scheduled sends / follow-ups*"

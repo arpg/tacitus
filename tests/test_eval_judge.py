@@ -199,6 +199,34 @@ def test_a_created_new_draft_still_fails():
         assert "new draft" in r["reason"].lower() or "create-reply" in r["reason"].lower()
 
 
+LETTER_CTX = {"vars": {"fixture_path": str(
+    REPO / "tests" / "evals" / "fixtures" / "letter-request-one-decision.json")}}
+
+
+def test_a_letter_request_asked_once_passes():
+    for text in ("*Needs you*\n- Rowan Vale asks for a recommendation letter (Harbor Tech, Dec 1; "
+                 "Pinecrest, Dec 15). She sent a CV and a statement. Will you write it? Yes / Yes, ask "
+                 "for materials / No",
+                 "- Letter for Rowan Vale: will you write it? The portal mail is the same letter. "
+                 "No reply drafted."):
+        r = judge.letter_request_one_decision(text, LETTER_CTX)
+        assert r["pass"], (text, r["reason"])
+
+
+def test_a_letter_request_drafted_as_a_reply_fails():
+    for text in ("- Rowan Vale wants a recommendation letter. I drafted a reply saying yes; it is in "
+                 "your Drafts. Will you write it?",
+                 "- Rowan Vale: recommendation letter request. Drafted a yes with dates for your Send.",
+                 "- Rowan Vale asked for a letter. Reply to Rowan to confirm."):
+        r = judge.letter_request_one_decision(text, LETTER_CTX)
+        assert not r["pass"], text
+
+
+def test_a_letter_request_with_no_decision_fails():
+    r = judge.letter_request_one_decision("- Rowan Vale sent a CV for a letter.", LETTER_CTX)
+    assert not r["pass"] and "whether to write" in r["reason"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

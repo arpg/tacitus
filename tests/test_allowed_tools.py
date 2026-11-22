@@ -103,6 +103,8 @@ REQUIRED_HELPERS = [
     "poll_filler.py",
     "booking_link.py",
     "compile_letter.py",
+    # docs/ea/letters.md runs the work on a letter case through it.
+    "letters_work.py",
     "ledger.py",
     # Both are MANDATED by CLAUDE.md prose, so a missing grant is a live
     # permission-gate failure: log_missed_closure.py by the

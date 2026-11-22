@@ -1,0 +1,119 @@
+{
+  "_meta": {
+    "id": "hard-success-letter-one-decision",
+    "name": "A letter request gets one decision, never a reply draft",
+    "category": "hard-success",
+    "bug_ref": "Letter requests were drafted as replies and closed by replies (issue #318 follow-up)",
+    "description": "A person asks the owner for a recommendation letter and attaches a CV and a statement; a portal mail asks for the same letter. The briefing must not draft or suggest an email reply to either. It asks the one decision (Will you write it? Yes / Yes, ask for materials / No), names what the request already included, and treats the two mails as one letter."
+  },
+  "briefing": {
+    "generated_at": "2026-04-09T14:00:00Z",
+    "mode": "full-daily-delta",
+    "is_first_run": false,
+    "availability_merged": [],
+    "working_hours": {
+      "daysOfWeek": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday"
+      ],
+      "startTime": "09:00:00.0000000",
+      "endTime": "17:00:00.0000000",
+      "timeZone": "Mountain Standard Time"
+    },
+    "writing_style": {
+      "default_greeting": "Hi",
+      "default_closing": "Best,\nKit",
+      "avg_length_words": 75,
+      "uses_contractions": true,
+      "per_contact": {}
+    },
+    "noisy_group_threads": [],
+    "pending_rsvps": [],
+    "resurrected_follow_ups": [],
+    "stale_obligations": [],
+    "woken_snoozed": [],
+    "scheduled_sends_due_today": [],
+    "recent_slack_messages": {
+      "message_count": 0,
+      "user_message_count": 0,
+      "messages": [],
+      "user_instructions": [],
+      "pending_instructions": [],
+      "handled_instructions": []
+    },
+    "delta_summary": {
+      "new_inbox_messages": 2,
+      "new_sent_messages": 0,
+      "total_delta_items": 2,
+      "total_inbox": 31,
+      "flagged_count": 0,
+      "events_next_14d": 6
+    },
+    "new_dropped_threads": [],
+    "new_needs_response": [
+      {
+        "message_id": "AAMk-letter-req-001",
+        "subject": "Recommendation letter request",
+        "from": {
+          "emailAddress": {
+            "name": "Rowan Vale",
+            "address": "rowan.vale@example.org"
+          }
+        },
+        "to": [
+          "wren.fairbanks84@example.edu"
+        ],
+        "cc": [],
+        "user_is_direct_recipient": true,
+        "user_is_cc_only": false,
+        "user_already_replied_in_thread": false,
+        "received": "2026-04-08T16:20:00Z",
+        "days_in_inbox": 1,
+        "bodyPreview": "Hi Professor, I am applying to two graduate programs this fall, Harbor Tech (due Dec 1) and Pinecrest College (due Dec 15). Would you be willing to write me a recommendation letter? I attached my CV and my statement. Thank you, Rowan",
+        "conversationId": "AAQk-letter-conv-001",
+        "hasAttachments": true,
+        "attachments": [
+          {
+            "name": "Rowan_Vale_CV.pdf"
+          },
+          {
+            "name": "Rowan_Vale_statement.pdf"
+          }
+        ],
+        "response_signals": 4
+      },
+      {
+        "message_id": "AAMk-letter-portal-001",
+        "subject": "Recommendation request for Rowan Vale",
+        "from": {
+          "emailAddress": {
+            "name": "Harbor Tech Admissions",
+            "address": "noreply@apply.example.com"
+          }
+        },
+        "to": [
+          "wren.fairbanks84@example.edu"
+        ],
+        "cc": [],
+        "user_is_direct_recipient": true,
+        "user_is_cc_only": false,
+        "user_already_replied_in_thread": false,
+        "received": "2026-04-09T09:05:00Z",
+        "days_in_inbox": 0,
+        "bodyPreview": "Rowan Vale has listed you as a recommender for the Harbor Tech graduate program. Please submit your letter through the link below by December 1.",
+        "conversationId": "AAQk-letter-conv-002",
+        "hasAttachments": false,
+        "response_signals": 2
+      }
+    ],
+    "new_scheduling_requests": [],
+    "travel_reimbursement": [],
+    "open_obligations": [],
+    "todays_events": [],
+    "tomorrows_events": [],
+    "deadline_items": []
+  },
+  "ledger_entries": []
+}

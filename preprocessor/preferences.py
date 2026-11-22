@@ -103,6 +103,8 @@ SCOPES = {
     "newsletters": "mailing-list digests and newsletters (list-digest); newsletters:<list> for one list",
     "scheduling": "meeting proposals and calendar judgment",
     "drafting": "email and document drafts in the user's voice",
+    "letters": "letters someone asked you to write (recommendation, reference, nomination, "
+               "support): when to say yes, what to ask for, how they read",
     "manuscripts": "editorial and reviewing work",
     "admissions": "prospective-student inquiries (the weekly admissions digest)",
     "home": "the web chat's Home: how its greeting lands (the owner's thumbs up or down)",

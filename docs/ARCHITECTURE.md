@@ -689,7 +689,7 @@ runs the same judge on past exchanges from the EA's transcripts.
 `CLAUDE.md` is the short core every lane reads: identity, voice rules,
 autonomy tiers, personal rules, the rooms, the safety gates and the
 numbered rules. Each workflow lives in one guide under `docs/ea/`
-(drafting voice, scheduling, LoR, polls, list digests, reimbursement,
+(drafting voice, scheduling, letters, polls, list digests, reimbursement,
 Gmail, briefing data, web reading, scheduled sends and snooze, inbox
 completion, project store). `prompt_logic.detect_needed_modules` names
 the modules a message needs and `build_claude_md` assembles their guides
@@ -1570,7 +1570,8 @@ What Claude actually sees. Two different compositions depending on path.
    |      +-- Conditional sections (kept only when module keyword matches):
    |            Module            Trigger keywords (prompt_logic.py)
    |            ~~~~~~            ~~~~~~~~~~~~~~~~
-   |            "lor"           : "letter of rec", "recommendation letter"
+   |            "lor"           : "letter of rec", "reference letter", "letter case"
+   |                              (or a thread about a letter) -> letters.md
    |            "polls"         : "when2meet", "doodle", "fill poll", "timeful"
    |            "reimbursement" : "receipt", "reimburs", "expense"
    |            "snooze"        : "snooze", "remind me", "schedule send"
@@ -2586,7 +2587,7 @@ Files that participate in prompt construction and action execution:
 |------|---------------------|
 | `run-agent.sh` | Scheduled agent orchestrator; prompt assembly, output validation |
 | `ea-chat-bot.py` | Slack daemon; message routing, prompt assembly, confirmation gates; daemon pollers for staging files written outside a dispatch (`_pending_events_poller`, `_plugin_cards_poller`) |
-| `preprocessor/prompt_logic.py` | Module detection (the message, plus the thread as context for one case: a drafting request in a thread about meeting someone also loads the scheduling guide, since a yes to a meeting carries times), complexity classification, CLAUDE.md stripping, briefing extraction (each obligation row with its conversation id and a one-line thread brief, and the rule to read the thread by that id rather than search for the person) |
+| `preprocessor/prompt_logic.py` | Module detection (the message, plus the thread as context for two cases: a drafting request in a thread about meeting someone also loads the scheduling guide, since a yes to a meeting carries times; any message in a thread about a letter loads the letters guide), complexity classification, CLAUDE.md stripping, briefing extraction (each obligation row with its conversation id and a one-line thread brief, and the rule to read the thread by that id rather than search for the person) |
 | `preprocessor/draft_capture.py` | EA draft bodies retained one month; paired against sent mail so the monthly harvest can learn from the user's edits |
 | `preprocessor/style_profiles.py` | Per-contact writing style; per-message rows reduced on read (sign-off, median/p90 length, question/exclamation/hedge rates) + real examples to mimic |
 | `preprocessor/sent_index.py` | The user's own sent mail with local embeddings (owner-only); the writer's examples of their voice when `voice_examples` is on |
@@ -2594,6 +2595,7 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/ea_written.py` | Which sent messages came from an EA body, so profiles and examples use only the user's own mail |
 | `preprocessor/style_analysis.py` | Monthly corpus-wide voice measurement; audience segmentation, month-over-month drift, dispatches the interpretation to the resident pane |
 | `preprocessor/preprocess.py` | Zero-token briefing generation from mail/calendar/Slack; the sent-reply index (same thread, recipient+subject, and recipient alone: mail to the sender in another thread after theirs sets `wrote_to_since` on the open item, which the afternoon update holds out of "since this morning") |
+| `preprocessor/letters_work.py` | The work on a letter case (`docs/ea/letters.md`) over the `letters.py` store: the owner's first decision (`decide`: yes, ask only for what the request did not include, or a decline with its reply brief; every answer needs the owner's words), the request's files saved as materials, the email-author brief (materials, earlier letters, the owner's points; unsupported facts and ratings become questions), one copy per destination checked for any other destination's name, the PDF on the letterhead or plain, approval, and the submission steps by method. `answer()` is the Action requests buttons' handler in the owner's process: store only, then at most one EA turn. No output carries a letter's text; a case kept from hosted models gets no content verb |
 | `preprocessor/autonomy_tiers.py` | A task's autonomy tier (`~/.ea/config/autonomy-tiers.json`): `promote --task --tier [--contact] --quote`, the user's promotion in chat (CLAUDE.md rule 12), a per-contact override when the task allows one, never a button-required task; `show`. Written through resident_io; from a Codex turn staged like a preference and applied after the turn when the quote is the user's words |
 | `preprocessor/preferences.py` | Personalization layer: the user's scoped rules (`~/.ea/config/preferences.json`), rendered into every skill that declares matching scopes; written from any lane under a lock |
 | `preprocessor/admissions_filter.py` | Moves prospective-student mail to the `admissions-inquiries` folder (5-min cron + every preprocess mode), never a known contact or internal thread; `collect` feeds the weekly admissions-digest agent |

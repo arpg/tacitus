@@ -371,9 +371,12 @@ If items were missed, run the preprocessor with `--rerun` to re-surface all.
 ### 7. Handle routine tasks autonomously
 Check autonomy tiers and act accordingly:
 
-**LoR uploads** (do-and-tell):
-- If an LoR request came in and a matching letter exists, upload it
-- Post: "📄 Uploaded LoR for [student] to [portal]. Here's what I sent: [preview]"
+**Letter requests** (`docs/ea/letters.md`):
+- Never draft an email reply to a letter request. A new case gets one
+  decision (Yes / Yes, ask for materials / No); after the answer it is work
+  with dates, not a reply owed.
+- An approved letter whose place has an upload tool: upload it (do-and-tell)
+  and report the place, never the letter's text.
 
 **Calendar holds** (do-and-tell):
 - If there's a meeting prep needed, create a 15-min hold before it

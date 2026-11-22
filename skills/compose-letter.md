@@ -1,8 +1,14 @@
 # Skill: Compose Letter
-<!-- scopes: drafting -->
+<!-- scopes: drafting, letters -->
 
 Generate a formal letter on the institution's letterhead using LaTeX, compile
 to PDF, and optionally attach to an Outlook draft.
+
+A letter someone asked the user to write about a person (a recommendation,
+a reference, a nomination) is a letter case: follow `docs/ea/letters.md`
+(`letters_work.py brief`, `check`, `variants`, `render`, `approve`,
+`submit`). This skill covers the rest: letters of interest, support for a
+proposal, general formal letters.
 
 The user may provide content in several ways:
 - Polished prose → use as-is, just format into the template
@@ -114,17 +120,19 @@ If pdflatex fails, fix LaTeX errors (usually unescaped special chars)
 and retry. Do not give up — fix and recompile.
 
 ### 6. Present to user
-Show in chat:
-- The full letter text in readable form (not raw LaTeX)
-- Confirm PDF compiled: "PDF ready at `~/.ea/letters/<slug>.pdf`"
+- Name the PDF's full path in the reply (`~/.ea/letters/<slug>.pdf`); the
+  bot attaches it. A letter about a person stays a file: never paste its
+  text in chat unless the user asks for that.
 - Ask: "Want me to create an Outlook draft to send this? Or edit first?"
 
 ### 7. On approval
 If the user says "send" or "email it":
 - Search for the relevant email thread to reply to, OR create a new draft
 - Create Outlook draft via mail_actions.py create-draft --provider outlook
-- Tell the user to attach the PDF from `~/.ea/letters/<slug>.pdf`
-  (file attachment requires manual step with current Outlook REST token)
+- Attach the PDF yourself: `graph_actions.py attach-file --message-id
+  <draft id> --file ~/.ea/letters/<slug>.pdf` (Gmail: `gmail_client.py
+  attach-file`)
 
 ### 8. Update state
-- If this was a tracked obligation (LoR request etc.), mark it progressed/completed
+- A tracked item: `ledger.py update --id <id> --last-action "<date>: <file>"`.
+  A letter case records its own states (`docs/ea/letters.md`).
