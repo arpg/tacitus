@@ -248,6 +248,7 @@ def thread_view(brief: dict | None) -> dict | None:
         return _kept_stub(brief)
     msgs = sorted(brief.get("messages") or [], key=lambda m: m.get("received") or "")[-MSG_CAP:]
     view = {"subject": brief.get("subject") or "", "message_count": brief.get("message_count"),
+            "response_mode": brief.get("response_mode") or "unknown",
             "latest": brief.get("latest") or "", "last_from_user": brief.get("last_from_user") or "",
             "user_replied_after_latest": bool(brief.get("user_replied_after_latest")),
             "messages": []}
@@ -430,6 +431,7 @@ def items_for(group: dict, *, index: dict, df: dict[str, int], user: set[str],
     for n, row in enumerate(group["rows"], 1):
         ref = f"R{n}"
         item = {"ref": ref, "title": row.get("description") or row.get("id") or "",
+                "closes_on": row.get("closes_on") or "",
                 "type": row.get("type") or "", "status": row.get("status") or "open",
                 "who": row.get("from_name") or row.get("from_email") or "",
                 "opened": (row.get("date_identified") or "")[:10],
@@ -492,6 +494,7 @@ You get one group of open ledger rows ({group}) and, for each, what the mail sho
 For every row, by its ref, answer:
 - verdict: "done" when the thread shows the row's work happened (he replied to the person who asked, the thing was sent, the meeting was placed, the question was answered); "duplicate" when another row in this group (give `of`) carries the same work; "lapsed" when the row's only work was a chance that ended at a time now past (a vote, an RSVP, a registration, a sign-up, a call for nominations or volunteers, going to an event) and the thread shows it ended (the event was held, the results came out, the window closed); else "open". Never say done because time passed, and never because the row's note sounds finished: the thread must show it. Work he still owes after its date (a letter, a review, a report, a form) is never lapsed.
 - thread: for a row with candidate threads, the T ref that is the row's own thread, or "" when none is. A thread that merely mentions the topic is not the row's thread.
+- A submission, document, or form is completed by delivering the work, never by an acknowledgement or promise in email. A row with closes_on=submission needs submission evidence or the owner's explicit completion statement. Keep it open while it is only drafted or promised.
 - owner_said, when a row has it, is what the user already decided on its thread, in his words. Never write a note that goes against it.
 - note: one sentence, at most {note_chars} characters, on what the mail shows that the row's last_action does not: a reply arrived, the date moved, the thing was sent, who now owns it. Empty when nothing new happened, when the last_action already says it, or when the thread is kept (counts only); never write "nothing new" or that content is not visible. Plain words, no em-dash, no advice.
 - why: one short sentence for a done, duplicate or lapsed verdict, naming the message (date and who) that shows it.

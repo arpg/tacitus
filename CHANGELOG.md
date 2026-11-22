@@ -6,6 +6,10 @@ repository that preceded it.
 
 ## Unreleased
 
+- **An emailed request can require work instead of an email reply.**
+  Recommendation letters, submissions, reports and forms stay out of the
+  reply suggestions while their work and deadlines remain open. Old mail
+  records are handled too; an acknowledgement does not complete the work.
 - **A reply in the web chat no longer ends with the model and the time.**
   The line under each reply that names the model, how long it took and
   how much of the plan it used ("EA · opus: 11s"), and the scheduling

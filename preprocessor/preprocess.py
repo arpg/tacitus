@@ -2165,7 +2165,10 @@ def mail_row_kind(item: dict) -> dict:
     if not rr:
         return out
     state, deadline = rr.get("state"), str(rr.get("deadline") or "")[:10]
-    owes = state in ("todo", "decide")
+    import mail_completion
+    mode = mail_completion.response_mode(rr)
+    work = mode in mail_completion.WORK_MODES
+    owes = work or state in ("todo", "decide")
     # A meeting's date (a reminder, an invitation, a time proposal) is
     # when it happens, not a date the user owes something by: it never
     # mints a deadline row, which would read OVERDUE once the meeting
@@ -2182,6 +2185,8 @@ def mail_row_kind(item: dict) -> dict:
             out["closes_on"] = "lapse"
     elif owes:
         out.update(prefix="task-", type="task", description=f"Task: {subject}")
+    if work:
+        out["closes_on"] = "submission" if mode in ("submission", "form") else "manual"
     if rr.get("ask"):
         out["notes"] = (f"{out['notes']} Ask: {str(rr['ask']).strip()}").strip()[:500]
     return out

@@ -55,6 +55,10 @@ try:
     import ea_config as _ea_config
 except ModuleNotFoundError:  # imported as preprocessor.<mod>
     from preprocessor import ea_config as _ea_config
+try:
+    import mail_completion as _mail_completion
+except ModuleNotFoundError:
+    from preprocessor import mail_completion as _mail_completion
 
 EA_DIR = Path(os.environ.get("EA_DIR", os.path.expanduser("~/.ea")))
 DB_PATH = EA_DIR / "state" / "obligations-ledger.db"
@@ -568,7 +572,7 @@ def closes_on_reply(entry: dict) -> bool:
     is a reply. Any other row is finished by a send only when the draft
     names it (`--ledger-id`); a reply in the same thread about something
     else leaves it open."""
-    if is_waiting(entry):
+    if is_waiting(entry) or _mail_completion.non_email_work(entry):
         return False
     how = closes_on(entry)
     if how:
@@ -2262,7 +2266,7 @@ def date_spent(entry: dict, today=None) -> str:
         return f"the meeting was {due:%b} {due.day}"
     if lapses(entry):
         return "nothing was asked of you"
-    acted = acted_since(entry, due)
+    acted = "" if _mail_completion.non_email_work(entry) else acted_since(entry, due)
     if acted:
         at = date.fromisoformat(acted)
         return f"you wrote {at:%b} {at.day}"
@@ -2301,7 +2305,7 @@ def reply_owed(entry: dict) -> bool:
     not written since. The thread brief decides; a row without one (an
     install with no mail records) owes a reply when its type says so and
     it came from a message."""
-    if is_waiting(entry):
+    if is_waiting(entry) or _mail_completion.non_email_work(entry):
         return False
     brief = _thread(entry)
     if brief:

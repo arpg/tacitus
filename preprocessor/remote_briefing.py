@@ -230,7 +230,11 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
                 # Nothing is asked of him: the date is a chance or an
                 # event, never a due date (off the banner and the do-list).
                 tags, due = [_optional_tag(d, today)], ""
-            item = {"kind": kind, "title": it.get("subject") or "(no subject)",
+            import mail_completion
+            mode = mail_completion.response_mode(dict(row, remote_record=rec))
+            item = {"kind": "work" if mode in mail_completion.WORK_MODES else kind,
+                    "response_mode": mode, "closes_on": row.get("closes_on") or "",
+                    "title": it.get("subject") or "(no subject)",
                     "who": it.get("from_name") or it.get("from") or "", "from": it.get("from") or "",
                     "message_id": mid, "conversation_id": conv,
                     "summary": it.get("body_preview") or "", "ask": rec.get("ask") or "",
@@ -309,6 +313,7 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
             due = ""
         conv = str(o.get("conversation_id") or (brief or {}).get("conversation_id") or "")
         add("L", {"kind": "ledger", "title": o.get("description") or lid,
+                  "closes_on": o.get("closes_on") or "",
                   "who": o.get("from_name") or o.get("from_email") or "",
                   "from": o.get("from_email") or "", "ledger_id": lid,
                   "brief": brief,
@@ -742,7 +747,7 @@ def gate(cand: dict, reply_must_say: str, *, wrote_before=_wrote_to_before) -> d
     part in a program or committee, a reply-all to many. A line never carries an answer the
     model wrote for him, but for the rails' own lines."""
     found = draft_gate.check(cand, reply_must_say, own=_own_addresses())
-    if found and found["rule"] in ("no_reply", "kept"):
+    if found and found["rule"] in ("no_reply", "kept", "non_email"):
         return found
     why = rail(cand, reply_must_say, wrote_before=wrote_before)
     if why:

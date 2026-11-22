@@ -122,6 +122,7 @@ SCHEMA = {
         "sensitivity": {"type": "string", "enum": ["normal", "confidential"]},
         "confidential_kind": {"type": "string", "enum": list(SENSITIVE_KINDS)},
         "needs_reply": {"type": "boolean"},
+        "response_mode": {"type": "string", "enum": ["email", "submission", "document", "form", "other", "none", "unknown"]},
         "ask": {"type": "string"},
         "deadline": {"type": "string"},
         "deadline_text": {"type": "string"},
@@ -136,7 +137,7 @@ SCHEMA = {
         "domain": {"type": "string", "enum": list(DOMAINS)},
         "summary": {"type": "string"},
     },
-    "required": ["sensitivity", "confidential_kind", "needs_reply", "ask", "deadline",
+    "required": ["sensitivity", "confidential_kind", "needs_reply", "response_mode", "ask", "deadline",
                  "deadline_text", "scheduling", "offered_times", "people", "tone",
                  "state", "domain", "summary"],
 }
@@ -148,7 +149,8 @@ Today is {today}.
 
 Fields:
 - sensitivity: "confidential" when the message carries a student's records or grades, a personnel or hiring matter about a named person, health or family-medical information, a letter of recommendation or what it says, a confidential manuscript or proposal review, a legal or money matter about a person, or a prospective student's application details. Otherwise "normal". confidential_kind names which one ("none" when normal).
-- needs_reply: true only when the sender asks the user himself to answer or act in writing: a question put to him, a request of him, a proposal waiting on his word. False for a sympathy note, a thank-you, an acknowledgement, a status report, a message that answers the user's own question, and a message whose question or request is addressed to someone else (the user in Cc, or a named third person asked to act).
+- needs_reply: true only when the sender explicitly asks the user himself for an EMAIL answer. Writing a letter, submitting a recommendation or report, uploading a file, completing a form, and doing work requested by email are not email replies. Do not invent an acknowledgement, thanks, or confirmation as the ask. A genuine question about whether he is willing to write a letter can require an email answer; a request to write and submit it does not. False for sympathy, thanks, acknowledgements, status reports, answers to his question, and asks addressed to someone else.
+- response_mode: what completes the actual ask: email (an email answer), submission (submit/upload the deliverable, e.g. a recommendation through a portal), document (write/revise a deliverable), form (complete a form/survey), other (non-email action), none (nothing owed), unknown (unclear). Submission confirmations are none unless they contain a new ask. Keep the actual work and deadline in ask/deadline even when needs_reply is false. An email saying he will do the work does not complete the work.
 - ask: what the sender wants from the user, one sentence; "" when nothing, and "" when the request is addressed to someone else.
 - deadline: the date the ask is due, YYYY-MM-DD; "" when none. deadline_text: the words that state it; "" when none.
 - scheduling: the meeting-time content of the message. request: asks to meet, with no times. proposes-times: names times to choose from. reschedule: asks to move a meeting already set. booking-link: a cal.com or Calendly link. poll: a When2Meet or Doodle. confirmation: takes one of the times the user offered for a meeting with him. cancellation: calls off a meeting. "none" when it is not about a meeting time; a message that confirms a talk, a room, attendance or logistics for a time already set is "none".
@@ -301,6 +303,7 @@ def validate(obj: dict) -> dict:
         "sensitivity": pick("sensitivity", ("normal", "confidential"), "normal"),
         "confidential_kind": pick("confidential_kind", SENSITIVE_KINDS, "none"),
         "needs_reply": bool(obj.get("needs_reply")),
+        "response_mode": pick("response_mode", ("email", "submission", "document", "form", "other", "none", "unknown"), "unknown"),
         "ask": s("ask", 300),
         "deadline": deadline,
         "deadline_text": s("deadline_text", 120),
@@ -329,7 +332,19 @@ def validate(obj: dict) -> dict:
     if rec["state"] == "fyi" and rec["deadline"] and _DUE_WORDS.search(
             f"{rec['deadline_text']} {rec['ask']}"):
         rec["state"] = "todo"
-    return rec
+    return _completion_record(rec)
+
+
+def _completion_record(rec: dict) -> dict:
+    """Normalize new and cached records without rewriting the mail store."""
+    import mail_completion
+    mode = mail_completion.response_mode(rec)
+    out = dict(rec, response_mode=mode)
+    if mode in mail_completion.WORK_MODES:
+        out["needs_reply"] = False
+        if out.get("state") in ("needs-reply", "fyi") and out.get("ask"):
+            out["state"] = "todo"
+    return out
 
 
 _DUE_WORDS = re.compile(r"\b(?:due|overdue|deadline|late)\b", re.IGNORECASE)
@@ -370,7 +385,7 @@ FACT_FIELDS = frozenset({
     "row_id", "staged_event",
 })
 # The remote record's fields a facts view keeps: enums, dates and file names.
-RECORD_FACT_FIELDS = ("state", "needs_reply", "deadline", "scheduling", "offered_times", "domain",
+RECORD_FACT_FIELDS = ("state", "needs_reply", "response_mode", "deadline", "scheduling", "offered_times", "domain",
                       "attachments")
 ATTACHMENT_FACT_KEYS = ("name", "type", "size", "inline", "image")
 
@@ -1704,7 +1719,7 @@ def _sealed_fields(rec: dict | None, dec: dict | None = None) -> dict:
     if not rec or rec.get("status") != "ok":
         return {"remote_unread": True, "remote_text": "", **marks}
     import mail_gate
-    res = rec.get("result") or {}
+    res = _completion_record(rec.get("result") or {})
     if level == "facts":
         out = {"remote_text": "",
                "remote_record": {k: res.get(k) for k in RECORD_FACT_FIELDS if k != "attachments"}}
@@ -1713,7 +1728,7 @@ def _sealed_fields(rec: dict | None, dec: dict | None = None) -> dict:
     else:
         out = {"remote_text": mail_gate.remote_text(rec),
                "remote_record": {k: res.get(k) for k in (
-                   "state", "needs_reply", "ask", "deadline", "scheduling",
+                   "state", "needs_reply", "response_mode", "ask", "deadline", "scheduling",
                    "offered_times", "people", "tone", "domain", "sensitivity")}}
         for k in ("links", "quotes", "attachments"):
             if res.get(k) and (k != "quotes" or level == "full"):
@@ -1864,7 +1879,7 @@ def thread_brief(conv_id: str, index: dict | None = None, *, user: set[str] | No
     strictest, reason = "full", ""
     ctx = privacy_rules.context()
     for r in recs:
-        res = r.get("result") or {}
+        res = _completion_record(r.get("result") or {})
         own = bool(r.get("own")) or (r.get("from") or "") in user
         dec = decision_of(r, index=index, ctx=ctx)
         level = dec["level"]
@@ -1938,6 +1953,7 @@ def thread_brief(conv_id: str, index: dict | None = None, *, user: set[str] | No
         r, res, level = latest_in
         brief.update({"ask": (res.get("ask") or "") if level != "facts" else "", "state": res.get("state"),
                       "needs_reply": bool(res.get("needs_reply")),
+                      "response_mode": res.get("response_mode") or "unknown",
                       "deadline": res.get("deadline") or "",
                       "offered_times": list(res.get("offered_times") or []),
                       "scheduling": res.get("scheduling") or "none",
@@ -1958,6 +1974,8 @@ def _brief_stale(prev: dict | None, brief: dict) -> bool:
     if not prev:
         return True
     return (prev.get("latest") != brief.get("latest")
+            or prev.get("response_mode") != brief.get("response_mode")
+            or prev.get("needs_reply") != brief.get("needs_reply")
             or prev.get("message_count") != brief.get("message_count"))
 
 

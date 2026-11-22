@@ -76,7 +76,7 @@ def _row(rid: str, name: str, addr: str, days_ago: int, subject: str, ask: str, 
 def _ledger_rows() -> list[dict]:
     return [
         _row("travel", "Priya Natarajan", "priya.n@example.edu", 2, "Travel form for the spring meeting",
-             "Sign the travel form.", deadline="2026-03-12"),
+             "Confirm which travel form I should use.", deadline="2026-03-12"),
         _row("budget", "Dale Whitcomb", "dale.w@example.edu", 3, "Lab budget revision",
              "Approve the revised lab budget.", deadline="2026-03-13"),
         _row("letter", "Omar Haddad", "omar.h@example.org", 4, "Reference letter request",
