@@ -5551,22 +5551,47 @@ def _post_letter_cards(force: bool = False) -> int:
 
 
 def _letter_turn(prompt: str, channel: str, thread: str, user_id: str, case_id: str,
-                 said: str) -> bool:
-    """One EA turn for a letter answer, in the card's thread: a line that
-    says what it does, then the turn in a side session of the thread."""
+                 said: str) -> str:
+    """One EA turn for a letter answer, in the card's thread (a new line in
+    the DM with none): a line that says what it does, then the turn in a
+    side session of that thread. Returns the line's id, "" when it failed."""
     try:
         posted = FRONTEND.post(channel=channel, thread_ts=thread or None,
                                text=f":hourglass_flowing_sand: {said}")
     except Exception as e:
         log.warning(f"letter turn status post failed: {e}")
-        return False
+        return ""
     ts = posted.id
     from preprocessor import slack_sessions as _sessions
     key = _sessions.side_key(thread or ts, f"letter-{case_id}")
     threading.Thread(target=handle_message_async,
                      args=(channel, thread or ts, ts, prompt, user_id, True),
                      kwargs={"session_key": key}, daemon=True).start()
-    return True
+    return ts
+
+
+def _home_letter(case_id: str, answer: str, dest: str = "", words: str = "") -> dict:
+    """Home's choice on a letter item, as a press on its card runs it:
+    {"ok", "said", "channel"?, "id"?} (the line that opens its turn, when
+    it has one). The case's cards follow at once."""
+    from preprocessor import letter_surface as _ls
+    case = _ls.find(_ls.load_cases(), case_id)
+    if case is None or (dest and not any(str(d.get("id")) == dest for d in _ls.open_dests(case))):
+        return {"ok": False, "said": "This letter changed. Nothing was done."}
+    q = next(iter(_ls.questions(case, "write")), None)
+    got = _ls.answer(case, answer, dest=dest, text=words,
+                     question=str((q or {}).get("id") or "") if answer in ("yes", "yes_ask", "no") else "")
+    out = {"ok": bool(got.get("ok")), "said": str(got.get("said") or "")}
+    dm = _resolve_dm_channel()
+    if got.get("turn") and dm and OWNER_SLACK_USER_ID:
+        ts = _letter_turn(str(got["turn"]), dm, "", OWNER_SLACK_USER_ID, case_id, out["said"])
+        out.update({"channel": dm, "id": ts} if ts else {"ok": False,
+                                                          "said": "Tacitus could not start it. Try again."})
+    try:
+        _post_letter_cards(force=True)
+    except Exception as e:
+        log.warning(f"letter cards after a Home choice: {e}")
+    return out
 
 
 @app.action(re.compile(r"^letter_(?:yes|yes_ask|no|draft|submitted|date|decline|join_same|join_other)$"))
@@ -6896,6 +6921,7 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         _home_of.hooks.draft = _home_draft
         _home_of.hooks.not_needed = _home_not_needed
         _home_of.hooks.outlook = _home_outlook
+        _home_of.hooks.letter = _home_letter
 
 
 def _toggle_quoted(ev: "_chat.ActionEvent", show: bool):

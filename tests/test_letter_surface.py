@@ -886,3 +886,77 @@ def test_the_tick_asks_a_join_question_once_and_routes_its_answer(monkeypatch):
                                card=types.SimpleNamespace(channel="dm", id="m2", thread_key="m2"))
     ns["handle_letter"](ev)
     assert seen == [("join_same", "lq-j")] and calls["turns"] == []
+
+
+# ── Home's item view (home_items) ─────────────────────────────────────
+
+def _live_case(days: int = 1):
+    """A case whose two open destinations are due `days` from the real
+    today (Home's fixtures run on the real clock)."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import home_fixtures as F
+    due = (datetime.now(F.ZONE).date() + timedelta(days=days)).isoformat()
+    c = avery()
+    for d in c["destinations"][3:5]:
+        d["due"] = due
+    for d in c["destinations"][5:]:
+        d["due"] = (datetime.now(F.ZONE).date() + timedelta(days=days + 7)).isoformat()
+    return c
+
+
+def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch):
+    sys.path.insert(0, str(ROOT / "tests"))
+    import home_fixtures as F
+    import home_items as I
+    import home_screen as H
+    case = _live_case()
+    monkeypatch.setattr(L, "load_cases", lambda conn=None, open_only=True: [case])
+    src = F.sources()
+    src.letters = [case]
+    it = I.item(src, "letter:case-av")
+    assert it["kind"] == "letter" and it["label"] == "Letter"
+    assert it["brief"]["what"] == "Recommendation letter for Avery Quinn."
+    assert it["brief"]["due"] == "Next due tomorrow."
+    assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:submitted:av4", "letter:submitted:av5",
+                                                "letter:submitted:av6", "open"]
+    assert it["deeper"]["state"] == "unavailable"
+    called = []
+
+    class FE:
+        owner_id, main_channel, cfg = "owner", "main", {}
+        store = types.SimpleNamespace(home_get=lambda n: {}, home_set=lambda n, v: None,
+                                      message=lambda ch, mid: {"channel": "dm", "id": mid, "thread_key": mid},
+                                      channel=lambda cid: {"id": cid})
+
+        def home_changed(self):
+            called.append("changed")
+
+        def dm_channel(self, user):
+            return "dm"
+    h = H.Home(FE(), clock=lambda: F.at(13, 10), sources=lambda tz: src, background=False)
+    h.hooks.letter = lambda cid, answer, dest, words: called.append((cid, answer, dest, words)) or \
+        {"ok": True, "said": "Marked as submitted."}
+    got, _after = h.act("letter:case-av", "letter:submitted:av4")
+    assert got == {"ok": True, "said": "Marked as submitted."}
+    assert ("case-av", "submitted", "av4", "") in called
+    got, _after = h.act("letter:case-av", "done")
+    assert got["ok"] is False                                  # no Done for a letter
+    h.hooks.letter = lambda cid, answer, dest, words: {"ok": True, "said": "I am writing the letter's draft.",
+                                                       "channel": "dm", "id": "p9"}
+    got, _after = h.act("letter:case-av", "letter:draft", "keep it to one page")
+    assert got["goto"] == "#/dm/p9/p9"
+
+
+def test_the_bots_home_hook_runs_the_answer_and_its_turn(monkeypatch):
+    ns, calls, _store = _bot(monkeypatch, [jordan()])
+    ns["OWNER_SLACK_USER_ID"] = "U1"
+    from preprocessor import letter_surface as PL
+    seen = []
+    monkeypatch.setattr(PL, "answer", lambda case, choice, dest="", text="", question="": seen.append(
+        (choice, question)) or {"ok": True, "said": "I am writing the request for the materials.",
+                                "turn": "Ask for the materials."})
+    got = ns["_home_letter"]("case-jp", "yes_ask")
+    assert got["ok"] and got["channel"] == "dm" and got["id"] == "p1"
+    assert seen == [("yes_ask", "")]                          # no write question in this made-up case
+    assert calls["turns"][0][0][3] == "Ask for the materials."
+    assert ns["_home_letter"]("case-gone", "yes")["ok"] is False
