@@ -2202,6 +2202,12 @@ def _reopen_mail_row_if_newer(entry_id: str, item: dict, kind: dict) -> bool:
     row = _ledger_mod.get_entry(entry_id)
     if not row or row.get("status") not in ("completed", "closed"):
         return False
+    import letters
+    if letters.is_letter_row(row):
+        # A letter's row ends on its submission; a later mail in its thread
+        # (a thank-you, a reminder) is the letter cases' to read
+        # (ingest_letters), never a reopen.
+        return False
     closed_at = row.get("closed_at") or row.get("updated_at") or ""
     received = item.get("received", "") or ""
     if not received or received <= closed_at:
@@ -2389,6 +2395,66 @@ def update_ledger_from_analysis(
 
     # Return current open entries for the briefing
     return _ledger_mod.get_open_entries()
+
+
+def ingest_letters(gate, inbox: list) -> list:
+    """Letter requests, reminders and confirmations among the fetched mail
+    (letters.py): a request joins its person's case with the row intake
+    made for it (or a new row, for a portal's automated mail the
+    needs-response detector leaves out), and a confirmation marks its
+    destination submitted. The local model's records decide; kept mail is
+    read too, and its case keeps the mail's keep level. Never raises."""
+    if not getattr(gate, "on", False):
+        return []
+    try:
+        import letters
+        by_id = (gate.index or {}).get("by_id") or {}
+        recs, levels = [], {}
+        for m in inbox or []:
+            rec = by_id.get(m.get("id") or "")
+            if not rec or rec.get("status") != "ok" or rec.get("own"):
+                continue
+            name = ((m.get("from") or {}).get("emailAddress") or {}).get("name") or ""
+            recs.append(dict(rec, from_name=name))
+            levels[rec.get("id") or ""] = gate.decision(rec).get("level", "full")
+        if not recs:
+            return []
+        rows = _letter_rows_for(recs)
+        done = letters.ingest(recs, rows_by_message=rows, levels=levels)
+        acted = [d for d in done if d.get("action") not in ("none", "unmatched")]
+        if acted:
+            print(f"  Letters: {len(acted)} mail(s) joined to letter cases", file=sys.stderr)
+        return done
+    except Exception as e:
+        print(f"  Letters: skipped ({e})", file=sys.stderr)
+        return []
+
+
+def _letter_rows_for(recs: list[dict]) -> dict:
+    """{message id: ledger row} for the mail the intake made a row for: the
+    row of the message itself, else the open intake row of its thread."""
+    mids = [r.get("id") or "" for r in recs if r.get("id")]
+    convs = {r.get("id") or "": r.get("conversation_id") or "" for r in recs}
+    out: dict = {}
+    db = _ledger_mod._get_db()
+    try:
+        for i in range(0, len(mids), 400):
+            part = mids[i:i + 400]
+            marks = ",".join("?" * len(part))
+            for r in db.execute(f"SELECT id, source_message_id FROM ledger WHERE source IS NULL "
+                                f"AND source_message_id IN ({marks})", part):
+                out[r["source_message_id"]] = r["id"]
+        for mid, conv in convs.items():
+            if mid in out or not conv:
+                continue
+            r = db.execute("SELECT id FROM ledger WHERE conversation_id = ? AND source IS NULL AND "
+                           "status IN ('open', 'snoozed', 'follow_up') AND metadata NOT LIKE "
+                           "'%\"letter\"%' ORDER BY created_at DESC", (conv,)).fetchone()
+            if r and str(r["id"]).startswith(_ledger_mod.INTAKE_PREFIXES):
+                out[mid] = r["id"]
+    finally:
+        db.close()
+    return out
 
 
 # -------------------------------------------------------------------
@@ -2736,6 +2802,7 @@ def run_full_daily(force_full: bool = False) -> dict:
         needs_response=needs_resp_delta,
         scheduling_requests=scheduling_delta,
     )
+    ingest_letters(gate, inbox)
 
     # Resurrect follow-up items whose date has arrived, and the snoozed
     # rows whose snooze has ended: both are open work again from today.
@@ -3099,6 +3166,7 @@ def run_intake_check() -> dict:
     before = set(_ledger_mod.get_all_source_message_ids())
     update_ledger_from_analysis([], [], [], needs_response=needs,
                                 scheduling_requests=None)
+    ingest_letters(gate, inbox)
     after = set(_ledger_mod.get_all_source_message_ids())
     created = len(after - before)
     if created:

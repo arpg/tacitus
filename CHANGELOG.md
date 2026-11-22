@@ -21,6 +21,13 @@ repository that preceded it.
   closed offers Not done yet. Nothing on Home sends: Send stays in Action
   requests. A list that draws again while you type keeps your words, your
   choice and your place, on Home and in Action requests.
+- **A letter someone asks you to write is one case per person.** The
+  person's own request and each program's or portal's request mail join
+  one case, with a date and a state for each place the letter goes. A
+  reply in the thread never closes a letter and never asks "looks done?";
+  only the submission, your word or your No closes it. Letter requests
+  stay off the Replies card, and no scheduled run drafts a reply to one.
+  A new case asks you once: will you write it?
 - **A Home item you open explains itself.** Opening an item on Home now
   shows a fuller briefing at once: what happened so far, what is at stake
   and what Tacitus does not know, with two or three next steps as buttons

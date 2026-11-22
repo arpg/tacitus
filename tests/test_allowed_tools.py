@@ -121,6 +121,9 @@ REQUIRED_HELPERS = [
     "onboarding.py",
     # docs/ea/overleaf.md runs every Overleaf git step through this one CLI.
     "overleaf_tools.py",
+    # Letter cases: the only way a lane records a letter's decision,
+    # draft or submission (letters.py).
+    "letters.py",
 ]
 
 
