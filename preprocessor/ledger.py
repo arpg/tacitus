@@ -34,6 +34,7 @@ All output is JSON for easy parsing by the LLM.
 """
 
 import argparse
+import importlib
 import json
 import os
 import pwd
@@ -810,6 +811,40 @@ def _place(db, entry_id: str, *, created: bool, project: str | None = None) -> d
         return {"skipped": f"not placed in a project: {str(e)[:160]}"}
 
 
+# The modules told when `add` or `update` writes an open main-EA row (each
+# in preprocessor/, with row_written(entry_id, created=bool)): the Home
+# item briefing's writer (home_deeper) queues the row for a briefing. A
+# module that is not there is skipped; a hook that fails never fails the
+# command. The hook runs in the writer's process (often the resident's
+# chat turn), so it records the row and returns; the work happens elsewhere.
+ROW_WRITTEN_HOOKS = ("home_deeper",)
+
+
+def _row_written(entry_id: str, *, created: bool) -> None:
+    """Tell ROW_WRITTEN_HOOKS that this command added or changed the open
+    main-EA row `entry_id`."""
+    for name in ROW_WRITTEN_HOOKS:
+        mod = sys.modules.get(name) or sys.modules.get(f"preprocessor.{name}")
+        if mod is None:
+            for full in (name, f"preprocessor.{name}"):
+                try:
+                    mod = importlib.import_module(full)
+                    break
+                except ImportError:
+                    continue
+                except Exception as e:
+                    print(f"NOTE: {name} did not load, so it was not told of {entry_id}: "
+                          f"{str(e)[:160]}", file=sys.stderr)
+                    break
+        fn = getattr(mod, "row_written", None) if mod is not None else None
+        if not callable(fn):
+            continue
+        try:
+            fn(entry_id, created=created)
+        except Exception as e:
+            print(f"NOTE: {name} was not told of {entry_id}: {str(e)[:160]}", file=sys.stderr)
+
+
 def cmd_add(args) -> int:
     """Add a new ledger entry."""
     if not args.id or not args.type:
@@ -908,6 +943,8 @@ def cmd_add(args) -> int:
     db = _get_db()
     row = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
     db.close()
+    if row["status"] in OPEN_STATUSES and not row["source"]:
+        _row_written(args.id, created=True)
     out = {"ok": True, "action": "added", "entry": _row_to_dict(row), **told}
     if placed:
         out["project"] = placed
@@ -1148,6 +1185,8 @@ def cmd_update(args) -> int:
     updated = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
     placed = _place(db, args.id, created=False) if updated["status"] in OPEN_STATUSES else {}
     db.close()
+    if updated["status"] in OPEN_STATUSES and not updated["source"]:
+        _row_written(args.id, created=False)
     out = {"ok": True, "action": "updated", "entry": _row_to_dict(updated)}
     if placed:
         out["project"] = placed

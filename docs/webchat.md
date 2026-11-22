@@ -803,6 +803,81 @@ the same way, sealed end to end, and may vote. The Settings page changes
 only in the owner's own web chat. The health room and debug-only content
 never reach Home.
 
+### Home items
+
+A tap on an item of Left for you or So far today opens it in place, as
+a block of Action requests opens: a quick briefing at once, then the
+item's choices (`preprocessor/home_items.py`). Every item Home lists has
+a `ref` (its `id`), which these routes take:
+
+| Route | What it does |
+|---|---|
+| `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, row_version, brief, choices, deeper, goto?, ask?, pending?}`; 404 `{ok: false, said}` when Home does not list it now |
+| `POST /api/home/act` `{ref, choice, arg?, version?}` | one choice: `{ok, said, undo?, undo_until?, goto?, item?}` |
+| `POST /api/home/undo` `{token}` | takes a Done, Not needed, Waiting or Later back while its window runs |
+| `POST /api/home/deeper` `{ref}` | starts the deeper briefing (`home_deeper.start`) |
+
+**The quick briefing** is code alone, never a model, from the row, its
+thread's record (the local model's brief, never the mail), the owner's
+earlier word on the thread (`owner_said`), the reply queue's record and
+the request: `what` (what it is and who asked), `asked` (what they ask
+for), `due` ("Due tomorrow.", "Overdue since Monday."), `standing` (up to
+four lines: how long it waited, the owner's last message, his earlier
+word, what Tacitus did, a close it proposed, a meeting asked) and `next`,
+what Tacitus would do, picked from the row's type and state ("Draft a
+reply with two or three times from your calendar." only when the thread
+asks to meet). No line says yes for the owner. A kept item (`local`,
+`facts`) has none of it: its title is `keep_gate.kept_line` and its one
+choice is Open in Outlook (a kept request: Open it in Action requests).
+
+**The choices**, and what each runs:
+
+| Kind | Choices | Runs |
+|---|---|---|
+| reply | Draft a reply, Tell Tacitus what to say, Not needed, Later | Draft it on the Replies card (`_dispatch_reply_draft`; the line is the owner's instruction for this reply alone); its Send card comes to Action requests and `goto` opens the turn's line there |
+| question (a reply's) | its answers, Other answer, Not needed, Later | the Replies card's answer buttons |
+| question (no reply) | Answer, Later | a new conversation with the owner's answer, sent |
+| item | Start it with Tacitus, Done, Waiting on someone, Later | a new conversation in Ask Tacitus (the row's project room when it has one) that opens with the owner's message naming the item, sent |
+| request | Open it in Action requests | nothing: Send and Create stay there |
+| closed today | Not done yet | the web chat's Needs me (reopen) |
+
+Done is the web chat's Mark done: a row Tacitus proposed is confirmed;
+any other closes on the owner's word ("marked done in the web chat") and
+gets a line in the missed-closure log, since a closure the owner states is
+one the signals missed. Not needed is the Replies card's (`user_handled`,
+the draft deleted, the thread's other reply rows closed, no missed-closure
+line: no signal could have known that no reply was wanted). Later snoozes
+the row to tomorrow, Monday or a day the owner picks (`ledger.py update
+--status snoozed`); Waiting on someone sets it waiting for five days.
+These four answer at once and take the item off Home, and the write waits
+30 seconds (`UNDO_S`): Undo in that time leaves the row exactly as it was,
+since nothing was written, no mail moved and no draft deleted. After it
+Undo says it is too late. The pending choice is kept in Home's store, so
+the tick writes it after a restart. An item that changed in the window (a
+new message, a close from elsewhere) is not written, and shows again.
+
+Every choice reads the item again first. The app sends the `version` it
+read (a digest of what the briefing and the choices are built from, which
+a refreshed record with the same facts, or a day passing, keeps); an item
+that changed since,
+or a choice it no longer offers, is refused in plain words with the item
+as it is now. A choice never sends mail, never creates an event and holds
+no confirmation token. The item read follows `/api/home` (any device that
+reads); a choice and an undo follow Action requests' buttons (never from a
+device paired on the relay's origin below "all").
+
+**The deeper briefing** is one hook (`preprocessor/home_deeper.py`:
+`state`, `start`, `step`): its block is `{"state": "unavailable"}` while
+that module is not there. Its next steps come after the code-built
+choices, as `step:<id>`, and a step that names one of the choices runs as
+that tap. A briefing stored ahead of the tap is kept against the item's
+`row_version` (`home_items.row_version`: the row's own fields, its thread
+record, the reply queue's record and a close proposal, never the clock),
+which the writer computes from the row alone. `ledger.py add` and `update`
+tell it of each open row they write (`ledger._row_written`, the modules in
+`ledger.ROW_WRITTEN_HOOKS`); a hook that is missing or fails never fails
+the write.
+
 ## Unread
 
 The bot keeps the read state, per thread, and every device shows the

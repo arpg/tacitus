@@ -5798,7 +5798,8 @@ def handle_reply_skip(ev: "_chat.ActionEvent"):
 REPLY_NOT_NEEDED_NOTE = "No reply needed: the owner's click on the Replies card"
 
 
-def _reply_close_thread(rid: str, conversation_id: str, out: dict) -> tuple[dict, list[dict]]:
+def _reply_close_thread(rid: str, conversation_id: str, out: dict,
+                        note: str = REPLY_NOT_NEEDED_NOTE) -> tuple[dict, list[dict]]:
     """The thread needs no reply, so every row on it that a reply would
     finish closes with the row of the card. `out` is that row's close;
     its `conversation_kept` says other rows are still open on the thread.
@@ -5815,7 +5816,7 @@ def _reply_close_thread(rid: str, conversation_id: str, out: dict) -> tuple[dict
     left = []
     for e in rows:
         res = _ledger_cli("close", "--id", e["id"], "--signal", "user_handled",
-                          "--note", REPLY_NOT_NEEDED_NOTE) if closes_on_reply(e) else {}
+                          "--note", note) if closes_on_reply(e) else {}
         if res.get("action") == "closed":
             out = res
         else:
@@ -5840,18 +5841,24 @@ def _reply_mail_line(out: dict, left: list[dict]) -> str:
 
 
 def _reply_not_needed(rid: str, row: dict, channel: str, card_id: str) -> None:
+    """Not needed on a Replies row card: the card says what _reply_close_no_reply did."""
+    _ok, line = _reply_close_no_reply(rid, row)
+    _replace_buttons_with_status(channel, card_id, line)
+
+
+def _reply_close_no_reply(rid: str, row: dict,
+                          note: str = REPLY_NOT_NEEDED_NOTE) -> tuple[bool, str]:
     """No reply goes out: delete the row's draft and retire its Send card,
     then close the row and the thread's other reply rows on the owner's
-    click, which archives the mail. The card says where the mail is."""
+    click (`note` is the closing note), which archives the mail. Returns
+    (closed, the line that says where the mail is). The Replies card's Not
+    needed and Home's (_home_not_needed) run it."""
     _state, draft_id = _reply_state(row, _reply_linked_drafts())
     tail = ""
     if draft_id:
         rc, why = _handled_delete_draft(draft_id)
         if rc == 3:
-            _replace_buttons_with_status(
-                channel, card_id,
-                ":warning: Its draft is being sent now, so nothing was closed.")
-            return
+            return False, ":warning: Its draft is being sent now, so nothing was closed."
         if rc == 0:
             shown = _load_draft_confirms().get(draft_id) or {}
             if shown.get("status") == "live" and shown.get("channel") and shown.get("message_ts"):
@@ -5866,16 +5873,11 @@ def _reply_not_needed(rid: str, row: dict, channel: str, card_id: str) -> None:
         else:
             log.warning(f"not needed: delete-draft failed for {rid}: {why}")
             tail = f" I could not delete its draft ({why})."
-    out = _ledger_cli("close", "--id", rid, "--signal", "user_handled", "--note",
-                      REPLY_NOT_NEEDED_NOTE)
+    out = _ledger_cli("close", "--id", rid, "--signal", "user_handled", "--note", note)
     if out.get("action") != "closed":
-        _replace_buttons_with_status(
-            channel, card_id, f":warning: I could not close it. It stays on the list.{tail}")
-        return
-    out, left = _reply_close_thread(rid, str(row.get("conversation_id") or ""), out)
-    _replace_buttons_with_status(
-        channel, card_id,
-        f":white_check_mark: Closed. No reply goes out.{tail}{_reply_mail_line(out, left)}")
+        return False, f":warning: I could not close it. It stays on the list.{tail}"
+    out, left = _reply_close_thread(rid, str(row.get("conversation_id") or ""), out, note)
+    return True, f":white_check_mark: Closed. No reply goes out.{tail}{_reply_mail_line(out, left)}"
 
 
 @app.action("reply_not_needed")
@@ -6594,6 +6596,90 @@ def handle_reply_choice(ev: "_chat.ActionEvent"):
         channel, card_id,
         f":pencil2: Your answer: {_chat.card_text.inert(answer, 0)}. The draft is being written."
         if ok else ":warning: I could not start the draft. Ask me here to write it.")
+
+
+# Home's items opened in place (preprocessor/home_items.py): what only the
+# bot runs for a choice on one. Draft a reply, Tell Tacitus what to say and
+# an answer start the Replies card's Draft it turn for the row
+# (_dispatch_reply_draft) on a new line in Action requests, where its Send
+# card comes; Not needed is the Replies card's own (_reply_close_no_reply),
+# run once the choice's undo window has passed. The row is the reply
+# queue's, read again at the press: a thread that no longer waits, a reply
+# that went out or a Send card already up does nothing. One turn per row: a
+# press while the row's turn runs, from Home or a Replies card, starts none.
+_HOME_TURNS: dict = {}
+
+
+def _home_queue_row(rid: str) -> "tuple[dict | None, str]":
+    """(the row as the reply queue has it now, why not when it is None)."""
+    out = _ledger_cli("reply-queue", "--min-age", "0")
+    rows = out.get("entries")
+    if not isinstance(rows, list):
+        return None, "Tacitus could not read the list just now. Try again in a minute."
+    row = next((r for r in rows if isinstance(r, dict) and r.get("id") == rid), None)
+    return row, "" if row else "This no longer waits for a reply. Nothing was done."
+
+
+def _home_draft(rid: str, words: str = "", answer: str = "") -> dict:
+    """Home's Draft a reply (no `words`), Tell Tacitus what to say (`words`,
+    the owner's line) or an answer to the row's question (`answer`, one the
+    row offers): {"ok", "said", "channel", "id"}, the line that opens the
+    turn's thread in Action requests. A draft whose Send card closed gets a
+    new Send card, as Draft it does."""
+    row, why = _home_queue_row(rid)
+    if row is None:
+        return {"ok": False, "said": why}
+    dm = _resolve_dm_channel()
+    if not dm or not OWNER_SLACK_USER_ID:
+        return {"ok": False, "said": "Tacitus cannot reach Action requests. Nothing was done."}
+    state, draft_id = _reply_state(row, _reply_linked_drafts())
+    if state == "card":
+        return {"ok": False, "said": f"Its Send card is already in {_CARDS_HERE}."}
+    if state == "sent":
+        return {"ok": False, "said": "The reply already went out. Nothing was done."}
+    if answer and (state != "decision" or answer not in _reply_choices(row)):
+        return {"ok": False, "said": "That answer is not offered any more. Nothing was done."}
+    if state == "decision" and not (answer or words):
+        return {"ok": False, "said": "Choose an answer first."}
+    if state == "draft" and not (answer or words) and _reply_new_send_card(draft_id, dm, None):
+        return {"ok": True, "said": f"Its draft was ready. The new Send card is in {_CARDS_HERE}."}
+    progress = _HOME_TURNS.get(rid, "")
+    if (progress and _reply_running(progress)) or not _reply_claim(rid):
+        return {"ok": False, "said": "This reply is being written already."}
+    got: list = []
+    try:
+        ok = _dispatch_reply_draft(row, dm, "", OWNER_SLACK_USER_ID, answer, words,
+                                   started=got.append)
+    finally:
+        _reply_unclaim(rid)
+    if not ok or not got:
+        return {"ok": False, "said": "Tacitus could not start the draft. Try again in a minute."}
+    _HOME_TURNS[rid] = got[0]
+    return {"ok": True, "channel": dm, "id": got[0],
+            "said": f"Tacitus is writing the reply. Its Send card comes to {_CARDS_HERE}."}
+
+
+def _home_not_needed(rid: str, note: str) -> dict:
+    """Home's Not needed, once its undo window has passed: {"ok", "said"}."""
+    row, why = _home_queue_row(rid)
+    if row is None:
+        return {"ok": False, "said": why}
+    ok, line = _reply_close_no_reply(rid, row, note)
+    return {"ok": ok, "said": line}
+
+
+def _home_outlook(conversation_id: str) -> str:
+    """The Outlook link of a thread's newest message, for a kept item's
+    Open in Outlook; '' when it cannot be found."""
+    return _proposal_mail_links([{"id": "home", "conversation_id": conversation_id}]).get("home", "")
+
+
+for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
+    _home_of = getattr(_web, "home", None)
+    if _home_of is not None and hasattr(_home_of, "hooks"):
+        _home_of.hooks.draft = _home_draft
+        _home_of.hooks.not_needed = _home_not_needed
+        _home_of.hooks.outlook = _home_outlook
 
 
 def _toggle_quoted(ev: "_chat.ActionEvent", show: bool):
