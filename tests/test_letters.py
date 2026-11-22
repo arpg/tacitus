@@ -601,3 +601,21 @@ def test_old_requests_in_the_inbox_open_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "ledger.db")
     old = dict(_portal("m-old", "Sam Ortiz", "Northfield University"), received="2026-01-02T00:00:00Z")
     assert letters.ingest([old]) == []
+
+
+def test_a_new_message_on_a_submitted_letters_thread_does_not_reopen_its_row(tmp_path, monkeypatch):
+    import preprocess
+    monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "ledger.db")
+    db = ledger._get_db()
+    meta = {"letter": {"case": "lc-1", "destination": "ld-1", "role": "destination"},
+            "closes_on": "submission"}
+    db.execute("INSERT INTO ledger (id, type, status, description, source_message_id, conversation_id, "
+               "date_identified, last_action, notes, metadata, created_at, updated_at, closed_at) "
+               "VALUES ('task-sub1', 'task', 'completed', 'Letter', 'm1', 'conv-sub1', ?, 'Letter "
+               "submitted', '', ?, ?, ?, ?)", (NOW, json.dumps(meta), NOW, NOW, NOW))
+    db.commit()
+    db.close()
+    item = {"message_id": "m2", "conversation_id": "conv-sub1", "received": "2026-11-20T00:00:00Z",
+            "subject": "Re: Letter", "body_preview": "Thank you!"}
+    assert preprocess._reopen_mail_row_if_newer("task-sub1", item, {"description": "x", "notes": ""}) is False
+    assert ledger.get_entry("task-sub1")["status"] == "completed"

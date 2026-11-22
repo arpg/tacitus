@@ -2202,6 +2202,12 @@ def _reopen_mail_row_if_newer(entry_id: str, item: dict, kind: dict) -> bool:
     row = _ledger_mod.get_entry(entry_id)
     if not row or row.get("status") not in ("completed", "closed"):
         return False
+    import letters
+    if letters.is_letter_row(row):
+        # A letter's row ends on its submission; a later mail in its thread
+        # (a thank-you, a reminder) is the letter cases' to read
+        # (ingest_letters), never a reopen.
+        return False
     closed_at = row.get("closed_at") or row.get("updated_at") or ""
     received = item.get("received", "") or ""
     if not received or received <= closed_at:

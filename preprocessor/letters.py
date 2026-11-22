@@ -532,8 +532,10 @@ def link_row(conn, ledger_id: str, case_id: str, dest_id: str = "", *, role: str
     meta["closes_on"] = "submission" if role == "destination" else "manual"
     meta["response_mode"] = "submission" if role == "destination" else meta.get("response_mode", "other")
     meta.pop("close_proposal", None)
+    led = _ledger()
     rtype = r["type"]
-    if rtype in ("response_needed", "follow_up", "draft_pending"):
+    if led.canonical_type(rtype) in led.REPLY_TYPES:
+        # A row whose type a reply finishes becomes work: the letter.
         rtype = "task"
     conn.execute("UPDATE ledger SET metadata = ?, type = ?, updated_at = ? WHERE id = ?",
                  (json.dumps(meta, sort_keys=True, default=str), rtype, _now(), ledger_id))
@@ -1969,44 +1971,45 @@ def _actor() -> str:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Letter cases: one per person, tracked to submission.")
+    p = argparse.ArgumentParser(description="Letter cases: one per person, tracked to submission.",
+                                allow_abbrev=False)
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("list")
+    s = sub.add_parser("list", allow_abbrev=False)
     s.add_argument("--all", action="store_true")
-    s = sub.add_parser("get")
+    s = sub.add_parser("get", allow_abbrev=False)
     s.add_argument("--case", required=True)
     for name in ("accept", "decline"):
-        s = sub.add_parser(name)
+        s = sub.add_parser(name, allow_abbrev=False)
         s.add_argument("--case", required=True)
         s.add_argument("--quote", default="")
-    s = sub.add_parser("add-destination")
+    s = sub.add_parser("add-destination", allow_abbrev=False)
     s.add_argument("--case", required=True)
     s.add_argument("--name", required=True)
     s.add_argument("--due", default="")
     s.add_argument("--method", default="unknown", choices=METHODS)
     s.add_argument("--link", default="")
     s.add_argument("--ledger-id", default="")
-    s = sub.add_parser("materials")
+    s = sub.add_parser("materials", allow_abbrev=False)
     s.add_argument("--case", required=True)
     s.add_argument("--kind", required=True, choices=MATERIAL_KINDS)
     s.add_argument("--ref", required=True)
-    s = sub.add_parser("record-draft")
+    s = sub.add_parser("record-draft", allow_abbrev=False)
     s.add_argument("--case", required=True)
     s.add_argument("--file", required=True)
     s.add_argument("--dest", default="")
-    s = sub.add_parser("ready")
+    s = sub.add_parser("ready", allow_abbrev=False)
     s.add_argument("--dest", required=True)
-    s = sub.add_parser("record-submitted")
+    s = sub.add_parser("record-submitted", allow_abbrev=False)
     s.add_argument("--dest", required=True)
     s.add_argument("--evidence", required=True)
-    s = sub.add_parser("merge")
+    s = sub.add_parser("merge", allow_abbrev=False)
     s.add_argument("--from", dest="from_id", required=True)
     s.add_argument("--into", required=True)
-    sub.add_parser("questions")
-    s = sub.add_parser("answer")
+    sub.add_parser("questions", allow_abbrev=False)
+    s = sub.add_parser("answer", allow_abbrev=False)
     s.add_argument("--question", required=True)
     s.add_argument("--choice", required=True)
-    s = sub.add_parser("migrate")
+    s = sub.add_parser("migrate", allow_abbrev=False)
     s.add_argument("--days", type=int, default=21)
     s.add_argument("--apply", action="store_true")
     s.add_argument("--reopen", action="store_true",
