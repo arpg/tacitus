@@ -65,7 +65,9 @@ TOPIC_FILES = {
     # A question about the calendar reads the same guide and nothing else
     # of the scheduling module (see MODULE_PATTERNS["calendar"]).
     "calendar": ["scheduling.md"],
-    "lor": ["lor.md"],
+    # Letters someone asked the owner to write (recommendation, reference,
+    # nomination, support); the module keeps its old name.
+    "lor": ["letters.md"],
     "polls": ["polls.md"],
     "reimbursement": ["reimbursement.md"],
     "gmail": ["gmail.md"],
@@ -107,7 +109,7 @@ EXTRACTABLE_SECTIONS = [
     ("### Letter of Recommendation uploads",
      "### Scheduling poll filling",
      "lor",
-     "- *LoR uploads*: do-and-tell. Detailed workflow loaded when LoR-related.\n"),
+     "- *Letters*: one decision, no reply draft; tracked to submission. Detailed workflow loaded when letter-related.\n"),
     ("### Scheduling poll filling (When2Meet, WhenIsGood, Doodle, Timeful)",
      "### Travel reimbursement",
      "polls",
@@ -184,7 +186,11 @@ MODULE_KEYWORDS: dict[str, set[str]] = {
               "scheduling poll", "fill out the scheduling poll",
               "fill out scheduling", "timeful"},
     "lor": {"letter of rec", "lor ", "lor,", "recommendation letter",
-            "recommendation upload", "upload the letter"},
+            "recommendation upload", "upload the letter",
+            "rec letter", "reference letter", "letter of reference", "nomination letter",
+            "letter of support", "support letter", "character reference", "reference for",
+            "letter case", "letters_work", "letters.py", "the letter for", "a letter for",
+            "write the letter", "draft the letter", "write a letter for", "letter for"},
     "snooze": {"snooze", "remind me later", "follow up later", "schedule send",
                "scheduled send", "deferred send", "remind me about this",
                "reminder", "remind me", "hold off"},
@@ -361,12 +367,15 @@ def _scheduling_thread(ctx: str) -> bool:
 def detect_needed_modules(msg: str, context: str = "") -> set[str]:
     """Determine which instruction modules a message needs, by keyword match.
 
-    `context` is the thread the message answers. It adds only
+    `context` is the thread the message answers. It adds two modules.
     `scheduling`, in a thread about meeting times, when the message asks
     for drafting or talks about the times: a reply written for a thread
     about meeting someone ("asking if you want to meet with Tyson") must
     propose times, and a follow-up such as "that's Thanksgiving week, it
-    won't work" must find new ones; both need the scheduling guide."""
+    won't work" must find new ones; both need the scheduling guide.
+    `lor`, in a thread about a letter the owner was asked to write: "yes,
+    ask her for the CV" or "she is our best TA" there is work on the
+    letter case, and the letters guide holds its rules."""
     lower = msg.lower()
     needed = set()
     keyword_matched = set()
@@ -381,6 +390,9 @@ def detect_needed_modules(msg: str, context: str = "") -> set[str]:
     for module, patterns in MODULE_PATTERNS.items():
         if module not in needed and any(p.search(lower) for p in patterns):
             needed.add(module)
+    if context and "lor" not in needed and any(kw in context.lower() for kw in MODULE_KEYWORDS["lor"]):
+        needed.add("lor")
+        keyword_matched.add("lor")
     if (context and "scheduling" not in needed
             and ("drafting" in needed or _TIME_FOLLOWUP.search(lower))
             and _scheduling_thread(context.lower())):

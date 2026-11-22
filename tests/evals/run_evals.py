@@ -170,6 +170,7 @@ def run_eval(fixture_info: dict, mode: str, model: str,
             "scheduling_rules_has_canonical_block",
             "scheduling_rules_lists_canonical_four",
         ],
+        "hard-success-letter-one-decision": ["letter_request_one_decision"],
     }
 
     applicable = list(fixture_assertions.get(_fixture_id, ASSERTIONS.keys()))

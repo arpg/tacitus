@@ -749,7 +749,11 @@ CONSERVATIVE_TIERS = {
     },
     "upload_letter_of_recommendation": {
         "tier": "ask-first",
-        "note": "Match LoR request against known letters, show in Slack for approval.",
+        "note": "Upload an approved letter through a tool, after asking.",
+    },
+    "draft_letter": {
+        "tier": "ask-first",
+        "note": "Draft a letter someone asked you to write, after asking.",
     },
     "prep_reimbursement_email": {
         "tier": "ask-first",

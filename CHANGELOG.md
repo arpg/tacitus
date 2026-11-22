@@ -28,6 +28,18 @@ repository that preceded it.
   only the submission, your word or your No closes it. Letter requests
   stay off the Replies card, and no scheduled run drafts a reply to one.
   A new case asks you once: will you write it?
+- **A letter you were asked to write is worked to submission.** A new
+  request gets one question: will you write it? Yes, Yes and ask for
+  materials, or No. Asking for materials never asks for a file the
+  request already carried, and says what came with it. The assistant
+  drafts the letter from the materials, your earlier letters and your
+  notes, and asks you about any fact or rating it cannot back up. It
+  makes one copy per place only where a name changes, and checks that
+  no other place's name stays in a copy. You read the letter as a PDF
+  on your letterhead; it never goes into a chat post or the review
+  repository unless you ask. After you approve it, the letter goes out
+  by email with your Send button, by a portal upload you confirm, or as
+  the link and the file for you. A decline is always yours.
 - **A Home item you open explains itself.** Opening an item on Home now
   shows a fuller briefing at once: what happened so far, what is at stake
   and what Tacitus does not know, with two or three next steps as buttons

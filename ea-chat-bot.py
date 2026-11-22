@@ -2889,6 +2889,10 @@ _BASH_ONLY_TOOLS = (
     "Bash(python3 {script_dir}/preprocessor/poll_filler.py *),"
     "Bash(python3 {script_dir}/preprocessor/booking_link.py *),"
     "Bash(python3 {script_dir}/preprocessor/compile_letter.py *),"
+    # The work on a letter case (docs/ea/letters.md): the owner's decision
+    # with their words, materials, the letter's brief, copies, PDF, approval
+    # and the submission steps. Nothing in it sends.
+    "Bash(python3 {script_dir}/preprocessor/letters_work.py *),"
     "Bash(python3 {script_dir}/preprocessor/ledger.py *),"
     "Bash(python3 {script_dir}/preprocessor/project_store.py *),"
     # Letter cases (letters.py): a person's letter, its places and dates.

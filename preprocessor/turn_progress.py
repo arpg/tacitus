@@ -54,6 +54,11 @@ SCRIPTS: dict[str, dict[str, str]] = {
     "site_tools": {"_": "working on the site"},
     "doc_review": {"_": "opening the review"},
     "compile_letter": {"_": "compiling the letter"},
+    "letters_work": {"_": "working on the letter", "status": "reading the letter case",
+                     "decide": "recording your answer", "collect": "saving the files",
+                     "brief": "preparing the letter's brief", "check": "checking the letter",
+                     "variants": "making a copy per place", "render": "building the PDF",
+                     "submit": "preparing the submission"},
     "preferences": {"_": "recording the rule", "list": "reading the rules"},
     "claude_usage": {"_": "checking usage"},
     "session_index": {"_": "reading the conversation index"},
@@ -70,7 +75,7 @@ PAST = {"reading": "read", "writing": "wrote", "finding": "found", "checking": "
         "updating": "updated", "closing": "closed", "proposing": "proposed", "filing": "filed",
         "working": "worked", "drafting": "drafted", "building": "built", "opening": "opened",
         "compiling": "compiled", "recording": "recorded", "logging": "logged", "running": "ran",
-        "using": "used", "looking": "looked", "saving": "saved"}
+        "using": "used", "looking": "looked", "saving": "saved", "making": "made"}
 
 _SCRIPT = re.compile(r"preprocessor/([a-z_0-9]+)\.py(?:\s+(?:--?[a-z-]+\s+)*([a-z][a-z0-9-]*))?")
 _SKIP = {"ToolSearch", "TodoWrite", "Skill", "AskUserQuestion", "ScheduleWakeup", "Monitor"}

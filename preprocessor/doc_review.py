@@ -21,6 +21,7 @@ git prints, and fetch and push go to the repository github.json names,
 never to the clone's remote.
 
     doc_review.py open    --file F --title T [--slug S] [--thread KEY] [--project ID] [--purge]
+                          [--owner-asked "<words>"]  (a letter under ~/.ea/letters needs it)
     doc_review.py fetch   --pr N --out F       the PR's text; once merged, main's copy
     doc_review.py fetch   --doc PATH --out F   a document as main holds it now
     doc_review.py list                          the documents on main
@@ -240,6 +241,21 @@ def sembr(markdown: str) -> str:
 def _prepared(file: str) -> str:
     text = sembr(Path(file).read_text())
     return text if text.endswith("\n") else text + "\n"
+
+
+def letter_guard(file: str, owner_asked: str = "") -> None:
+    """A letter about a person (a file under ~/.ea/letters) is the owner's
+    evaluation of them and stays out of the review repo unless the owner
+    asks for it there (docs/ea/letters.md): --owner-asked with their words."""
+    letters = (EA_DIR / "letters").resolve()
+    try:
+        real = Path(file).expanduser().resolve()
+    except OSError:
+        return
+    if (real == letters or letters in real.parents) and not " ".join((owner_asked or "").split()):
+        raise ReviewError("this is a letter about a person: it stays out of the review repo. Send the "
+                          "owner the PDF instead, or pass --owner-asked with their words when they ask "
+                          "for a review here")
 
 
 def parse_suggestion(body: str) -> str | None:
@@ -563,7 +579,8 @@ def _cached(verb: str, pr: int, out: str = "") -> dict:
 
 
 def cmd_open(gh: GitHub, file: str, title: str, slug: str = "", thread: str = "",
-             project: str = "", purge: bool = False) -> dict:
+             project: str = "", purge: bool = False, owner_asked: str = "") -> dict:
+    letter_guard(file, owner_asked)
     title = " ".join((title or "").split())
     if not title:
         raise ReviewError("--title is required")
@@ -702,7 +719,8 @@ def cmd_prefetch_doc(doc: str) -> dict:
     return {"status": "prefetched", "doc": path, "commit": main}
 
 
-def cmd_update(gh: GitHub, pr: int, file: str, message: str) -> dict:
+def cmd_update(gh: GitHub, pr: int, file: str, message: str, owner_asked: str = "") -> dict:
+    letter_guard(file, owner_asked)
     row = _entry(gh, pr)
     if row["state"] != "open":
         raise ReviewError(f"PR #{pr} is {row['state']}; open a new review instead")
@@ -891,6 +909,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--thread", default="")
     s.add_argument("--project", default="")
     s.add_argument("--purge", action="store_true")
+    s.add_argument("--owner-asked", default="", help="the owner's words, for a letter under ~/.ea/letters")
     # Each parser is spelled out: the mediator reads the options from this
     # source (mail_mediation._ParserScan), and a computed verb name hides them.
     doc_help = "a document on main: its path, as `list` prints it, or its slug"
@@ -908,6 +927,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--pr", type=int, required=True)
     s.add_argument("--file", required=True)
     s.add_argument("--message", default="")
+    s.add_argument("--owner-asked", default="", help="the owner's words, for a letter under ~/.ea/letters")
     s = sub.add_parser("review", allow_abbrev=False)
     s.add_argument("--pr", type=int, required=True)
     s = sub.add_parser("reply", allow_abbrev=False)
@@ -989,14 +1009,14 @@ def main(argv: list[str] | None = None) -> int:
                 res = cmd_prefetch_doc(args.doc) if args.doc is not None else cmd_prefetch(gh, args.pr)
             elif args.verb == "open":
                 res = cmd_open(gh, args.file, args.title, args.slug, args.thread,
-                               args.project, args.purge)
+                               args.project, args.purge, args.owner_asked)
             elif args.verb == "list":
                 res = cmd_list()
             elif args.verb == "fetch":
                 res = (cmd_fetch_doc(args.doc, args.out) if args.doc is not None
                        else cmd_fetch(gh, args.pr, args.out))
             elif args.verb == "update":
-                res = cmd_update(gh, args.pr, args.file, args.message)
+                res = cmd_update(gh, args.pr, args.file, args.message, args.owner_asked)
             elif args.verb == "purge":
                 res = cmd_purge(gh, args.pr, args.file)
             elif args.verb == "review":

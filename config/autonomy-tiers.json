@@ -32,7 +32,11 @@
     },
     "upload_letter_of_recommendation": {
       "tier": "do-and-tell",
-      "note": "Match incoming LoR request against known letters. Upload and notify on Slack with the letter shown. User can undo."
+      "note": "Upload an approved letter (recommendation, reference, nomination, support) through a tool that serves the destination, then report. A form's submit is still the owner's click. docs/ea/letters.md."
+    },
+    "draft_letter": {
+      "tier": "ask-first",
+      "note": "Draft a letter someone asked the owner to write, ahead of its date, without the owner asking in that turn. The owner reviews it as a file; nothing is sent. Promotable to do-and-tell. docs/ea/letters.md."
     },
     "prep_reimbursement_email": {
       "tier": "ask-first",

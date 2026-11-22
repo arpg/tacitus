@@ -703,10 +703,14 @@ def _allowed_roots() -> list[Path]:
     # and exports, and the deck workspace (the deck plugin: EA_DECKS_ROOT, else
     # <resident home>/presentations) holds the PDFs it builds: a poster or
     # a deck goes on a draft from where it was built, since the lane has no
-    # copy command.
+    # copy command. letters/ holds the letters the EA writes for the owner
+    # (docs/ea/letters.md): the PDF goes on the email that submits it, or
+    # into a portal's upload, from its case folder, and the request's files
+    # are saved there.
     decks = Path(os.environ.get("EA_DECKS_ROOT") or (EA_DIR.parent / "presentations"))
     return [EA_DIR / "uploads", EA_DIR / "receipts", EA_DIR / "docs",
-            EA_DIR / "research", EA_DIR / "state", EA_DIR / "exports", decks, Path("/tmp")]
+            EA_DIR / "research", EA_DIR / "state", EA_DIR / "exports", EA_DIR / "letters",
+            decks, Path("/tmp")]
 
 
 # Owner-zone plugin verbs travel as tool "plugin:<name>" (plugin_verbs.py,

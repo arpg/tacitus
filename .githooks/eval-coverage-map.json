@@ -2,8 +2,11 @@
   "_comment": "Maps file patterns to eval fixture IDs. Used by prepare-commit-msg to tag commits with eval coverage and by post-commit to run relevant evals.",
   "skills/morning-briefing.md": [
     "regression-001", "regression-002", "regression-003", "regression-004",
-    "regression-009", "hard-success-001", "hard-success-002", "hard-success-003"
+    "regression-009", "hard-success-001", "hard-success-002", "hard-success-003",
+    "hard-success-letter-one-decision"
   ],
+  "docs/ea/letters.md": ["hard-success-letter-one-decision"],
+  "preprocessor/letters_work.py": ["hard-success-letter-one-decision"],
   "skills/afternoon-catchup.md": [
     "regression-001", "regression-003"
   ],

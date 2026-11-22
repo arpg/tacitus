@@ -284,6 +284,7 @@ def test_docs_is_an_allowed_root_and_its_siblings_are_not():
         assert "docs" in names
         assert "research" in names  # the owner/EA shared research folder
         assert "exports" in names and "presentations" in names, "the EA's exports and the decks it builds"
+        assert "letters" in names, "a letter's PDF goes on the email that submits it"
         assert not ({"auth", "config"} & names)
         roots = M._allowed_roots()
         assert any(r == M.EA_DIR.parent / "presentations" for r in roots), "the deck workspace beside ~/.ea"

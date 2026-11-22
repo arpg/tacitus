@@ -180,6 +180,25 @@ def test_open_pushes_a_branch_opens_a_pr_and_can_purge_the_draft(env):
         dr.cmd_open(gh, str(_draft(env, "x")), "Year 2 outline")
 
 
+def test_a_letter_about_a_person_stays_out_unless_the_owner_asks(env):
+    """docs/ea/letters.md: a letter is the owner's evaluation of a person;
+    the review repo gets it only on the owner's words."""
+    gh = FakeGitHub()
+    folder = env["ea"] / "letters" / "case-one"
+    folder.mkdir(parents=True)
+    letter = folder / "letter.md"
+    letter.write_text("Dear Committee,\n\nA made-up letter.\n")
+    with pytest.raises(dr.ReviewError, match="letter about a person"):
+        dr.cmd_open(gh, str(letter), "Letter draft")
+    with pytest.raises(dr.ReviewError, match="letter about a person"):
+        dr.cmd_update(gh, 1, str(letter), "edits")
+    assert not gh.pulls
+    res = dr.cmd_open(gh, str(letter), "Letter draft", owner_asked="put the letter in the review repo")
+    assert res["status"] == "opened"
+    assert dr._parser().parse_args(["open", "--file", "f", "--title", "t", "--owner-asked", "w"]).owner_asked == "w"
+    assert dr._parser().parse_args(["update", "--pr", "1", "--file", "f", "--owner-asked", "w"]).owner_asked == "w"
+
+
 def test_open_in_a_sandbox_with_a_read_only_git_is_staged_then_opened_by_the_replay(env, monkeypatch):
     """A Codex turn's sandbox mounts .git read-only, on purpose: `open`
     stages itself, and apply-staged (after the turn, outside the sandbox)

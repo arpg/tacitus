@@ -368,3 +368,15 @@ tests:
         value: file://judge.py
         metadata:
           assertion: scheduling_rules_lists_canonical_four
+
+  - description: "HARD SUCCESS: a letter request gets one decision, never a reply draft"
+    vars:
+      fixture_path: "fixtures/letter-request-one-decision.json"
+    metadata:
+      category: hard-success
+      bug_ref: "Letter requests drafted and closed as replies (issue #318 follow-up)"
+    assert:
+      - type: python
+        value: file://judge.py
+        metadata:
+          assertion: letter_request_one_decision
