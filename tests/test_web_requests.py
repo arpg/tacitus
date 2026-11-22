@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "botcore"))
 sys.path.insert(0, str(ROOT))
 
 from botcore.chat import action_requests as ar  # noqa: E402
+from botcore.chat import card_text  # noqa: E402
 from preprocessor import web_requests as wr  # noqa: E402
 
 NOW = 1_800_000_000.0
@@ -52,6 +53,25 @@ def test_a_block_reads_the_card_s_labelled_fields_and_falls_back_to_its_title():
         {"action": "A file for you", "who": "", "what": "letter.pdf", "when": ""}
     assert ar.block(msg("message", text="A new device asks to reach Tacitus: \"a phone\", pairing code 123 456."))[
         "action"] == "Approve a device"
+
+
+def test_a_folded_letter_card_removes_internal_markers_but_keeps_real_control_warnings():
+    subject = "Recommendation letter for Avery Quinn"
+    got = ar.block(msg(card=card("letter", ":memo: *" + card_text.inert(subject) + "*",
+                                 [("From", card_text.inert("Avery Quinn")),
+                                  ("Subject", card_text.inert(subject)),
+                                  ("When", card_text.inert("Next due Dec 1"))])))
+    assert got == {"action": "Letter to write", "who": "From Avery Quinn", "what": subject,
+                   "when": "Next due Dec 1"}
+    # The same fallback for a card without fields: its renderer's
+    # delimiters never become visible warnings.
+    got = ar.block(msg(card=card("plugin", "Review " + card_text.inert(subject))))
+    assert got["action"] == "Review " + subject
+    assert all("\ue000" not in v and "\ue001" not in v and "[U+E00" not in v for v in got.values())
+    # Untrusted controls were already made visible inside the inert span;
+    # removing the builder's delimiters must preserve that warning.
+    got = ar.block(msg(card=card(fields=[("Subject", card_text.inert("Budget\u202e <b>x</b>"))])))
+    assert got["what"] == "Budget[U+202E] <b>x</b>"
 
 
 def test_urgency_has_three_levels_from_the_deadline_the_event_and_the_wait():

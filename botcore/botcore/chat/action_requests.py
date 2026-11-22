@@ -65,7 +65,8 @@ def _fields(card: dict) -> dict[str, str]:
     out: dict[str, str] = {}
     for f in card.get("fields") or []:
         if isinstance(f, dict) and f.get("label") and f.get("label") not in out:
-            out[str(f["label"])] = card_text.one_line(str(f.get("value") or ""), 300)
+            out[str(f["label"])] = card_text.one_line(
+                card_text.strip_inert(str(f.get("value") or "")), 300)
     return out
 
 
@@ -90,7 +91,7 @@ def block(msg: dict) -> dict:
     card has no such field. `what` falls back to the card's title (or a
     message's first line) when the card names no subject."""
     card = msg.get("card") if isinstance(msg.get("card"), dict) else {}
-    title = _ts.plain(card.get("title") or msg.get("text"), 120)
+    title = _ts.plain(card_text.strip_inert(card.get("title") or msg.get("text") or ""), 120)
     if not card:
         file = msg.get("file") if isinstance(msg.get("file"), dict) else {}
         if msg.get("author") == "owner":

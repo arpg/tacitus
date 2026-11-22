@@ -5454,7 +5454,9 @@ def _letter_card(spec: dict) -> "_chat.ConfirmationCard":
     sel = spec.get("select")
     select = _chat.CardSelect(sel[0], sel[1], list(sel[2])) if sel else None
     lines = [inert(ln, 300) if not ln.startswith("<https://") else ln for ln in spec["lines"]]
-    fields = [_chat.CardField(k, inert(v, 120)) for k, v in spec.get("fields") or []]
+    # A field's value is plain: every frontend renders it as inert text.
+    fields = [_chat.CardField(k, _chat.card_text.one_line(v, 120))
+              for k, v in spec.get("fields") or []]
     return _chat.ConfirmationCard(
         kind=spec["kind"], title=spec["title"], lines=lines, fields=fields, actions=actions,
         select=select, block_id=spec["block_id"], no_default=bool(spec.get("no_default")),
