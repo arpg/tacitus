@@ -1448,6 +1448,8 @@ class Home:
         if sig != self._meta("sig").get("sig"):
             self._meta_set("sig", {"sig": sig})
             self.fe.home_changed()
+        if self.background:
+            _prewarm(self.fe, p.get("left"))
         return p
 
     # the owner's vote on the greeting
@@ -1516,6 +1518,20 @@ def _items():
     else:  # preprocessor/ on sys.path
         import home_items
     return home_items
+
+
+def _prewarm(fe, left) -> None:
+    """The deeper briefings of the first items of Left for you, ahead of a
+    tap, where they cost no hosted plan (home_deeper.prewarm). Never
+    raises."""
+    try:
+        try:
+            import home_deeper
+        except ModuleNotFoundError:  # imported as preprocessor.home_screen
+            from preprocessor import home_deeper
+        home_deeper.prewarm(fe, left)
+    except Exception as e:
+        log.debug("home: no prewarm: %s", e)
 
 
 def _valid_zone(name: str) -> bool:
