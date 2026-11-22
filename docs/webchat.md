@@ -1113,12 +1113,17 @@ and what the place does changed.
 - **A letter case.** A new letter request is one card, kind `letter_ask`
   ("Letter request" folded): Will you write it? Yes, Yes and ask for
   materials, No; with the destinations, their dates and what the request
-  already included (file names; a count for kept mail). No reaction
-  answers it. After a yes the case has one live card, kind `letter`
+  already included (what the person sent; a count for kept mail). No
+  reaction answers it. A new mail whose person may be an open case's
+  person asks that first, on its own card ("Is this the same person?":
+  Same person, Someone else; the store remembers the answer), and the
+  decision follows the answer. After a yes the case has one live card, kind `letter`
   ("Letter to write"): each open destination with its date, state and how
   it is submitted, what is missing, a link line per portal, and Draft the
   letter (Change the letter once drafted), Submitted per destination (a
-  menu for more than three), Set the due date and Decline. A loud rung of
+  menu for more than three), Set the due date and Decline. A case whose
+  next date is more than two weeks out gets its card when the date comes
+  that close (it is on the briefing's Letters list until then). A loud rung of
   the date ladder (the day before a date, the day itself, the day after)
   posts the card again, the old one retired, so it tops the list and
   pushes. Each value names the case and its open rows as `rows`, never

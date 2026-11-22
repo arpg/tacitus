@@ -5491,7 +5491,8 @@ def _post_letter_cards(force: bool = False) -> int:
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
         return 0
-    levels = _letter_levels(cases) if any(p["what"] in ("ask", "case", "remind") for p in plan) else {}
+    levels = _letter_levels(cases) if any(p["what"] in ("ask", "case", "remind", "join")
+                                          for p in plan) else {}
     posted = 0
     for p in plan:
         cid, what = p["case"], p["what"]
@@ -5515,6 +5516,19 @@ def _post_letter_cards(force: bool = False) -> int:
         if case is None:
             continue
         lv = levels.get(cid, "local")
+        if what == "join":
+            q = next((x for x in _ls.questions(case, "join") if str(x.get("id")) == p["question"]), None)
+            if q is None:
+                continue
+            try:
+                ref = _post_card(dm_channel, _letter_card(_ls.join_spec(case, q, lv)))
+            except Exception as e:
+                log.warning(f"letter question {p['question']}: not posted: {e}")
+                continue
+            posted += 1
+            cards[p["key"]] = {"kind": "join", "live": True, "card": getattr(ref, "id", "") or "",
+                               "channel": getattr(ref, "channel", "") or dm_channel, "posted": now}
+            continue
         if what == "ask" or p.get("kind") == "ask":
             spec = _ls.decision_spec(case, today, lv)
         else:
@@ -5555,7 +5569,7 @@ def _letter_turn(prompt: str, channel: str, thread: str, user_id: str, case_id: 
     return True
 
 
-@app.action(re.compile(r"^letter_(?:yes|yes_ask|no|draft|submitted|date|decline)$"))
+@app.action(re.compile(r"^letter_(?:yes|yes_ask|no|draft|submitted|date|decline|join_same|join_other)$"))
 def handle_letter(ev: "_chat.ActionEvent"):
     """A press on a letter card: the case must still be open, and a
     submission must name one of its open destinations. The answer is
@@ -5581,7 +5595,7 @@ def handle_letter(ev: "_chat.ActionEvent"):
 
     def run() -> None:
         try:
-            got = _ls.answer(case, choice, dest=dest, text=words)
+            got = _ls.answer(case, choice, dest=dest, text=words, question=str(v.get("question") or ""))
         except Exception as e:
             log.warning(f"letter answer {choice} on {case.get('id')}: {e}")
             got = {"ok": False, "said": "I could not do that. Ask me in Ask Tacitus."}
@@ -5592,10 +5606,10 @@ def handle_letter(ev: "_chat.ActionEvent"):
         icon = ":white_check_mark:" if got.get("ok") else ":warning:"
         _replace_buttons_with_status(channel, card_id, f"{icon} {_chat.card_text.inert(said, 0)}")
         data = _load_letter_cards()
-        rec = (data.get("cards") or {}).get(str(case.get("id"))) or {}
-        if rec.get("card") == card_id:
-            rec["live"] = False
-            _save_letter_cards(data)
+        for rec in (data.get("cards") or {}).values():
+            if rec.get("card") == card_id:
+                rec["live"] = False
+        _save_letter_cards(data)
         try:
             _post_letter_cards(force=True)
         except Exception as e:

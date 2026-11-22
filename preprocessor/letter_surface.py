@@ -45,7 +45,11 @@ DONE_STATES = ("submitted", "declined")
 # How each kind is named where a list names the case by its kind.
 KIND_WORDS = {"recommendation": "Recommendation letter", "reference": "Reference letter",
               "nomination": "Nomination letter", "support": "Support letter",
-              "character": "Character letter"}
+              "character": "Character letter", "evaluation": "Evaluation letter"}
+# What the person sent, by the store's material kinds.
+MATERIAL_WORDS = {"cv": "a CV", "statement": "a statement", "list": "a list of places",
+                  "draft": "a draft letter", "transcript": "a transcript", "sample": "a paper",
+                  "other": "other files"}
 KEPT_CASE = "A kept letter case"
 # Days before a destination's due date when a reminder fires; 0 is the
 # day itself, -1 the day after.
@@ -78,8 +82,12 @@ def _letters():
 
 
 def _connect():
+    """The ledger database, read-only, rows by name (as letters.py reads)."""
+    import sqlite3
     import ledger
-    return ledger.guarded_connect(ledger.DB_PATH, read_only=True)
+    conn = ledger.guarded_connect(ledger.DB_PATH, read_only=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def load_cases(conn=None, *, open_only: bool = True) -> list[dict]:
@@ -161,9 +169,26 @@ def open_dests(case: dict) -> list[dict]:
 
 
 def is_new(case: dict) -> bool:
-    """No answer from the owner yet: every destination is still `asked`."""
-    ds = dests(case)
-    return bool(ds) and all((d.get("state") or "asked") == "asked" for d in ds)
+    """No answer from the owner yet: the case records no decision and
+    every destination (if it has any yet) is still `asked`."""
+    if case.get("decision"):
+        return False
+    return all((d.get("state") or "asked") == "asked" for d in dests(case))
+
+
+def is_open(case: dict) -> bool:
+    """An open case with something to do: a destination to finish, or no
+    destination yet and no decision (the person's own request)."""
+    if (case.get("status") or "open") != "open":
+        return False
+    return bool(open_dests(case)) or (not dests(case) and not case.get("decision"))
+
+
+def questions(case: dict, kind: str = "") -> list[dict]:
+    """The case's open questions for the owner (letters.ask: `write`, the
+    new case's decision; `join`, whether two people are one)."""
+    return [q for q in case.get("questions") or [] if isinstance(q, dict)
+            and not q.get("answer") and (not kind or q.get("kind") == kind)]
 
 
 def facts(case: dict, today: date) -> dict:
@@ -181,12 +206,19 @@ def facts(case: dict, today: date) -> dict:
             "overdue": [d for d, due in dated if due and due < today],
             "undated": [d for d, due in dated if not due],
             "new": is_new(case),
-            "finished": bool(ds) and not opn and any(d.get("state") == "submitted" for d in ds)}
+            "finished": bool(ds) and not opn and any(d.get("state") == "submitted" for d in ds)
+            and not case.get("decision") == "declined"}
 
 
 def ledger_ids(case: dict, *, open_only: bool = True) -> list[str]:
+    """The ledger rows the case stands for: its destinations' (the open
+    ones with `open_only`) and the person's own request (`case_ledger_id`,
+    letters.py: it closes with the case)."""
     pool = open_dests(case) if open_only else dests(case)
-    return list(dict.fromkeys(str(d["ledger_id"]) for d in pool if d.get("ledger_id")))
+    ids = [str(d["ledger_id"]) for d in pool if d.get("ledger_id")]
+    if case.get("case_ledger_id"):
+        ids.append(str(case["case_ledger_id"]))
+    return list(dict.fromkeys(ids))
 
 
 def level(case: dict, rows: dict | None = None, *, records=None) -> str:
@@ -259,7 +291,7 @@ def _own_line(case: dict, f: dict, today: date, lv: str) -> str:
     if f["new"]:
         opened = _date(case.get("opened"))
         body = f"asked {opened:%b} {opened.day}" if opened else "a new request"
-        body += f", {_n(f['total'], 'destination')}"
+        body += f", {_n(f['total'], 'destination')}" if f["total"] else ", no places named yet"
     else:
         body = f"{f['submitted']} of {f['total'] - f['declined']} submitted"
     out = f"{head}: {body}."
@@ -283,16 +315,21 @@ def line(case: dict, today: date, *, lv: str = "full") -> str:
     f = facts(case, today)
     base = ""
     mod = _letters()
-    if not _kept(lv) and mod is not None and hasattr(mod, "summary_line"):
+    if mod is not None and hasattr(mod, "summary_line"):
         try:
-            base = _clean(mod.summary_line(case), 300)
+            base = _clean(mod.summary_line(case, level=lv, today=today), 300)
+        except TypeError:
+            base = "" if _kept(lv) else _clean(mod.summary_line(case), 300)
         except Exception:
             base = ""
+        if _kept(lv) and person(case, "full") and person(case, "full") in base:
+            base = ""  # a store's line that names the person never shows for kept mail
     base = base or _own_line(case, f, today, lv)
     if not base.endswith("."):
         base += "."
     if f["new"]:
-        base += " Will you write it? Answer in Action requests."
+        base += (" Answer in Action requests." if "will you write it" in base.lower()
+                 else " Will you write it? Answer in Action requests.")
     elif f["undated"] and _asks_date(case, today):
         base += " Tell me the due date."
     return base
@@ -321,7 +358,7 @@ def briefing_view(open_rows: list[dict], *, today: date | None = None, cases=Non
     hide_ids = {i for i, r in rows.items() if is_letter_row(r)}
     entries = []
     for c in cases:
-        if not dests(c):
+        if not is_open(c):
             continue
         entries.append(entry(c, today, rows))
         hide_ids |= set(ledger_ids(c, open_only=False))
@@ -330,7 +367,7 @@ def briefing_view(open_rows: list[dict], *, today: date | None = None, cases=Non
     finished = []
     for c in closed or []:
         when = max((_date(d.get("submitted_at")) for d in dests(c) if _date(d.get("submitted_at"))),
-                   default=None)
+                   default=None) or _date(c.get("closed_at"))
         if facts(c, today)["finished"] and when and (today - when).days <= 1:
             lv = level(c, rows, records=False)
             finished.append({"case": str(c.get("id") or ""), "name": name(c, lv),
@@ -339,6 +376,7 @@ def briefing_view(open_rows: list[dict], *, today: date | None = None, cases=Non
         return {}
     convs = {str(rows[i].get("conversation_id")) for i in hide_ids
              if i in rows and rows[i].get("conversation_id")}
+    convs |= {str(d["conversation_id"]) for c in cases for d in dests(c) if d.get("conversation_id")}
     mids = {str(rows[i].get("source_message_id")) for i in hide_ids
             if i in rows and rows[i].get("source_message_id")}
     for c in cases:
@@ -565,8 +603,10 @@ def _materials(case: dict, lv: str) -> str:
     names = [str(a.get("name") or "") for a in case.get("request_attachments") or []
              if isinstance(a, dict) and a.get("name")]
     if not names:
-        names = [str(m.get("name") or m.get("kind") or "") for m in case.get("materials") or []
-                 if isinstance(m, dict) and (m.get("name") or m.get("kind"))]
+        # The store keeps what the person sent by kind (letters.add_material).
+        names = list(dict.fromkeys(MATERIAL_WORDS.get(str(m.get("kind") or ""), str(m.get("kind") or ""))
+                                   for m in case.get("materials") or []
+                                   if isinstance(m, dict) and m.get("kind")))
     names = [n for n in names if n]
     if not names:
         return "The request named no materials."
@@ -598,8 +638,11 @@ def decision_spec(case: dict, today: date, lv: str = "full") -> dict:
     lines += [f"{i}. {_dest_line(d, today, lv, i)}" for i, d in enumerate(shown, 1)]
     if f["total"] > len(shown):
         lines.append(f"And {f['total'] - len(shown)} more.")
+    if not shown:
+        lines.append("It names no places to send it yet.")
     lines.append(_materials(case, lv))
-    value = _value(case)
+    q = next(iter(questions(case, "write")), None)
+    value = _value(case, **({"question": str(q["id"])} if q and q.get("id") else {}))
     return {"kind": "letter_ask", "title": ":memo: *A letter request.* Will you write it?",
             "lines": lines,
             "fields": [("From", person(case, lv) or "A kept message"), ("Subject", nm),
@@ -665,6 +708,21 @@ def case_spec(case: dict, today: date, lv: str = "full", *, reminder: str = "") 
             "block_id": f"letter_{value['case']}_{today.isoformat()}"}
 
 
+def join_spec(case: dict, q: dict, lv: str = "full") -> dict:
+    """A `join` question (letters.ask_join): is the person of a new mail
+    the person of an open case? Same person / Someone else, asked once;
+    no reaction answers it. Kept mail gets fixed words."""
+    text = _clean(q.get("text"), 300) if lv in ("full", "summary") else \
+        "Two letter requests may be from the same person."
+    value = _value(case, question=str(q.get("id") or ""))
+    return {"kind": "letter_ask", "title": ":memo: *Is this the same person?*",
+            "lines": [text, "Your answer is kept, so I do not ask again."],
+            "fields": [("Subject", name(case, lv))],
+            "actions": [("letter_join_same", ":link: Same person", value, "", "same", ""),
+                        ("letter_join_other", "Someone else", value, "", "other", "")],
+            "no_default": True, "block_id": f"letter_join_{q.get('id')}"}
+
+
 def card_plan(cases: list[dict], cards: dict, today: date, sent: dict | None = None) -> list[dict]:
     """What the bot posts this tick: [{case, what, reminder?, keys?}] with
     `what` "ask" (a new case with no card yet), "case" (an open case with
@@ -679,9 +737,17 @@ def card_plan(cases: list[dict], cards: dict, today: date, sent: dict | None = N
         due.setdefault(r["case"], []).append(r)
     for c in cases:
         cid = str(c.get("id") or "")
-        if not cid or not open_dests(c):
+        if not cid or not is_open(c):
             continue
         open_ids.add(cid)
+        joins = questions(c, "join")
+        for q in joins:
+            key = f"q:{q.get('id')}"
+            open_ids.add(key)
+            if key not in cards:
+                out.append({"case": cid, "what": "join", "question": str(q.get("id") or ""), "key": key})
+        if joins:
+            continue  # who it is comes first: the case's own card follows the answer
         rec = cards.get(cid) or {}
         live = bool(rec.get("live"))
         todays = due.get(cid, [])
@@ -694,14 +760,24 @@ def card_plan(cases: list[dict], cards: dict, today: date, sent: dict | None = N
         elif loud:
             out.append({"case": cid, "what": "remind", "kind": "ask" if new else "case",
                         "items": loud, "keys": keys})
-        elif not new and (not live or rec.get("kind") != "case"):
+        elif not new and (not live or rec.get("kind") != "case") and _in_window(c, today):
             out.append({"case": cid, "what": "case", "keys": keys})
         elif keys:
             out.append({"case": cid, "what": "mark", "keys": keys})
     for cid, rec in cards.items():
         if cid not in open_ids and rec.get("live"):
-            out.append({"case": cid, "what": "retire"})
+            out.append({"case": cid, "what": "retire"})  # a closed case, an answered question
     return out
+
+
+def _in_window(case: dict, today: date) -> bool:
+    """A case Action requests holds a block for: one overdue, due within
+    HOME_DAYS or with an undated destination (it needs its date). A case
+    further out gets its block when its date comes that close; until then
+    it is on the briefing's Letters list."""
+    f = facts(case, today)
+    return bool(f["overdue"] or f["undated"] or not f["open"]
+                or (f["next_due"] and (f["next_due"] - today).days <= HOME_DAYS))
 
 
 def find(cases: list[dict], case_id: str) -> dict | None:
@@ -710,16 +786,20 @@ def find(cases: list[dict], case_id: str) -> dict | None:
 
 # ── answers (the bot's handler; builder B's letters_work decides) ─────
 
-CHOICES = ("yes", "yes_ask", "no", "draft", "submitted", "date", "decline")
+CHOICES = ("yes", "yes_ask", "no", "draft", "submitted", "date", "decline", "join_same", "join_other")
 ACTION_CHOICE = {"letter_yes": "yes", "letter_yes_ask": "yes_ask", "letter_no": "no",
                  "letter_draft": "draft", "letter_submitted": "submitted", "letter_date": "date",
-                 "letter_decline": "decline"}
+                 "letter_decline": "decline", "letter_join_same": "join_same",
+                 "letter_join_other": "join_other"}
+# The store's own answers to its questions (letters.WRITE_CHOICES, JOIN_*).
+STORE_ANSWERS = {"yes": "Yes", "yes_ask": "Yes, ask for materials", "no": "No",
+                 "join_same": "Same person", "join_other": "Someone else"}
 
 
 def _turn_prompt(case: dict, choice: str, dest: str, text: str) -> str:
     """The fallback turn's prompt when letters_work is absent: the case
     by id, the owner's choice and words; the EA reads the store and the
-    guide (docs/ea/lor.md) itself."""
+    letters guide in docs/ea itself."""
     cid = str(case.get("id") or "")
     said = f' The owner added: "{_clean(text, 300)}".' if text else ""
     what = {
@@ -727,24 +807,38 @@ def _turn_prompt(case: dict, choice: str, dest: str, text: str) -> str:
         "yes_ask": ("The owner will write this letter and wants the materials from the person. Ask "
                     "only for what the request did not already include, and name what it included."),
         "draft": "The owner asked for the letter's draft. Draft it from the materials.",
-        "date": "The owner gives the due date for the destination without one.",
-        "no": "The owner will not write this letter. Ask how to decline. Draft nothing on your own.",
-        "decline": "The owner will not write this letter. Ask how to decline. Draft nothing on your own.",
+        "date": ("The owner gives the due date for the destination without one. With no date in "
+                 "the owner's words, ask for it in one line."),
     }.get(choice, "")
     dest_s = f" Destination id: {dest}." if dest else ""
     return (f"Letter case {cid} (python3 /home/ea-bot/ea-system/preprocessor/letters.py get --case {cid}). "
-            f"{what}{dest_s}{said} Follow docs/ea/lor.md. A letter's text never goes in a channel post.")
+            f"{what}{dest_s}{said} Follow the letters guide (docs/ea/letters.md; docs/ea/lor.md "
+            "on an older install). A letter's text never goes in a channel post.")
 
 
-def answer(case: dict, choice: str, *, dest: str = "", text: str = "", runner=None) -> dict:
-    """One answer on a letter card: {"ok", "said", "turn"?}.
-    letters_work.answer decides when builder B's module is there; else
-    the store's own verbs for what needs no model (Yes, a submission),
-    and one EA turn for the rest. Never a close on a reply, never a
-    decline drafted on its own."""
+def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question: str = "",
+           runner=None) -> dict:
+    """One answer on a letter card: {"ok", "said", "turn"?}. A `join`
+    answer is the store's own (letters.answer). Any other goes to
+    letters_work.answer when builder B's module is there; else the
+    store's verbs do what needs no model (Yes, No and Decline record the
+    owner's decision and send nothing; a submission is recorded), and one
+    EA turn does the rest (the materials request, the draft, the date).
+    Never a close on a reply, never a decline drafted on its own."""
     if choice not in CHOICES:
         return {"ok": False, "said": "That choice is not known. Nothing was done."}
     cid = str(case.get("id") or "")
+    run = runner or _cli
+
+    def done(out: dict, yes: str) -> dict:
+        ok = bool(out) and not out.get("error")
+        return {"ok": ok, "said": yes if ok else "I could not record your answer. Ask me in Ask Tacitus."}
+    if choice in ("join_same", "join_other"):
+        if not question:
+            return {"ok": False, "said": "This question changed since the card. Nothing was done."}
+        return done(run(["answer", "--question", question, "--choice", STORE_ANSWERS[choice]]),
+                    "Recorded: one letter case now." if choice == "join_same"
+                    else "Recorded: two people, two letter cases.")
     try:
         import letters_work  # type: ignore
     except Exception:
@@ -752,34 +846,32 @@ def answer(case: dict, choice: str, *, dest: str = "", text: str = "", runner=No
     if letters_work is not None and hasattr(letters_work, "answer"):
         got = letters_work.answer(cid, choice, dest=dest, text=text, actor="owner")
         return got if isinstance(got, dict) else {"ok": False, "said": "Nothing was done."}
-    run = runner or _cli
-    if choice == "yes":
-        out = run(["accept", "--case", cid])
-        ok = bool(out) and not out.get("error")
-        return {"ok": ok, "said": "You will write it. It is on your list with its dates." if ok
-                else "I could not record your answer. Ask me in Ask Tacitus."}
+    if choice in ("yes", "yes_ask", "no"):
+        argv = (["answer", "--question", question, "--choice", STORE_ANSWERS[choice]] if question
+                else ["decline" if choice == "no" else "accept", "--case", cid])
+        got = done(run(argv), {"yes": "You will write it. It is on your list with its dates.",
+                               "yes_ask": "I am writing the request for the materials.",
+                               "no": "You will not write it. Nothing is sent."}[choice])
+        if got["ok"] and choice == "yes_ask":
+            got["turn"] = _turn_prompt(case, choice, dest, text)
+        return got
+    if choice == "decline":
+        return done(run(["decline", "--case", cid]), "Declined. Nothing is sent.")
     if choice == "submitted":
         if not dest:
             return {"ok": False, "said": "Pick the destination you submitted."}
-        out = run(["record-submitted", "--dest", dest, "--evidence",
-                   "the owner said so in Action requests"])
-        ok = bool(out) and not out.get("error")
-        return {"ok": ok, "said": "Marked as submitted." if ok
-                else "I could not record it. Ask me in Ask Tacitus."}
-    if choice == "yes_ask":
-        run(["accept", "--case", cid])
-    words = {"yes_ask": "I am writing the request for the materials.",
-             "draft": "I am writing the letter's draft.",
-             "date": "I am recording the date.",
-             "no": "I will ask you how to decline. Nothing is sent.",
-             "decline": "I will ask you how to decline. Nothing is sent."}[choice]
+        return done(run(["record-submitted", "--dest", dest, "--evidence",
+                         "the owner said so in Action requests"]), "Marked as submitted.")
+    words = {"draft": "I am writing the letter's draft.", "date": "I am recording the date."}[choice]
     return {"ok": True, "said": words, "turn": _turn_prompt(case, choice, dest, text)}
 
 
 def _cli(argv: list[str]) -> dict:
+    """One letters.py verb (the module's own file, beside this one)."""
     import subprocess
-    r = subprocess.run([sys.executable, str(HERE / "letters.py"), *argv], capture_output=True,
-                       text=True, timeout=60)
+    mod = _letters()
+    path = Path(getattr(mod, "__file__", "") or HERE / "letters.py")
+    r = subprocess.run([sys.executable, str(path), *argv], capture_output=True, text=True, timeout=60)
     out = r.stdout or ""
     try:
         got = json.loads(out[out.find("{"):]) if "{" in out else {}
@@ -832,7 +924,7 @@ def home_items(src, cases=None, *, rows: dict | None = None) -> tuple[list[dict]
     for c in cases:
         cid = str(c.get("id") or "")
         f = facts(c, today)
-        if not cid or not f["open"]:
+        if not cid or not is_open(c):
             continue
         n = (f["next_due"] - today).days if f["next_due"] else None
         card = cards.get(cid)
@@ -921,7 +1013,9 @@ def home_brief(case: dict, today: date, lv: str = "full") -> dict:
         nxt = "Tacitus can draft the letter from the materials."
     else:
         nxt = "Tacitus can help you submit it to the next destination."
-    return {"what": f"{nm}.", "asked": f"Write and submit it to {_n(f['total'], 'destination')}.",
+    asked = (f"Write and submit it to {_n(f['total'], 'destination')}." if f["total"]
+             else "Write it. No places to send it are named yet.")
+    return {"what": f"{nm}.", "asked": asked,
             "due": (f"Next due {day_words(f['next_due'], today)}." if f["next_due"] else "No due date yet."),
             "standing": standing[:4], "next": nxt}
 

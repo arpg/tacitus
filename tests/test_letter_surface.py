@@ -476,7 +476,10 @@ def test_a_rung_fires_once_and_stops_when_submitted():
 
 def test_the_card_plan_asks_once_then_keeps_one_block():
     c_new, c_open = jordan(), riley()
+    # Dec 15 is more than two weeks out: no block yet, the briefing lists it
     plan = L.card_plan([c_new, c_open], {}, TODAY)
+    assert sorted((p["case"], p["what"]) for p in plan) == [("case-jp", "ask")]
+    plan = L.card_plan([c_new, c_open], {}, date(2026, 12, 1))
     assert sorted((p["case"], p["what"]) for p in plan) == [("case-jp", "ask"), ("case-rc", "case")]
     cards = {"case-jp": {"kind": "ask", "live": False}, "case-rc": {"kind": "case", "live": True}}
     assert L.card_plan([c_new, c_open], cards, TODAY) == []     # asked once; the block is up
@@ -559,7 +562,15 @@ def test_the_fallback_answers_without_letters_work():
     assert got["ok"] and calls[-1][:3] == ["record-submitted", "--dest", "av4"]
     assert not L.answer(avery(), "submitted", runner=runner)["ok"]       # no destination named
     no = L.answer(jordan(), "no", runner=runner)
-    assert no["ok"] and "Draft nothing on your own" in no["turn"] and calls[-1] != ["decline", "--case", "case-jp"]
+    assert no == {"ok": True, "said": "You will not write it. Nothing is sent."}      # no turn, no draft
+    assert calls[-1] == ["decline", "--case", "case-jp"]
+    asked = L.answer(jordan(), "yes", question="lq-1", runner=runner)
+    assert asked["ok"] and calls[-1] == ["answer", "--question", "lq-1", "--choice", "Yes"]
+    assert L.answer(avery(), "decline", runner=runner)["said"] == "Declined. Nothing is sent."
+    assert calls[-1] == ["decline", "--case", "case-av"]
+    same = L.answer(jordan(), "join_same", question="lq-2", runner=runner)
+    assert same["ok"] and calls[-1] == ["answer", "--question", "lq-2", "--choice", "Same person"]
+    assert not L.answer(jordan(), "join_other", runner=runner)["ok"]                 # no question named
     draft = L.answer(avery(), "draft", text="short", runner=runner)
     assert "letters.py get --case case-av" in draft["turn"] and 'The owner added: "short".' in draft["turn"]
     ask = L.answer(jordan(), "yes_ask", runner=runner)
@@ -663,7 +674,9 @@ def _bot(monkeypatch, case_list, store=None):
 
 
 def test_the_tick_posts_the_decision_once_and_the_block_after_yes(monkeypatch):
-    ns, calls, store = _bot(monkeypatch, [jordan(), riley()])
+    soon = riley()
+    soon["destinations"][0]["due"] = "2026-12-01"
+    ns, calls, store = _bot(monkeypatch, [jordan(), soon])
     assert ns["_post_letter_cards"](force=True) == 2
     kinds = [c.kind for c in calls["cards"]]
     assert kinds == ["letter_ask", "letter"]
@@ -676,7 +689,7 @@ def test_a_press_runs_the_answer_and_its_turn_in_the_cards_thread(monkeypatch):
     ns, calls, store = _bot(monkeypatch, [avery()])
     ns["_post_letter_cards"](force=True)
     from preprocessor import letter_surface as PL
-    monkeypatch.setattr(PL, "answer", lambda case, choice, dest="", text="": calls["answers"].append(
+    monkeypatch.setattr(PL, "answer", lambda case, choice, dest="", text="", question="": calls["answers"].append(
         (case["id"], choice, dest, text)) or {"ok": True, "said": "I am writing the letter's draft.",
                                                "turn": "Draft the letter for case-av."})
     ev = types.SimpleNamespace(action_id="letter_draft", value={"case": "case-av", "rows": []}, user_id="U1",
@@ -706,7 +719,7 @@ def test_a_press_on_a_gone_destination_does_nothing(monkeypatch):
 def test_the_select_names_the_destination_alone(monkeypatch):
     ns, calls, _store = _bot(monkeypatch, [avery()])
     from preprocessor import letter_surface as PL
-    monkeypatch.setattr(PL, "answer", lambda case, choice, dest="", text="": calls["answers"].append(
+    monkeypatch.setattr(PL, "answer", lambda case, choice, dest="", text="", question="": calls["answers"].append(
         (case["id"], choice, dest)) or {"ok": True, "said": "Marked as submitted."})
     ev = types.SimpleNamespace(action_id="letter_submitted", value="", user_id="U1", text="", selected="av8",
                                card=types.SimpleNamespace(channel="dm", id="m3", thread_key="m3"))
@@ -799,3 +812,77 @@ def test_the_still_open_audit_never_asks_about_a_destination():
     rec = oca.prepare(agent="morning-briefing", post=post, briefing={}, open_entries=rows, inbox=[], sent=[],
                       events=[], closed_rows=[], archive=[], no_fetch=True, rendered=["task-av4"])
     assert "task-av4" not in {c["id"] for c in rec["claims"]}
+
+
+
+# ── the store's own shapes (letters.py) ───────────────────────────────
+
+def _stored_new_case():
+    """A person's own request with no destination yet, as letters.cases
+    gives it: no decision, its own row, a `write` question and a `join`."""
+    return {"id": "case-new", "person_name": "Sage Marlow", "person_email": "sm@example.org",
+            "kind": "evaluation", "status": "open", "decision": "", "opened": "2026-11-23",
+            "materials": [{"kind": "cv", "ref": "m-own"}, {"kind": "statement", "ref": "m-own"}],
+            "base_letter": "", "keep_level": "full", "case_ledger_id": "task-own", "destinations": [],
+            "questions": [{"id": "lq-w", "kind": "write", "text": "Will you write it?",
+                           "choices": ["Yes", "Yes, ask for materials", "No"], "answer": ""},
+                          {"id": "lq-j", "kind": "join", "text": "Is Sage Marlow the same person as S. Marlow?",
+                           "choices": ["Same person", "Someone else"], "answer": ""}]}
+
+
+def test_a_new_case_with_no_destination_yet_is_shown_and_asked():
+    c = _stored_new_case()
+    assert L.is_open(c) and L.is_new(c)
+    rows = [_row("task-own", "conv-own", "Task: evaluation letter", letter={"case": "case-new", "role": "case"})]
+    view = L.briefing_view(rows, today=TODAY, cases=[c], closed=[])
+    assert view["hide"]["ids"] == ["task-own"]
+    assert view["cases"][0]["line"] == ("Letter for Sage Marlow: asked Nov 23, no places named yet. No due date yet. "
+                                        "Will you write it? Answer in Action requests.")
+    plan = L.card_plan([c], {}, TODAY)
+    assert [p["what"] for p in plan] == ["join"]               # the decision waits for who it is
+    c_no_join = dict(c, questions=c["questions"][:1])
+    assert [p["what"] for p in L.card_plan([c_no_join], {}, TODAY)] == ["ask"]
+    spec = L.decision_spec(c, TODAY)
+    assert spec["actions"][0][2]["question"] == "lq-w" and spec["actions"][0][2]["rows"] == ["task-own"]
+    assert "It names no places to send it yet." in spec["lines"]
+    assert "The request included: a CV, a statement." in spec["lines"]
+    join = L.join_spec(c, L.questions(c, "join")[0])
+    assert [a[0] for a in join["actions"]] == ["letter_join_same", "letter_join_other"]
+    assert "Sage Marlow" not in json.dumps(L.join_spec(c, L.questions(c, "join")[0], "local"))
+    # once answered, the question's card gives way
+    c["questions"][1]["answer"] = "Someone else"
+    cards = {"q:lq-j": {"kind": "join", "live": True}}
+    assert L.card_plan([c], cards, TODAY) == [{"case": "case-new", "what": "ask", "keys": []},
+                                              {"case": "q:lq-j", "what": "retire"}]
+
+
+def test_the_stores_line_is_used_at_the_cases_level(monkeypatch):
+    seen = []
+
+    def summary_line(c, *, level=None, today=None):
+        seen.append((level, today))
+        who = c["person_name"] if level in ("full", "summary") else ""
+        return f"Letter for {who or '(kept)'}: will you write it? no places to send it yet."
+    monkeypatch.setattr(L, "_letters", lambda: types.SimpleNamespace(summary_line=summary_line))
+    c = _stored_new_case()
+    assert L.line(c, TODAY) == ("Letter for Sage Marlow: will you write it? no places to send it yet. "
+                                "Answer in Action requests.")
+    assert seen[-1] == ("full", TODAY)
+    assert "Sage" not in L.line(c, TODAY, lv="local")
+
+
+def test_the_tick_asks_a_join_question_once_and_routes_its_answer(monkeypatch):
+    ns, calls, store = _bot(monkeypatch, [_stored_new_case()])
+    assert ns["_post_letter_cards"](force=True) == 1          # who it is comes first
+    assert [c.title for c in calls["cards"]] == [":memo: *Is this the same person?*"]
+    assert store["cards"]["q:lq-j"]["kind"] == "join"
+    assert ns["_post_letter_cards"](force=True) == 0
+    from preprocessor import letter_surface as PL
+    seen = []
+    monkeypatch.setattr(PL, "answer", lambda case, choice, dest="", text="", question="": seen.append(
+        (choice, question)) or {"ok": True, "said": "Recorded: one letter case now."})
+    ev = types.SimpleNamespace(action_id="letter_join_same", value={"case": "case-new", "question": "lq-j"},
+                               user_id="U1", text="", selected="",
+                               card=types.SimpleNamespace(channel="dm", id="m2", thread_key="m2"))
+    ns["handle_letter"](ev)
+    assert seen == [("join_same", "lq-j")] and calls["turns"] == []
