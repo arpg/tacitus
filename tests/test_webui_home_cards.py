@@ -154,7 +154,8 @@ def test_a_tap_shows_the_quick_briefing_and_the_choices_at_once_and_a_missing_br
     expect(deeper.locator(".text li")).to_have_count(4)
     steps = deeper.locator("[role='group'] button")
     expect(steps).to_have_count(4)
-    expect(steps.first).to_contain_text("Draft a reply: Thursday at 2:00")
+    # Words too long for the label show once, under the action's name.
+    expect(steps.first).to_have_text("Draft a reply Thursday at 2:00 works for me. The room is held.")
     expect(steps.first.locator(".h-detail")).to_have_text("Thursday at 2:00 works for me. The room is held.")
     expect(steps.last).to_have_text("Continue in a conversation")
     assert order(block) == ["brief", "choices", "links", "deeper"]  # it came after the card opened: below everything
