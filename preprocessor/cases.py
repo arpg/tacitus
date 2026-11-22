@@ -491,7 +491,47 @@ def _case_dict(conn, r) -> dict:
             "materials": _materials(conn, r["id"]), "base_doc": r["base_doc"],
             "notes": r["notes"], "aliases": _json(r["aliases"], []),
             "keep_level": r["keep_level"] or "full", "case_ledger_id": r["case_ledger_id"],
-            "parts": parts, "questions": qs}
+            "parts": parts, "questions": qs, "messages": _messages(conn, r["id"])}
+
+
+MESSAGES_CAP = 20
+
+
+def _messages(conn, case_id: str) -> list[dict]:
+    """The inbound mail on the case's threads from anyone but the owner,
+    oldest first (a `message` event per mail, written at intake)."""
+    out = []
+    for e in conn.execute("SELECT evidence FROM case_events WHERE case_id = ? AND kind = 'message' "
+                          "ORDER BY seq", (case_id,)):
+        m = _json(e["evidence"], {})
+        if m.get("message_id"):
+            out.append({k: str(m.get(k) or "") for k in ("at", "from", "name", "conversation_id",
+                                                         "message_id", "part")})
+    return sorted(out, key=lambda m: m["at"])[-MESSAGES_CAP:]
+
+
+def note_message(conn, rec: dict) -> bool:
+    """Record a mail on an open case's thread from anyone but the owner as
+    the case's `message` event (once per message): a new message from them
+    shows on the case, since its rows owe no reply. True when recorded."""
+    if rec.get("own") or (rec.get("result") or {}).get("own"):
+        return False
+    conv = str(rec.get("conversation_id") or "")
+    mid = str(rec.get("id") or rec.get("message_id") or "")
+    if not conv or not mid:
+        return False
+    c = case_for_conversation(conn, conv)
+    if c is None:
+        return False
+    if conn.execute("SELECT 1 FROM case_events WHERE case_id = ? AND kind = 'message' AND "
+                    "evidence LIKE ?", (c["id"], f'%"message_id": {json.dumps(mid)}%')).fetchone():
+        return False
+    pid = next((d["id"] for d in c["parts"] if d["conversation_id"] == conv), "")
+    _event(conn, c["id"], "message", part_id=pid, actor="intake",
+           evidence={"at": str(rec.get("received") or ""), "from": str(rec.get("from") or "").lower(),
+                     "name": str(rec.get("from_name") or ""), "conversation_id": conv,
+                     "message_id": mid, "part": pid})
+    return True
 
 
 def cases(conn, kind: str | None = None, open_only: bool = True) -> list[dict]:
@@ -1559,7 +1599,9 @@ def view(c: dict, level: str | None = None) -> dict:
             "keep_level": level, "counterpart_name": "", "counterpart_email": "", "title": "",
             "notes": "", "materials": [{"kind": m.get("kind")} for m in c.get("materials") or []],
             "base_doc": "", "aliases": [], "case_ledger_id": c.get("case_ledger_id", ""),
-            "parts": parts, "questions": []}
+            "parts": parts, "questions": [],
+            "messages": [{k: m.get(k, "") for k in ("at", "conversation_id", "message_id", "part")}
+                         for m in c.get("messages") or []]}
 
 
 def _head(c: dict, k: Kind) -> str:
@@ -1665,9 +1707,34 @@ def _record(rec: dict) -> tuple[dict, str, str]:
 def model_work(res: dict) -> dict | None:
     """The local model's `work` field when it names a kind and a role."""
     w = res.get("work") if isinstance(res, dict) else None
-    if isinstance(w, dict) and w.get("role") in WORK_ROLES[1:] and w.get("kind"):
+    if isinstance(w, dict) and w.get("role") in WORK_ROLES[1:] and \
+            w.get("kind") not in (None, "", "none"):
         return w
     return None
+
+
+def _with_model(k: Kind, rec: dict, found: dict | None, w: dict | None) -> dict | None:
+    """The kind's rules and the model's work field together. The model's
+    field fills facts the rules leave out (who asked, the item's id, the
+    date); it opens a case on its own only for a kind that trusts it (one
+    whose model field was measured: Kind.trust_model)."""
+    if not w or w.get("kind") not in (k.name,) + tuple(k.model_kinds):
+        return found
+    if found is None:
+        if not k.trust_model:
+            return None
+        res, subject, sender = _record(rec)
+        found = {"role": w["role"], "case_kind": k.name, "kind": "", "source": "model",
+                 "counterpart": "", "part": "", "item": "", "due": "", "method": "unknown",
+                 "link": "", "automated": bool(_ck.AUTO_SENDER.search(sender + "@")),
+                 "sender": sender, "subject": subject[:200], "attachments": []}
+    found = dict(found)
+    for key in ("counterpart", "part", "item"):
+        if not found.get(key) and w.get(key):
+            found[key] = str(w[key])[:120]
+    if not found.get("due") and w.get("due"):
+        found["due"] = _ck.day(w["due"])
+    return found
 
 
 def rule_detect(k: Kind, rec: dict) -> dict | None:
@@ -1762,7 +1829,7 @@ def detect(rec: dict, *, kinds_: list[str] | None = None, plugin_senders: tuple 
             found = (k.detect(rec, plugin_senders=plugin_senders) if k.name == "letter"
                      else k.detect(rec))
         else:
-            found = rule_detect(k, rec)
+            found = _with_model(k, rec, rule_detect(k, rec), w)
         if found:
             found = dict(found)
             found["case_kind"] = k.name
@@ -2065,6 +2132,8 @@ def ingest(records: list[dict], *, rows_by_message: dict | None = None,
         senders = _letter._plugin_senders()
         for rec in sorted(records, key=lambda r: str(r.get("received") or "")):
             found = detect(rec, kinds_=kinds_, plugin_senders=senders)
+            if not found or found["role"] != "confirmation":
+                note_message(conn, rec)
             if not found:
                 continue
             got = str(rec.get("received") or "")

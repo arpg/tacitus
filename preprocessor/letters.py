@@ -142,7 +142,8 @@ def letter_case(c: dict | None) -> dict | None:
             "aliases": c["aliases"], "keep_level": c["keep_level"],
             "case_ledger_id": c["case_ledger_id"],
             "destinations": [_dest(d) for d in c["parts"]],
-            "questions": [_question(q) for q in c["questions"]]}
+            "questions": [_question(q) for q in c["questions"]],
+            "messages": [dict(m, destination=m.get("part", "")) for m in c.get("messages") or []]}
 
 
 def _general(c: dict) -> dict:

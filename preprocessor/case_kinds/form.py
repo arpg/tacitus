@@ -15,6 +15,7 @@ KIND = Kind(
     decision=Decision(question="Will you fill it in?"),
     material_kinds=("form", "instructions", "document", "other"),
     ladder=(7, 3, 1, 0, -1), guide="forms.md", model_kinds=("form",), response_mode="form",
+    detect_default=True,
     rules=Rules(
         request=r"\b(?:(?:review and )?sign\b(?! up)[^.]{0,60}\b(?:document|form|agreement|report|"
                 r"envelope|letter|contract)|please (?:review and )?sign|"

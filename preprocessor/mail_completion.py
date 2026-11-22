@@ -1,8 +1,10 @@
 """What completes an emailed request, independently of how it arrived.
 
-New mail records name the response mode. Older records use the ask's
-explicit work verbs; a recommendation subject alone never suppresses a
-question about willingness, logistics, or an already submitted letter.
+New mail records name the response mode, and a record whose `work` field
+names a kind of work case (cases.py) takes that kind's mode. Older
+records use the ask's explicit work verbs; a recommendation subject alone
+never suppresses a question about willingness, logistics, or an already
+submitted letter.
 """
 from __future__ import annotations
 
@@ -22,6 +24,22 @@ _DOCUMENT = re.compile(r"\b(?:write|draft|prepare|compose|revise)\b(?!\s+back\b)
                        r"recommendations?|reports?|manuscripts?|proposals?|documents?)\b", re.I)
 
 
+def work_mode(kind: str) -> str:
+    """What completes work of this kind (the kind's declaration in
+    case_kinds/: a form is a form, a report a document, a letter or a
+    review a submission)."""
+    try:
+        try:
+            import cases
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import cases
+        k = cases.kind(kind)
+    except Exception:
+        k = None
+    mode = getattr(k, "response_mode", "") or "submission"
+    return mode if mode in WORK_MODES else "submission"
+
+
 def response_mode(item: dict) -> str:
     """email | submission | document | form | other | none | unknown.
 
@@ -33,6 +51,12 @@ def response_mode(item: dict) -> str:
         return "submission"
     brief = item.get("thread_brief") or item.get("brief") or item.get("remote_record")
     brief = brief if isinstance(brief, dict) else {}
+    # The work's kind decides when the record names one (cases.py): the
+    # kind's detection and this reading are one.
+    for holder in (item, brief):
+        work = holder.get("work") if isinstance(holder.get("work"), dict) else None
+        if work and work.get("role") in ("request", "reminder") and work.get("kind") not in (None, "none"):
+            return work_mode(str(work["kind"]))
     mode = item.get("response_mode")
     if mode not in MODES or mode == "unknown":
         mode = brief.get("response_mode")

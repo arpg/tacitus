@@ -121,6 +121,11 @@ LETTER_KINDS = ("recommendation", "reference", "nomination", "support", "charact
 LETTER_METHODS = ("portal", "email", "upload", "unknown")
 NO_LETTER = {"role": "none", "person": "", "kind": "other", "destination": "", "due": "",
              "method": "unknown", "destinations": []}
+# Other work the user is asked to deliver by a date (cases.py): a review,
+# a form, a report. A letter stays in `letter`.
+WORK_KINDS = ("none", "review", "form", "report")
+WORK_ROLES = ("none", "request", "reminder", "confirmation")
+NO_WORK = {"kind": "none", "role": "none", "counterpart": "", "part": "", "item": "", "due": ""}
 
 SCHEMA = {
     "type": "object",
@@ -155,10 +160,18 @@ SCHEMA = {
                 "properties": {"name": {"type": "string"}, "due": {"type": "string"}},
                 "required": ["name", "due"]}}},
             "required": ["role", "person", "kind", "destination", "due", "method", "destinations"]},
+        "work": {"type": "object", "additionalProperties": False, "properties": {
+            "kind": {"type": "string", "enum": list(WORK_KINDS)},
+            "role": {"type": "string", "enum": list(WORK_ROLES)},
+            "counterpart": {"type": "string"},
+            "part": {"type": "string"},
+            "item": {"type": "string"},
+            "due": {"type": "string"}},
+            "required": ["kind", "role", "counterpart", "part", "item", "due"]},
     },
     "required": ["sensitivity", "confidential_kind", "needs_reply", "response_mode", "ask", "deadline",
                  "deadline_text", "scheduling", "offered_times", "people", "tone",
-                 "state", "domain", "summary", "letter"],
+                 "state", "domain", "summary", "letter", "work"],
 }
 
 PROMPT = """You read one email for a professor's assistant and fill a JSON record. Answer with JSON only, in the given schema.
@@ -179,7 +192,8 @@ Fields:
 - state: needs-reply, todo (the user must do something other than reply), decide, scheduling, awaiting-reply (the user is waiting on the sender), or fyi (nothing is owed by the user: a notification, a confirmation, a thank-you, a group discussion with no ask to him). A reminder that the user owes something by a date (a recommendation, a report, a form) is todo with that deadline, even when it asks for no reply.
 - domain: research, service, teaching, professional or personal.
 - summary: what the message says, at most two sentences of plain fact.
-- letter: a letter the user is asked to write about a person (a recommendation, a reference, a nomination, a letter of support or a character letter, for a student, an employee, a colleague, a tenant or a client). role: request (the person, or a program, an employer, a portal or a committee on the person's behalf, asks him to write or submit one), reminder (a letter he was asked for is still due), confirmation (a letter he wrote was received or submitted), none (anything else, including a call for nominations that names no person and a message about someone else's letter). person: the full name of the person the letter is about, "" when none. kind: what letter. destination: where it goes (the program, employer, award or portal), "" when not stated. due: YYYY-MM-DD, "" when none. method: portal (a link or an online form), email (sent to an address), upload, unknown. destinations: each place and date the message lists, at most 12. For role none, fill "" and [] and kind other."""
+- letter: a letter the user is asked to write about a person (a recommendation, a reference, a nomination, a letter of support or a character letter, for a student, an employee, a colleague, a tenant or a client). role: request (the person, or a program, an employer, a portal or a committee on the person's behalf, asks him to write or submit one), reminder (a letter he was asked for is still due), confirmation (a letter he wrote was received or submitted), none (anything else, including a call for nominations that names no person and a message about someone else's letter). person: the full name of the person the letter is about, "" when none. kind: what letter. destination: where it goes (the program, employer, award or portal), "" when not stated. due: YYYY-MM-DD, "" when none. method: portal (a link or an online form), email (sent to an address), upload, unknown. destinations: each place and date the message lists, at most 12. For role none, fill "" and [] and kind other.
+- work: other work the user is asked to deliver by a date, that is not a letter. kind: review (he is asked to review or referee a paper, a proposal, a contract or a draft and return a report or a score; not when he is the editor who picks the reviewers, not when the notice is addressed to another reviewer, not reviews of his own paper), form (a form, a survey, a signature or a registration he must complete and submit), report (a document he owes: a progress or annual report, a section, slides, a budget). role: request, reminder (still due), confirmation (a service says it was received, submitted or completed), none. counterpart: who asks (an office, a journal, an agency), "" when unclear. part: what to return when there is more than one thing, else "". item: the item's own id (a manuscript, proposal or form number), "" when none. due: YYYY-MM-DD, "" when none. For anything else fill kind none, role none and "". A letter goes in letter, never here."""
 
 _ADDR = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
@@ -343,6 +357,7 @@ def validate(obj: dict) -> dict:
     if isinstance(obj.get("attachments"), list):
         rec["attachments"] = [a for a in obj["attachments"] if isinstance(a, dict)][:ATTACH_CAP]
     rec["letter"] = _letter_field(obj.get("letter"))
+    rec["work"] = _work_field(obj.get("work"))
     if rec["sensitivity"] == "normal":
         rec["confidential_kind"] = "none"
     elif rec["confidential_kind"] == "none":
@@ -389,6 +404,28 @@ def _letter_field(obj) -> dict:
             "destinations": dests}
 
 
+def work_of(res: dict) -> dict | None:
+    """The record's work field when it names work (a review, a form, a
+    report) and a role; None otherwise, so most records carry no extra key."""
+    work = res.get("work") if isinstance(res, dict) else None
+    if isinstance(work, dict) and work.get("kind") in WORK_KINDS[1:] and \
+            work.get("role") in WORK_ROLES[1:]:
+        return work
+    return None
+
+
+def _work_field(obj) -> dict:
+    """The record's `work` field in its schema; NO_WORK when absent."""
+    if not isinstance(obj, dict) or obj.get("kind") not in WORK_KINDS[1:] or \
+            obj.get("role") not in WORK_ROLES[1:]:
+        return dict(NO_WORK)
+    return {"kind": obj["kind"], "role": obj["role"],
+            "counterpart": str(obj.get("counterpart") or "").strip()[:120],
+            "part": str(obj.get("part") or "").strip()[:120],
+            "item": str(obj.get("item") or "").strip()[:80],
+            "due": _day_or_blank(obj.get("due"))}
+
+
 def _completion_record(rec: dict) -> dict:
     """Normalize new and cached records without rewriting the mail store.
     A letter request or reminder (the `letter` field) is work with a date,
@@ -397,6 +434,11 @@ def _completion_record(rec: dict) -> dict:
     letter = rec.get("letter") if isinstance(rec.get("letter"), dict) else {}
     if letter.get("role") in ("request", "reminder"):
         rec = dict(rec, response_mode="submission")
+    work = work_of(rec)
+    if work and work["role"] in ("request", "reminder"):
+        # The work's kind says what completes it (mail_completion reads the
+        # same field for a row): one reading, not two that can disagree.
+        rec = dict(rec, response_mode=mail_completion.work_mode(work["kind"]))
     mode = mail_completion.response_mode(rec)
     out = dict(rec, response_mode=mode)
     if mode in mail_completion.WORK_MODES:
@@ -1808,6 +1850,8 @@ def _sealed_fields(rec: dict | None, dec: dict | None = None) -> dict:
                    "offered_times", "people", "tone", "domain", "sensitivity")}}
         if letter_of(res):
             out["remote_record"]["letter"] = letter_of(res)
+        if work_of(res):
+            out["remote_record"]["work"] = work_of(res)
         for k in ("links", "quotes", "attachments"):
             if res.get(k) and (k != "quotes" or level == "full"):
                 out["remote_record"][k] = res[k]
@@ -2040,6 +2084,9 @@ def thread_brief(conv_id: str, index: dict | None = None, *, user: set[str] | No
         if letter:
             # At facts the role alone: the person and the place are text.
             brief["letter"] = letter if level != "facts" else {"role": letter["role"]}
+        work = work_of(res)
+        if work:
+            brief["work"] = work if level != "facts" else {"kind": work["kind"], "role": work["role"]}
     if strictest != "full":
         # The thread's strictest level, in plain words for whoever reads
         # the row, and its code for the lanes.

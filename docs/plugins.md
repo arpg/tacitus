@@ -170,6 +170,7 @@ and `extra_schedules`.
                    "keep_from_frontier_domains": [], "letter_request_senders": [],
                    "letter_confirm_senders": []},
     "mail_triggers": [{"id": "alerts", "from": ["alerts@notes.example.org"]}],
+    "case_kinds": {},
     "network": {"domains": ["api.example.org"], "local": []},
     "secrets": ["EXAMPLE_TOKEN"],
     "owner_hooks": {"verbs": [], "auth_sources": [], "cron": []},
@@ -308,6 +309,29 @@ confirms one was received (`letters.py`); core reads the common shape of
 such mail on its own, and these patterns cover a service it misses.
 A substring shorter than six
 characters, or with no `@` or `.`, is refused as too broad.
+
+**case_kinds.** Kinds of work case (`preprocessor/cases.py`) the plugin
+declares as data, beside core's letter, review, form and report: work
+someone asks the owner for that ends with a delivery, tracked in parts
+with dates until delivered. Each entry is a lower-case name and its
+declaration: `words` (`noun` is required, the line's head: "Visa
+paperwork for <who>"; `part`, `parts`, `delivered`), an optional
+`decision` (`question`, `choices`, and which choices are `yes` and
+`no`), `detect` (`request`, `confirm` and `exclude` patterns over the
+mail record's subject and ask, `senders` and `confirm_senders` patterns
+as in mail_rules, `automated_only`), `detect_default` (whether intake
+opens cases from mail; off by default, and then a case is opened in
+chat) and `guide` (a file in the plugin). No code runs: core's generic
+detector reads the patterns, and a plugin kind never replaces a core kind
+of the same name. The owner's consent covers the kinds (the summary
+names each and says whether it opens cases from mail).
+
+```json
+"case_kinds": {"visa": {"words": {"noun": "Visa paperwork", "part": "document"},
+                        "decision": {"question": "Will you handle it?", "choices": ["Yes", "No"]},
+                        "detect": {"senders": ["@consulate-forms.example"]},
+                        "detect_default": true}}
+```
 
 **mail_triggers.** New mail handed to the plugin as it arrives. The
 mail tagger's tick (owner cron, every two minutes) checks each new inbox

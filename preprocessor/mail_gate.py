@@ -97,6 +97,8 @@ def _record_fields(rec: dict, level: str = "full") -> dict:
                                     "offered_times", "people", "tone", "domain")}
     if mail_privacy.letter_of(res):
         out["letter"] = mail_privacy.letter_of(res)
+    if mail_privacy.work_of(res):
+        out["work"] = mail_privacy.work_of(res)
     for k in ("links", "quotes", "attachments"):
         if res.get(k) and (k != "quotes" or level == "full"):
             out[k] = res[k]

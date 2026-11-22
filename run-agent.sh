@@ -737,6 +737,8 @@ ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/letters_work.py 
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/ledger.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/project_store.py *)"
 ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/letters.py *)"
+# Work cases of every kind (cases.py): a review, a form, a report, a letter.
+ALLOWED_TOOLS+=",Bash(python3 ${EA_BOT_SCRIPT_DIR}/preprocessor/cases.py *)"
 # skills/morning-briefing.md tells the agent to cancel a due deferred send
 # with `scheduled_sends.py cancel --draft-id <id>`, and that arm is cronned
 # hourly. Without the grant the call hits the permission gate in `claude -p`,

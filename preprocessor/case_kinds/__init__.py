@@ -118,6 +118,7 @@ class Kind:
     loud: tuple = (1, 0, -1)
     guide: str = ""                           # docs/ea/<guide>
     model_kinds: tuple = ()                   # the mail record's work.kind values
+    trust_model: bool = False                 # the model's work field alone opens a case
     source: str = "core"
 
     # ── derived ──────────────────────────────────────────────────────
