@@ -610,7 +610,12 @@ the do-list or the flexes may take, prints code's line wherever it goes
 (the date banner when its next date is within three days, else the
 Letters list), and the pre-send review refuses to drop it or rewrite its
 line while a destination is open. A room places a case only by its rows'
-project links and names it by its person and kind. Items the
+project links and names it by its person and kind. The bot's router tick
+(`_post_letter_cards`) posts a new case's one decision and one block per
+open case in the owner's DM, and posts the block again on a loud rung of
+the date ladder; a press goes to `letters_work.answer` (the store's own
+verbs as a fallback), and no letter card mints or carries a confirmation
+token, since none sends anything. Items the
 remote model cannot handle go to a queue the bot drains each tick
 (`_remote_escalation_tick`): the pending hand-offs (up to two, the rest
 next tick) share one EA topic and one Claude session, which reads each
