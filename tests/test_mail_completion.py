@@ -24,21 +24,23 @@ def row(ask, **fields):
                                            "received": "2026-11-10T12:00:00Z"}]}, **fields}
 
 
-@pytest.mark.parametrize("ask,mode", [
-    ("Write and submit a letter of recommendation via the secure link.", "submission"),
-    ("Acknowledge receipt of the CV and confirm the plan to write the letters of recommendation.", "document"),
-    ("Upload the final report to the portal.", "submission"),
-    ("Complete the annual disclosure form.", "form"),
-    ("Sign the travel form.", "form"),
-    ("Prepare a revised manuscript.", "document"),
+@pytest.mark.parametrize("ask,mode,rule", [
+    ("Write and submit a letter of recommendation via the secure link.", "submission", "letter"),
+    ("Acknowledge receipt of the CV and confirm the plan to write the letters of recommendation.",
+     "document", "letter"),
+    ("Upload the final report to the portal.", "submission", "non_email"),
+    ("Complete the annual disclosure form.", "form", "non_email"),
+    ("Sign the travel form.", "form", "non_email"),
+    ("Prepare a revised manuscript.", "document", "non_email"),
 ])
-def test_deliverables_never_become_replies_or_close_on_an_acknowledgement(ask, mode):
+def test_deliverables_never_become_replies_or_close_on_an_acknowledgement(ask, mode, rule):
     r = row(ask)
     assert mail_completion.response_mode(r) == mode
     assert ledger.reply_backlog([r], date(2026, 11, 22)) == []
     assert not ledger.closes_on_reply(r)
     held = draft_gate.check({"title": r["description"], "ask": ask, "brief": r["thread_brief"]})
-    assert held["rule"] == "non_email"
+    # A letter request has its own rule (letters.py); other work is non_email.
+    assert held["rule"] == rule
     assert draft_gate.cron_refusal(run_id="cron-morning-1", rows=[r], decisions=[],
                                    keep_records=[]) != ""
     # The owner's explicit chat instruction to write an email still works.

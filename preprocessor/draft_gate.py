@@ -22,6 +22,10 @@ sweep. Whatever a model picked, code holds these rules there:
   5. The thread is kept from hosted models (keep_gate): on the machine,
      no scheduled lane drafts on it; at `facts`, only the local writer's
      body goes (the remote briefing), never a hosted model's.
+  6. The thread is a letter request (letters.py): someone asks the owner
+     to write a letter about a person. The work is the letter, by its
+     date; no scheduled lane drafts an email reply to it. His one
+     decision (will you write it?) is a question with buttons.
 
 A meeting request is the scheduling lane's: rules 2 and 3 never read a
 thread whose record is a meeting request or a scheduling row, so a yes
@@ -48,9 +52,18 @@ try:
     import mail_completion
 except ModuleNotFoundError:
     from preprocessor import mail_completion
+try:
+    import letters
+except ModuleNotFoundError:
+    from preprocessor import letters
 
 # A reply-all that reaches this many people besides the owner is his call.
 MANY_RECIPIENTS = 10
+# Rule 6: a letter request gets the letter, never an unasked email reply.
+LETTER_WHY = "a letter request: the work is the letter, not an email reply"
+LETTER_LINE = "A letter request. I do not write a reply to it. The letter is the work."
+LETTER_REFUSAL = ("this is a letter request: no scheduled run drafts an email reply to it. "
+                  "The owner decides on the letter; a reply goes out only when he asks for one")
 CRON_PREFIX = "cron-"
 
 # The ask is his choice. The record writes the ask about him in the third
@@ -230,6 +243,8 @@ def check(item: dict, says: str = "", *, own=()) -> dict | None:
     the answer a model proposed: the answer is his to give."""
     title = _clip(item.get("title") or "this thread", 90)
     ask = str(item.get("ask") or "")
+    if letters.is_letter_request(item):
+        return {"rule": "letter", "why": LETTER_WHY, "line": LETTER_LINE, "choices": []}
     if mail_completion.non_email_work(item):
         return {"rule": "non_email", "why": "the request needs work, not an email reply",
                 "line": ask or "Complete the requested work; keep it open until it is delivered.",
@@ -302,6 +317,8 @@ def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body:
             except Exception:
                 found = {}
             decisions = [d for c in convs for d in found.get(c) or []]
+    if any(letters.is_letter_request(r) for r in rows or ()) or _letter_thread(conversation_id):
+        return LETTER_REFUSAL
     if any(mail_completion.non_email_work(r) for r in rows or ()):
         return "this request requires completing and delivering work, not an email reply"
     said = no_reply_said(list(decisions or []) + [d for r in rows or () for d in r.get("owner_said") or []])
@@ -334,6 +351,23 @@ def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body:
     if recipient_count is not None and recipient_count >= MANY_RECIPIENTS:
         return f"a reply to all {recipient_count} people on the thread"
     return ""
+
+
+def _letter_thread(conversation_id: str) -> bool:
+    """The conversation holds an open letter row (letters.py). False when
+    the ledger cannot be read: the rows the draft names still decide."""
+    if not conversation_id:
+        return False
+    try:
+        conn = letters.connect()
+    except Exception:
+        return False
+    try:
+        return letters.case_for_conversation(conn, conversation_id) is not None
+    except Exception:
+        return False
+    finally:
+        conn.close()
 
 
 NEEDS_OWNER_HINT = ("A scheduled run may not draft this reply. Record the question for the owner "

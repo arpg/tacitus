@@ -540,6 +540,32 @@ work to close manually. Cached thread briefs are normalized and refreshed
 without another model call. A real question about accepting the work or
 its logistics can still require an email answer.
 
+A letter the owner is asked to write about a person (a recommendation, a
+reference, a nomination, a letter of support or a character letter) is a
+letter case (`letters.py`): one case per person, with a destination per
+program, employer, award or portal, each with its due date, how it is
+submitted and a state (asked, accepted or declined, drafted, ready,
+submitted). Intake reads every fetched message's record
+(`preprocess.ingest_letters`): the local model's `letter` field, or rules
+for the common shape of request, reminder and confirmation mail, with
+sender patterns a plugin may add (`mail_rules.letter_request_senders`,
+`letter_confirm_senders`). A request joins the case of the same address or
+of a name that matches without doubt; a name that only may match asks the
+owner once, and the answer is remembered. A portal's automated request,
+which the needs-response detector drops, gets its own row. Each
+destination has one open row with `closes_on=submission` and metadata
+`letter`; the person's own ask is the case's row. A letter row is never a
+reply owed (`ledger.reply_owed`), so the reply queue, the Replies card,
+the inbox scan block and Home leave it out; `closure.settle`, `propose`
+and `propose_or_promote` refuse every signal on it but the owner's word or
+click, `letter_submitted` (a portal's confirmation, the upload tool, the
+owner), `letter_declined`, the case closing, a repeat, and a linked send
+when the letter goes by email. No scheduled lane drafts an email reply to
+a letter request (`draft_gate` rule 6). A new case brings one question
+with three answers (Yes / Yes, ask for materials / No). A case keeps the
+strictest keep level of its mail; `view` and `summary_line` name no one
+below `summary`.
+
 The bot puts the same queue in front of the owner once a day
 (`_post_reply_queue`, a router tick that runs with or without the
 resident): from 08:00 local and outside quiet hours it reads `ledger.py
@@ -2605,6 +2631,7 @@ Files that participate in prompt construction and action execution:
 | `preprocessor/scheduling_engine.py` | Calendar math: five subcommands (`propose-meeting`, `validate-draft`, `check-attendees`, `log-decision`, `review-patterns`) plus `reschedule-brief`; `--ignore-event <id>` treats one of the user's own events as free for a call; an open proposal returns separate windows while offered times and a poll reply (`ENUMERATE_FROM` options) keep every quarter-hour start; an attendee's `timezone` (and `hours`) becomes stated availability of their working hours on the user's clock; `[note]` marker drops informational events from busy intervals; `_is_movable_block` treats only exactly-one-attendee events as offerable 1:1s; all-day events classified and reported as `all_day_events` for LLM judgment ([SCHEDULING.md](SCHEDULING.md)) |
 | `preprocessor/calendar_reconciler.py` | Protection reconciler: mirrors standing attendee-less commitments onto EA-Managed as `p0 [auto]` holds; source-anchored lifecycle incl. per-occurrence release; user deletion = logged permanent release; cron `7,37 * * * *`, dry-run by default; posts only protection-reducing or failed actions, to `calendar_channel_key()` (the scheduling stream), never routine creates |
 | `preprocessor/poll_filler.py` | Scheduling poll automation (Playwright + Timeful API) |
+| `preprocessor/letters.py` | Letter cases: one per person the owner was asked to write for, each destination tracked to its submission; detection (`detect`), intake (`ingest`), the owner's questions (`questions`, `answer`), the hooks every reader asks (`is_letter_row`, `letter_signal_allowed`, `summary_line`), and `migrate` (a read-only dry run; `--apply` is the owner's) |
 | `preprocessor/ledger.py` | SQLite obligations ledger CLI. One word per meaning: a main-EA row's `type` is one of `TYPES` (response_needed, follow_up, scheduling, task, deadline, waiting, reimbursement, dispute, draft_pending; `ledger.py types`), other spellings fold in through `TYPE_ALIASES` and any other word is refused; plugin rows keep their own types. `status` is open, follow_up, snoozed or completed (readers still accept the old `closed`). `--set` keys fold hyphens and old names onto their columns, so a misspelt column never lands in metadata; `date_identified` is stored as `YYYY-MM-DDTHH:MM:SSZ`. `normalize [--apply]` folds existing rows the same way |
 | `preprocessor/chat/` | Chat front-end layer: `ChatFrontend` interface and `HandlerRegistry` (`base.py`), neutral types, `ConfirmationCard` and `CardRegistry` (`cards.py`), text conversion, the Slack, web, shadow and memory frontends; each of these modules is the same object as its namesake in `botcore/botcore/chat/`, and `__init__.py` (`load_frontend`) builds the frontend the chat block names |
 | `preprocessor/chat_notify.py` | Zero-token notifier routed by the chat frontend (Slack webhooks or the web chat's store); the debug-mode gate (`diagnostic=True`, `diagnostics_on`, `debug on\|off`); `post_as_bot`; `llm-grants` |
@@ -2633,7 +2660,7 @@ Files that participate in prompt construction and action execution:
 | `scripts/install/setup_questions.py` | Every install question as data (answer key, kind, label, default sources, condition, notes), read by `user_init.py` and `setup_web.py`; the README's "Your responsibility" notice for the profile phase |
 | `preprocessor/mail_links.py` | Redirect links in an email body (google.com/url?q=, SafeLinks) and where its quoted history starts; the Send card warning and gmail_client's quoting use it |
 | `preprocessor/reply_files.py` | The files a reply names, for the bot to attach after the turn: path extraction, the turn's own uploads, the (thread, digest) sent log |
-| `preprocessor/draft_gate.py` | Whether a scheduled lane may draft a reply without the owner's word in that turn: never against his earlier decision on the thread (`ledger.owner_decisions`; a no-reply thread gets one quiet question), never for a choice only he makes, a yes or no to taking part in a program, committee, panel or board, a reply-all to 10 or more, or a thread kept on the machine, or a `facts` thread whose body is not the local writer's (`keep_gate`); a meeting request is the scheduling lane's and is never read as a choice or an invitation; `check` for the remote briefing, `cron_refusal` for `graph_actions` create-reply and create-draft and `mail_actions` on Gmail (status `needs_owner`) |
+| `preprocessor/draft_gate.py` | Whether a scheduled lane may draft a reply without the owner's word in that turn: never against his earlier decision on the thread (`ledger.owner_decisions`; a no-reply thread gets one quiet question), never for a choice only he makes, a yes or no to taking part in a program, committee, panel or board, a reply-all to 10 or more, or a thread kept on the machine, or a `facts` thread whose body is not the local writer's (`keep_gate`), or a letter request (`letters.is_letter_request`, or a conversation with an open letter row); a meeting request is the scheduling lane's and is never read as a choice or an invitation; `check` for the remote briefing, `cron_refusal` for `graph_actions` create-reply and create-draft and `mail_actions` on Gmail (status `needs_owner`) |
 | `preprocessor/keep_gate.py` | The one keep check before a hosted model works an item with no owner asking (docs/llm-lanes.md 2.3): the strictest of what a row, its metadata and its thread brief say, the level of the thread's records and of the message's own, and the keep list; `summary` and `full` may be handed off or drafted by a scheduled lane, `local` and `facts` stay on the owner's own model (the remote briefing's local writer may still draft `facts`); `kept_line`, the fixed words a channel hosted turns read shows for a kept item; fails closed (every item from mail reads `local`). The remote briefing's candidates and reply queue, the weekly audit, the hand-off queue and the bot's tick, `draft_gate`, the inbox scan block, the pre-send review's packet, the nightly reconcile and the briefing JSON's rows read it |
 | `preprocessor/reply_scan.py` | The replies that wait, for a chat turn that scans the inbox (the `scan` module): the reply queue as a prompt block with the rule to account for every row, a project room's part of it, and after the turn the footer that names each row the reply left out |
 | `preprocessor/slack_reader.py` | Shim over `chat_read` |

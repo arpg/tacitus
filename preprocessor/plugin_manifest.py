@@ -178,7 +178,9 @@ def _empty_capabilities() -> dict:
     return {"schedules": [], "chat": None, "skills": [], "tools": [], "denied_tools": [],
             "cards": [], "mail_rules": {"closure_confirm_senders": [],
                                         "closure_exclude_senders": [],
-                                        "keep_from_frontier_domains": []},
+                                        "keep_from_frontier_domains": [],
+                                        "letter_request_senders": [],
+                                        "letter_confirm_senders": []},
             "network": {"domains": [], "local": []}, "secrets": [],
             "owner_hooks": {"verbs": [], "auth_sources": [], "cron": []},
             "claude_plugin": "", "mail_triggers": [], "ledger_types": {}}
@@ -310,7 +312,8 @@ def _card_text(src: dict) -> dict:
 def _norm_mail_rules(m, errors: list) -> dict:
     m = m if isinstance(m, dict) else {}
     out = {}
-    for key in ("closure_confirm_senders", "closure_exclude_senders"):
+    for key in ("closure_confirm_senders", "closure_exclude_senders",
+                "letter_request_senders", "letter_confirm_senders"):
         vals = [v.strip().lower() for v in _strs(m.get(key)) if v.strip()]
         for v in vals:
             # A short substring matches far more senders than it means to.
@@ -684,6 +687,10 @@ def describe(summary: dict) -> list[str]:
         lines.append(f"mail rule: mail from *{s}* can close a ledger row")
     for s in mr["closure_exclude_senders"]:
         lines.append(f"mail rule: mail from *{s}* never closes a ledger row")
+    for s in mr.get("letter_request_senders") or []:
+        lines.append(f"mail rule: mail from *{s}* asks you for a letter about a person")
+    for s in mr.get("letter_confirm_senders") or []:
+        lines.append(f"mail rule: mail from *{s}* confirms a letter you submitted")
     for d in mr.get("keep_from_frontier_domains") or mr.get("keep_from_anthropic_domains") or []:
         lines.append(f"mail rule: mail from {d} stays on your machine, away from hosted models")
     for name, spec in (summary.get("ledger_types") or {}).items():

@@ -87,6 +87,9 @@ DONE_STATES = ("declined", "submitted")
 MATERIAL_KINDS = ("cv", "statement", "list", "draft", "transcript", "sample", "other")
 ROLES = ("case", "destination")
 QUESTION_KINDS = ("write", "join")
+# A closed case reopens for the same person's new request within this
+# many days (one application season); later, a new case starts.
+REOPEN_DAYS = 120
 WRITE_CHOICES = ("Yes", "Yes, ask for materials", "No")
 JOIN_SAME, JOIN_OTHER = "Same person", "Someone else"
 
@@ -398,13 +401,26 @@ def ensure_case(conn, person_name: str, person_email: str = "", kind: str = "rec
     ingest_record() asks the owner about it (ask_join)."""
     ensure_schema(conn)
     found = find_case(conn, person_name, person_email)
+    if not found.get("case"):
+        # The same person's case from this season, closed since: a new
+        # place to send the letter reopens it rather than starting over.
+        old = find_case(conn, person_name, person_email, open_only=False)
+        r = conn.execute("SELECT * FROM letter_cases WHERE id = ?",
+                         (old.get("case") or "",)).fetchone()
+        if r is not None and r["status"] == "closed" and r["decision"] != "declined" and \
+                (r["closed_at"] or "") >= (datetime.now(timezone.utc)
+                                           - timedelta(days=REOPEN_DAYS)).strftime("%Y-%m-%d"):
+            conn.execute("UPDATE letter_cases SET status = 'open', closed_at = NULL, updated_at = ? "
+                         "WHERE id = ?", (_now(), r["id"]))
+            _event(conn, r["id"], "reopen", actor=actor)
+            found = {"case": r["id"]}
     if found.get("case"):
         cid = found["case"]
         _absorb_identity(conn, cid, person_name, person_email, keep_level=keep_level)
         return cid
     kind = kind if kind in KINDS else "recommendation"
     now = _now()
-    cid = _id("lc", norm_name(person_name) or person_email.lower(), now)
+    cid = _id("lc", norm_name(person_name) or person_email.lower(), now, os.urandom(4).hex())
     conn.execute("INSERT INTO letter_cases (id, person_name, person_email, kind, opened, "
                  "keep_level, aliases, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                  (cid, (person_name or "").strip()[:120], (person_email or "").strip().lower()[:200],
@@ -491,7 +507,12 @@ def find_case(conn, person_name: str, person_email: str = "", *, open_only: bool
     if len(sure) == 1:
         return {"case": sure[0]}
     if len(sure) > 1:
-        return {"maybe": sure}
+        # Two cases the facts both name: the one with this address, else
+        # the oldest (`merge` folds the other by hand).
+        by_mail = [cid for cid in sure if email and any(
+            r["id"] == cid and (r["person_email"] == email or email in _json(r["aliases"], []))
+            for r in rows)]
+        return {"case": (by_mail or sure)[-1]}
     return {"maybe": maybe} if maybe else {}
 
 
@@ -530,14 +551,21 @@ def _new_row(conn, case_row, dest_name: str, due: str, *, conversation_id: str =
     lid = _id("letter", key)
     if _row(conn, lid) is None:
         now = _now()
-        who = case_row["person_name"] or "someone"
-        desc = f"Letter for {who}: {dest_name or 'destination'}"
+        level = case_row["keep_level"] or "full"
+        meta = {}
+        if level in _OPEN_LEVELS:
+            who = case_row["person_name"] or "someone"
+            desc = f"Letter for {who}: {dest_name or 'destination'}"
+        else:
+            # A kept case's row names no one: hosted lanes read the ledger.
+            desc = "Letter request (kept on your own model)"
+            meta["keep_level"] = level
         conn.execute(
             "INSERT INTO ledger (id, type, status, description, from_email, source_message_id, "
             "conversation_id, date_identified, deadline, last_action, notes, metadata, "
-            "created_at, updated_at) VALUES (?, 'task', 'open', ?, ?, ?, ?, ?, ?, '', '', '{}', ?, ?)",
+            "created_at, updated_at) VALUES (?, 'task', 'open', ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?)",
             (lid, desc[:200], sender or None, message_id or None, conversation_id or None, now,
-             due or None, now, now))
+             due or None, json.dumps(meta), now, now))
     return lid
 
 
@@ -562,12 +590,25 @@ def add_destination(conn, case_id: str, name: str, due: str = "", method: str = 
                 "link": d["link"] or link, "conversation_id": d["conversation_id"] or conversation_id,
                 "sender": d["sender"] or sender, "name": d["name"] or (name or "")[:160]}
         lid = d["ledger_id"]
-        if ledger_id and ledger_id != lid:
-            if not lid or (_row(conn, lid) is not None and _row(conn, lid)["status"] == "completed"
-                           and d["state"] in OPEN_STATES):
+        old_row, new_row = _row(conn, lid), _row(conn, ledger_id)
+        if ledger_id and ledger_id != lid and new_row is not None:
+            if not lid or old_row is None or (old_row["status"] == "completed"
+                                              and d["state"] in OPEN_STATES):
                 sets["ledger_id"] = ledger_id
                 link_row(conn, ledger_id, case_id, existing)
-            elif _row(conn, ledger_id) is not None:
+            elif not old_row["source_message_id"] and new_row["source_message_id"]:
+                # The destination came from the person's list (a row with no
+                # mail behind it); the portal's own mail row takes its place,
+                # so evidence on the portal's thread reaches it.
+                sets["ledger_id"] = ledger_id
+                link_row(conn, ledger_id, case_id, existing)
+                if old_row["deadline"] and not new_row["deadline"]:
+                    conn.execute("UPDATE ledger SET deadline = ? WHERE id = ?",
+                                 (old_row["deadline"], ledger_id))
+                _closure().settle(conn, lid, signal="duplicate_of", actor=actor or "letters",
+                                  note=f"the same letter destination as {ledger_id}",
+                                  evidence={"duplicate_of": ledger_id})
+            else:
                 # A second row for the same destination (a reminder's own
                 # row): it folds into the destination's row.
                 link_row(conn, ledger_id, case_id, existing)
@@ -579,12 +620,17 @@ def add_destination(conn, case_id: str, name: str, due: str = "", method: str = 
                      "WHERE id = ?", (*sets.values(), existing))
         _sync_row_date(conn, existing)
         return existing
-    did = _id("ld", case_id, norm_dest(name) or sender or link or now, now)
+    did = _id("ld", case_id, norm_dest(name) or sender or link or now, now, os.urandom(4).hex())
     lid = ledger_id if ledger_id and _row(conn, ledger_id) is not None else ""
     if not lid:
         lid = _new_row(conn, c, name, due, conversation_id=conversation_id,
                        message_id=message_id, sender=sender)
     state = "accepted" if c["decision"] == "accepted" else "asked"
+    r = _row(conn, lid)
+    if r is not None and r["status"] == "completed":
+        # Its row closed before the case knew it (the owner's word, a tap):
+        # the destination is done; `migrate --reopen` corrects a wrong close.
+        state = "submitted"
     conn.execute("INSERT INTO letter_destinations (id, case_id, name, due, method, link, state, "
                  "ledger_id, conversation_id, sender, created_at, updated_at) "
                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -617,7 +663,10 @@ def same_destination(conn, case_id: str, name: str, *, sender: str = "", link: s
         if key and dk and (key == dk or (len(key) > 5 and (key in dk or dk in key))):
             return d["id"]
     for d in rows:
-        if sender and d["sender"] == sender.lower() and (not key or not norm_dest(d["name"])):
+        # One service often serves many places: its address alone joins two
+        # mails only when neither names a place and they carry no two links.
+        if (sender and d["sender"] == sender.lower() and not key and not norm_dest(d["name"])
+                and not (link and d["link"])):
             return d["id"]
     return ""
 
@@ -707,6 +756,13 @@ def set_state(conn, dest_id: str, state: str, evidence: str = "", actor: str = "
     params.append(dest_id)
     conn.execute(f"UPDATE letter_destinations SET {', '.join(sets)} WHERE id = ?", params)
     _event(conn, d["case_id"], "state", dest_id=dest_id, state=state, actor=actor, evidence=evidence)
+    if state in ("drafted", "ready", "submitted"):
+        # A letter written or sent means he said yes: the question is moot.
+        c = conn.execute("SELECT decision FROM letter_cases WHERE id = ?", (d["case_id"],)).fetchone()
+        if c is not None and not c["decision"]:
+            conn.execute("UPDATE letter_cases SET decision = 'accepted', updated_at = ? WHERE id = ?",
+                         (now, d["case_id"]))
+            _answer_open(conn, d["case_id"], "write", "Yes", actor or "letters")
     if state in DONE_STATES and d["ledger_id"]:
         sig = SUBMITTED_SIGNAL if state == "submitted" else DECLINED_SIGNAL
         what = "submitted" if state == "submitted" else "declined"
@@ -909,7 +965,7 @@ def ask(conn, kind: str, case_id: str, text: str, choices, *, dest_id: str = "",
                         "AND dest_id = ? AND answer = ''", (kind, case_id, dest_id)).fetchone()
     if have:
         return have["id"]
-    qid = _id("lq", kind, case_id, dest_id, _now())
+    qid = _id("lq", kind, case_id, dest_id, _now(), os.urandom(4).hex())
     conn.execute("INSERT INTO letter_questions (id, kind, case_id, dest_id, ledger_id, text, choices, "
                  "payload, asked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                  (qid, kind, case_id, dest_id, ledger_id, text[:400], json.dumps(list(choices)),
@@ -1037,6 +1093,37 @@ def is_letter_row(row: dict | None) -> bool:
     return isinstance(link, dict) and bool(link.get("case"))
 
 
+def is_letter_request(item: dict | None) -> bool:
+    """True for anything a lane may want to reply to that is a letter
+    request: a letter row, or a mail item, a thread brief or a briefing
+    candidate whose record says request or reminder (the local model's
+    `letter` field, or the rules over its title and ask). Pure."""
+    if not isinstance(item, dict):
+        return False
+    if is_letter_row(item):
+        return True
+    for holder in (item, item.get("remote_record"), item.get("brief"), item.get("thread_brief"),
+                   item.get("record")):
+        if isinstance(holder, dict) and isinstance(holder.get("letter"), dict):
+            role = holder["letter"].get("role")
+            if role in ("request", "reminder"):
+                return True
+            if role in ("none", "confirmation") and holder["letter"].get("person") is not None:
+                return False
+    rec = item.get("remote_record") if isinstance(item.get("remote_record"), dict) else {}
+    brief = item.get("brief") if isinstance(item.get("brief"), dict) else (
+        item.get("thread_brief") if isinstance(item.get("thread_brief"), dict) else {})
+    ask = str(item.get("ask") or rec.get("ask") or brief.get("ask") or "")
+    # The ask decides when there is one; a title alone only without it.
+    title = "" if ask else str(item.get("title") or item.get("subject") or brief.get("subject")
+                               or item.get("description") or "")
+    found = detect({"subject": title, "from": str(item.get("from") or item.get("from_email") or ""),
+                    "result": {"ask": ask, "summary": "", "links": rec.get("links") or [],
+                               "confidential_kind": rec.get("confidential_kind") or ""}},
+                   plugin_senders=([], []))
+    return bool(found) and found["role"] in ("request", "reminder")
+
+
 def letter_role(row: dict | None) -> str:
     if not is_letter_row(row):
         return ""
@@ -1121,8 +1208,10 @@ def summary_line(c: dict, *, level: str | None = None, today: date | None = None
     """One line per case: "Letter for <person>: 3 of 9 submitted, next due
     Dec 1 (2 destinations)". Below `summary` the person is not named."""
     level = level or c.get("keep_level") or "full"
-    who = c.get("person_name") if level in _OPEN_LEVELS else ""
-    head = f"Letter for {who}" if who else "Letter (kept on your own model)"
+    if level in _OPEN_LEVELS:
+        head = f"Letter for {c.get('person_name') or c.get('person_email') or 'a person not named yet'}"
+    else:
+        head = "Letter (kept on your own model)"
     dests = [d for d in c.get("destinations") or [] if d.get("state") != "declined"]
     if c.get("status") == "declined" or c.get("decision") == "declined":
         return f"{head}: you said no."
@@ -1157,57 +1246,76 @@ def summary_line(c: dict, *, level: str | None = None, today: date | None = None
 
 LETTER_ROLES = ("none", "request", "reminder", "confirmation")
 
-_LETTER = (r"(?:letters?\s+of\s+(?:recommendation|reference|support|nomination|evaluation|endorsement)"
-           r"|(?:recommendation|reference|nomination|support|endorsement|character|evaluation)\s+letters?"
-           r"|(?:confidential\s+)?(?:recommendation|reference|evaluation)\s+(?:request|form)s?"
-           r"|recommender|referee\s+(?:request|form|report)"
-           r"|(?:a|your|the|online|confidential)\s+(?:recommendation|reference|evaluation)\b"
-           r"|recommendations?\s+(?:for|on behalf of)\s+[A-Z]"
-           r"|reference\s+for\s+[A-Z]|LoR\b|LOR\b)")
-LETTER_RE = re.compile(_LETTER)
-LETTER_RE_I = re.compile(_LETTER, re.I)
+# A letter about a person, in the words of a request. Case matters only
+# where a name follows (a capital letter after "for").
+_NOUNS = r"(?:recommendation|reference|nomination|support|endorsement|character|evaluation)"
+LETTER_RE_I = re.compile(
+    r"\bletters?\s+of\s+(?:recommendation|reference|support|nomination|evaluation|endorsement)\b"
+    r"|\b" + _NOUNS + r"\s+letters?\b"
+    r"|\b(?:recommendation|reference|referee|evaluation)\s+(?:request|form|questionnaire|survey)s?\b"
+    r"|\b(?:independent|online|confidential)\s+(?:recommendation|reference|evaluation)\b"
+    r"|\brecommender\b|\breferee\s+(?:request|form|report)\b"
+    r"|\b(?:submit|complete|upload|provide|write)\s+(?:a|an|the|your|my)?\s*(?:\w+\s+)?"
+    r"(?:recommendation|reference)\b(?!\s+(?:on|about|to)\b)"
+    r"|\b(?:listed|named|identified|selected|added)\s+you\s+as\s+(?:a|an|their|his|her)\s+"
+    r"(?:reference|referee|recommender)\b", re.I)
+LETTER_NAMED = re.compile(r"\b(?i:recommendations?|references?|nomination)\s+"
+                          r"(?i:for|on behalf of)\s+[A-Z][a-z]")
+LETTER_ABBR = re.compile(r"\b(?:LoR|LOR)s?\b")
+_LNOUN = (r"(?:recommendation|reference|letter of (?:recommendation|reference|support|nomination|"
+          r"evaluation)|(?:recommendation|reference|nomination|support|evaluation) letter|letter)")
 _CONFIRM = re.compile(
     r"\b(?:thank(?:s| you)\s+(?:you\s+)?for\s+(?:submitting|uploading|providing|completing|sending)"
-    r"(?:\s+(?:your|a|the))?\s+(?:\w+\s+)?(?:recommendation|reference|letter|evaluation)"
-    r"|(?:recommendation|reference|letter|evaluation)\s+(?:\w+\s+){0,3}(?:has|have)\s+been\s+"
-    r"(?:received|submitted|uploaded|completed)"
-    r"|(?:recommendation|reference|letter)\s+(?:upload(?:ing)?|submission)\s+confirm"
-    r"|confirm(?:s|ation)?\s+(?:of\s+)?(?:your\s+)?(?:recommendation|reference|letter)\s+"
-    r"(?:submission|upload|received))", re.I)
+    r"(?:\s+(?:your|a|the))?\s+(?:\w+\s+)?" + _LNOUN +
+    r"|" + _LNOUN + r"\s+(?:\w+\s+){0,3}(?:has|have)\s+been\s+(?:received|submitted|uploaded|completed)"
+    r"|" + _LNOUN + r"s?\s+(?:was\s+|is\s+)?(?:submitted|received|uploaded)\b"
+    r"|(?:" + _LNOUN + r"|evaluation)\s+(?:upload(?:ing)?|submission)\s+(?:confirm\w*|received|complete)"
+    r"|confirm(?:s|ation)?\s+(?:of\s+)?(?:your\s+|the\s+)?(?:" + _LNOUN + r"|evaluation)\s+"
+    r"(?:submission|upload|received)"
+    r"|(?:we(?:'ve|’ve| have)\s+)?received\s+(?:the|your)\s+(?:\w+\s+)?" + _LNOUN +
+    r"\s+(?:you\s+)?(?:submitted|uploaded|for))", re.I)
 _REQUEST_VERB = re.compile(
     r"\b(?:request\w*|submit\w*|complete|upload\w*|write|writ\w+|provide|asks?\b|asked|"
     r"listed you|named you|identified you|selected you|as a (?:recommender|reference|referee)|"
-    r"on behalf of|would you be (?:willing|able)|will you|could you|can you|willing to)\b", re.I)
+    r"on behalf of|would you be (?:willing|able)|will you|could you|can you|willing to|"
+    r"decide whether to (?:write|accept|serve)|confirm whether you (?:will|can|would) write)\b", re.I)
 _REMINDER = re.compile(r"\b(?:reminder|remind\w*|still (?:need|waiting)|not yet (?:received|submitted)|"
-                       r"outstanding|overdue|past due|due (?:soon|in \d+ days?|tomorrow))\b", re.I)
+                       r"outstanding|overdue|past due|due (?:soon|in \d+ days?|tomorrow|today))\b", re.I)
 # Mail about letters that asks the owner for none: a call for
-# nominations (no person named), a manuscript decision, a hiring
-# committee's own process.
+# nominations that names no person, a manuscript decision, a committee's
+# own recommendation, advice asked for, letters about a program.
 _NOT_A_REQUEST = re.compile(
     r"\b(?:call for nominations?|nominations? (?:are |is )?(?:due|requested|open|sought|invited)|"
     r"(?:solicit\w*|seeking|now accepting) nominations?|nominate (?:a|an|your|one|up to)\b|"
     r"manuscript|reviewer|associate editor|recommendation (?:to|of) (?:accept|reject|revise|"
-    r"the editor)|editor'?s? recommendation|"
+    r"the editor)|editor'?s? recommendation|committee'?s?\s+(?:\w+\s+)?recommendation|"
     r"recommendations? (?:for|on|about) (?:commercial|robots?|tools?|software|vendors?|courses?|"
-    r"books?|the (?:course|class|committee|department)))", re.I)
+    r"books?|papers?|which|the (?:course|class|committee|department))|"
+    r"letters? of (?:support|endorsement) for (?:the|our|a|an) (?:\w+\s+){0,3}"
+    r"(?:program|proposal|major|minor|degree|center|grant|initiative)|"
+    r"offer letter|initiat\w* (?:the |all |any )?(?:letters|references|reference checks)|"
+    r"(?:letters|references)\b[^.]{0,40}\binitiat\w*|"
+    r"request(?:ing)? (?:the )?(?:letters|references) from)", re.I)
 _AUTO_SENDER = re.compile(r"(?:^|[._+-])(?:no-?reply|do-?not-?reply|donotreply|notifications?|"
-                          r"mailer|admissions?|apply|applications?|recommend\w*|references?|"
-                          r"referee|lor|support|system|portal|careers?)(?:[._+-]|@)", re.I)
+                          r"mailer|admissions?|admit|apply|applications?|applicants?|recommend\w*|"
+                          r"references?|referee|lor|support|system|portal|careers?|gradadm\w*|"
+                          r"registration)(?:[._+-]|@)", re.I)
 _LINK_WORDS = re.compile(r"(?:refer|recommend|reference|referee|lor\b|/lor|letter|evaluat|"
                          r"recommender|rec\b)", re.I)
-_PERSON = (r"([A-Z][A-Za-z'’.-]+(?:\s+(?:[A-Z][A-Za-z'’.-]+|de|da|van|von|del|la|le|"
-           r"bin|al)){1,4})")
+_NAME_WORD = r"(?:[A-Z][a-z][A-Za-z'’]*(?:-[A-Z]?[a-z][A-Za-z'’]*)*|[A-Z]\.)"
+_PERSON = (r"(" + _NAME_WORD + r"(?:\s+(?:" + _NAME_WORD + r"|[A-Z](?=\s)|de|da|van|von|del|della|"
+           r"la|le|bin|al|ibn|dos|das)){1,4})")
 _PERSON_RES = (
-    re.compile(r"(?:recommendation|reference|nomination|letter|evaluation|support)\s+"
-               r"(?:request\s+)?(?:for|on behalf of|about)\s+(?:applicant\s+|candidate\s+|"
-               r"your (?:student|colleague|employee)\s+)?" + _PERSON),
-    re.compile(r"\b(?:request|recommendation|reference|letter)\s+from\s+" + _PERSON
-               + r"(?=\s+(?:for|to|$)|[,.;]|$)"),
-    re.compile(r"\bon behalf of\s+" + _PERSON),
-    re.compile(r"\bfor\s+(?:applicant|candidate)\s+" + _PERSON),
+    re.compile(r"(?i:recommendation|reference|nomination|letter|evaluation|support|referee)s?\s+"
+               r"(?i:(?:request|form|questionnaire|check|letter)\s+)?(?i:for|on behalf of|about)\s+"
+               r"(?i:applicant\s+|candidate\s+|(?:your|my|our)\s+(?:former\s+|current\s+)?"
+               r"(?:student|colleague|employee|tenant|client|report|intern)\s+)?" + _PERSON),
+    re.compile(r"\b(?i:request|recommendation|reference|letter)\s+(?i:from)\s+" + _PERSON),
+    re.compile(r"\b(?i:on behalf of)\s+" + _PERSON),
+    re.compile(r"\b(?i:for)\s+(?i:applicant|candidate)\s+" + _PERSON),
     re.compile(_PERSON + r"\s+(?:has|have)\s+(?:listed|named|identified|selected|asked|requested|"
                r"invited|added)\s+you"),
-    re.compile(r"\b(?:applicant|candidate)[:\s]+" + _PERSON),
+    re.compile(r"\b(?i:applicant|candidate)[:\s]+" + _PERSON),
 )
 _DEST_RES = (
     re.compile(r"\bto\s+(?:the\s+)?([A-Z][\w&'’.,-]*(?:\s+(?:[A-Z][\w&'’.,-]*|of|for|"
@@ -1220,7 +1328,17 @@ _DEST_RES = (
 _NOT_NAMES = {"the", "a", "an", "your", "our", "this", "that", "phd", "ms", "graduate", "admissions",
               "university", "college", "program", "school", "department", "recommendation",
               "letter", "reference", "fall", "spring", "summer", "winter", "dear", "professor",
-              "dr", "prof", "you", "submit", "please", "request", "online"}
+              "dr", "prof", "you", "submit", "please", "request", "online", "no", "yes", "re",
+              "fw", "fwd", "via", "for", "to", "and", "or", "of", "on", "in", "at", "by",
+              "applicant", "candidate", "student", "reminder", "confirmation", "thank"}
+
+
+def letterish(text: str) -> bool:
+    """The words of a request for a letter about a person."""
+    t = text or ""
+    return bool(LETTER_RE_I.search(t) or LETTER_NAMED.search(t) or LETTER_ABBR.search(t))
+
+
 _KIND_WORDS = (("nomination", r"\bnominat"), ("support", r"\b(?:letters? of support|support letters?)\b"),
                ("character", r"\bcharacter (?:letter|reference)\b"),
                ("reference", r"\b(?:reference|referee)\b"),
@@ -1259,14 +1377,29 @@ def _portal_link(links) -> str:
 
 
 def _clean_person(name: str) -> str:
-    words = [w.strip(".,;:'’") for w in str(name or "").split()]
-    while words and words[-1].lower() in _NOT_NAMES | {"for", "to", "via"}:
-        words.pop()
-    while words and words[0].lower() in _NOT_NAMES:
-        words.pop(0)
-    if len(words) < 2 or any(w.lower() in ("university", "college", "institute", "school") for w in words):
+    """A person's name out of a matched phrase: cut at a possessive or at a
+    word that is no part of a name; two to five words."""
+    out = []
+    for raw in str(name or "").split():
+        if re.fullmatch(r"[A-Z]\.?", raw) and (out or raw.endswith(".")):
+            out.append(raw.rstrip("."))  # an initial
+            continue
+        w = raw.strip(".,;:")
+        poss = re.match(r"^(.+?)['’]s?$", w)
+        if poss and len(w) > 2:
+            w = poss.group(1)
+        else:
+            poss = None
+        if not w or w.lower() in _NOT_NAMES or (w.isupper() and len(w) > 1):
+            break
+        out.append(w)
+        if poss:
+            break
+    while out and len(out[-1]) <= 2 and out[-1].endswith(".") is False and out[-1].islower():
+        out.pop()
+    if len(out) < 2 or any(w.lower() in ("university", "college", "institute", "school") for w in out):
         return ""
-    return " ".join(words)[:80]
+    return " ".join(out)[:80]
 
 
 def find_person(text: str) -> str:
@@ -1316,6 +1449,48 @@ def _sender_in(addr: str, pats) -> bool:
     return any(p and (a == p or (p.startswith("@") and a.endswith(p)) or p in a) for p in pats)
 
 
+# The local model's sensitivity kinds under which a letter request about
+# a person can sit: a request with no name in it needs one of these.
+_PERSON_KINDS = ("letter", "personnel", "student-record", "admissions")
+
+
+def _rule_detect(subject: str, ask: str, summary: str, sender: str, conf_kind: str,
+                 automated: bool, req_pats, conf_pats) -> dict | None:
+    """The rules for a record with no `letter` field. A request reads as one
+    in its subject or its ask (the summary only names the person); a
+    confirmation may say so anywhere."""
+    asked = f"{subject} {ask}"
+    every = f"{subject} {ask} {summary}"
+    plugin_req, plugin_conf = _sender_in(sender, req_pats), _sender_in(sender, conf_pats)
+    person = find_person(ask) or find_person(subject) or find_person(summary)
+    fresh = not re.match(r"\s*(?:re|fw|fwd|aw|sv)\s*:", subject, re.I)
+    if plugin_conf or (_CONFIRM.search(every) and (automated or fresh)):
+        # Only a service's own notice counts: a person's "thanks for
+        # sending it" in a thread is no proof of which place got it.
+        role = "confirmation"
+    elif _CONFIRM.search(every) and not automated and not _REQUEST_VERB.search(ask):
+        return None
+    elif plugin_req:
+        role = "reminder" if _REMINDER.search(asked) else "request"
+    elif not letterish(asked):
+        return None
+    elif conf_kind == "manuscript-review" or (_NOT_A_REQUEST.search(asked)
+                                              and not find_person(asked)):
+        return None
+    elif not (_REQUEST_VERB.search(asked) or automated):
+        return None
+    elif not person and not automated and conf_kind and conf_kind not in _PERSON_KINDS:
+        # A person's own ask names no one but comes as a letter matter;
+        # letters talked about in other mail (a committee, a program) do not.
+        return None
+    else:
+        role = "reminder" if _REMINDER.search(asked) else "request"
+    return {"role": role, "source": "plugin" if plugin_req or plugin_conf else "rules",
+            "kind": letter_kind(asked or every), "person": person,
+            "destination": find_destination(ask, subject), "due": "", "method": "unknown",
+            "destinations": []}
+
+
 def detect(rec: dict, *, plugin_senders: tuple | None = None) -> dict | None:
     """What one mail record says about a letter: None, or {"role":
     request | reminder | confirmation, "kind", "person", "destination",
@@ -1356,28 +1531,14 @@ def detect(rec: dict, *, plugin_senders: tuple | None = None) -> dict | None:
     elif model and model.get("role") == "none" and not (_sender_in(sender, req_pats + conf_pats)):
         return None
     if out is None:
-        letterish = bool(LETTER_RE_I.search(text)) or res.get("confidential_kind") == "letter"
-        if _sender_in(sender, conf_pats) or (letterish and _CONFIRM.search(text)):
-            role = "confirmation"
-        elif not letterish and not _sender_in(sender, req_pats):
+        out = _rule_detect(subject, ask, summary, sender, res.get("confidential_kind") or "",
+                           automated, req_pats, conf_pats)
+        if out is None:
             return None
-        elif _NOT_A_REQUEST.search(text) and not find_person(ask or subject):
-            return None
-        elif res.get("confidential_kind") in ("manuscript-review",):
-            return None
-        elif _REMINDER.search(subject + " " + ask) and LETTER_RE_I.search(text):
-            role = "reminder"
-        elif LETTER_RE_I.search(text) and (_REQUEST_VERB.search(text) or automated):
-            role = "request"
-        elif _sender_in(sender, req_pats):
-            role = "request"
-        else:
-            return None
-        out = {"role": role, "source": "plugin" if _sender_in(sender, req_pats + conf_pats) else "rules",
-               "kind": letter_kind(text), "person": find_person(ask) or find_person(subject)
-               or find_person(summary),
-               "destination": find_destination(ask, subject), "due": _day(res.get("deadline") or ""),
-               "method": "unknown", "destinations": []}
+        out["due"] = _day(res.get("deadline") or "")
+    if out.get("destination") and out.get("person") and (
+            norm_name(out["person"]) in norm_name(out["destination"])):
+        out["destination"] = ""
     if out["role"] in ("request", "reminder"):
         if link:
             out["method"] = "portal"
@@ -1395,6 +1556,17 @@ def detect(rec: dict, *, plugin_senders: tuple | None = None) -> dict | None:
 
 
 # ── ingest ───────────────────────────────────────────────────────────
+
+def _is_senders_name(person: str, sender: str, rec: dict) -> bool:
+    """The person a letter is about is the mail's own sender: the sender's
+    display name matches, or the address carries the last name."""
+    shown = str(rec.get("from_name") or "")
+    if shown and name_match(person, shown) == "same":
+        return True
+    toks = _tokens(person)
+    local = re.split(r"[._+-]", (sender or "").split("@")[0].lower())
+    return bool(toks) and len(toks[-1]) > 2 and toks[-1] in local
+
 
 def _sender_name(rec: dict) -> str:
     for p in (rec.get("result") or {}).get("people") or []:
@@ -1422,7 +1594,11 @@ def ingest_record(conn, rec: dict, *, ledger_id: str = "", keep_level: str = "fu
     person = found.get("person") or ""
     email = ""
     if found.get("person_is_sender"):
-        person = person or _sender_name(rec)
+        person = person or _sender_name(rec) or _name_from_address(sender)
+        email = sender
+    elif person and not found.get("automated") and _is_senders_name(person, sender, rec):
+        # The person writes for their own letter: their address joins the
+        # case, so a later mail of theirs that names no one still finds it.
         email = sender
     if found["role"] == "confirmation":
         return _ingest_confirmation(conn, found, sender=sender, actor=actor)
@@ -1449,12 +1625,10 @@ def ingest_record(conn, rec: dict, *, ledger_id: str = "", keep_level: str = "fu
             _closure().settle(conn, ledger_id, signal="duplicate_of", actor=actor,
                               note=f"the same letter case as {c['case_ledger_id']}",
                               evidence={"duplicate_of": c["case_ledger_id"]})
+        # The places the person lists, with their dates; the portals' own
+        # mails then join these by name, and fill in how to submit.
         for d in found.get("destinations") or []:
             add_destination(conn, cid, d["name"], d.get("due", ""), actor=actor)
-        if found.get("destination") and found.get("method") != "unknown":
-            add_destination(conn, cid, found["destination"], found.get("due", ""),
-                            found.get("method", "unknown"), found.get("link", ""),
-                            conversation_id=conv, sender=sender, actor=actor)
         if new_case:
             out["question"] = out.get("question") or ask_write(conn, cid)
         return out
@@ -1511,13 +1685,23 @@ def _org(addr: str) -> str:
     return ".".join(parts[-2:]) if len(parts) >= 2 else dom
 
 
+# A run reads the whole inbox: a request older than this opens nothing
+# (its letter was likely dealt with before letter cases), and a
+# confirmation older than CONFIRM_DAYS proves nothing new.
+REQUEST_DAYS = 14
+CONFIRM_DAYS = 30
+
+
 def ingest(records: list[dict], *, rows_by_message: dict | None = None,
-           levels: dict | None = None, db_path: Path | None = None, actor: str = "intake") -> list[dict]:
+           levels: dict | None = None, db_path: Path | None = None, actor: str = "intake",
+           now: datetime | None = None) -> list[dict]:
     """ingest_record over a run's mail records, oldest first, in one
     transaction. `rows_by_message` maps a message id to the ledger row the
-    intake made for it; `levels` a message id to its keep level."""
+    intake made for it; `levels` a message id to its keep level. Each
+    message is read once (letter_events)."""
     rows_by_message = rows_by_message or {}
     levels = levels or {}
+    now = now or datetime.now(timezone.utc)
     out = []
     conn = connect(db_path)
     try:
@@ -1525,6 +1709,10 @@ def ingest(records: list[dict], *, rows_by_message: dict | None = None,
         for rec in sorted(records, key=lambda r: str(r.get("received") or "")):
             found = detect(rec, plugin_senders=senders)
             if not found:
+                continue
+            got = str(rec.get("received") or "")
+            limit = CONFIRM_DAYS if found["role"] == "confirmation" else REQUEST_DAYS
+            if got and got < (now - timedelta(days=limit)).strftime("%Y-%m-%dT%H:%M:%SZ"):
                 continue
             mid = str(rec.get("id") or rec.get("message_id") or "")
             if mid and conn.execute("SELECT 1 FROM letter_events WHERE evidence LIKE ?",
@@ -1546,7 +1734,26 @@ def ingest(records: list[dict], *, rows_by_message: dict | None = None,
 # ── migration ────────────────────────────────────────────────────────
 
 _ACCEPTED_WORDS = re.compile(r"\b(?:agreed to write|will write|i'?ll write|accepted|said yes|"
-                             r"agreement to write|happy to write|glad to write)\b", re.I)
+                             r"agreement to write|happy to write|glad to write|"
+                             r"letter writing and submission remain)\b", re.I)
+# A place and its date as a row's notes list them: "Westmoor College (Dec 1)".
+_LISTED = re.compile(r"([A-Z][\w&'\u2019.-]*(?:\s+(?:[A-Z][\w&'\u2019.-]*|of|for|at|and|the)){0,7})"
+                     r"\s*\((?:by\s+|due\s+)?([A-Z][a-z]{2,8})\.?\s+(\d{1,2})\)")
+
+
+def listed_destinations(text: str, today: date) -> list[dict]:
+    """[{name, due}] for each "Place (Mon D)" in a row's own words."""
+    led = _ledger()
+    out = []
+    for m in _LISTED.finditer(text or ""):
+        month = led._MONTHS.get(m.group(2).lower())
+        if not month:
+            continue
+        day = led._next_day_of(month, int(m.group(3)), today)
+        name = re.sub(r"^(?:and|or|the)\s+", "", m.group(1).strip(), flags=re.I)
+        if day and name and name.lower() not in _NOT_NAMES:
+            out.append({"name": name[:120], "due": day.isoformat()})
+    return out[:12]
 _REPLY_CLOSE_SIGNALS = ("user_replied_outlook", "user_replied_gmail", "send_reply_row",
                         "reply_in_thread", "user_archived", "detector_sibling", "lapsed",
                         "date_passed")
@@ -1562,16 +1769,25 @@ def row_detection(row: dict) -> dict | None:
     m = re.search(r"Ask:\s*(.+?)(?:\s+Ask:|$)", notes)
     if m:
         ask = m.group(1)
-    rec = {"subject": str(brief.get("subject") or row.get("description") or ""),
-           "from": str(row.get("from_email") or ""),
+    rec = {"subject": " ".join(x for x in (str(row.get("description") or ""),
+                                          str(brief.get("subject") or "")) if x),
+           "from": str(row.get("from_email") or ""), "from_name": str(row.get("from_name") or ""),
            "result": {"ask": ask or str(brief.get("ask") or ""),
                       "summary": f"{row.get('description') or ''}. {notes[:400]}",
                       "confidential_kind": conf, "deadline": str(row.get("deadline") or "")[:10],
                       "links": re.findall(r"https?://\S+", notes)[:4]}}
     found = detect(rec, plugin_senders=([], []))
-    if found and not found.get("person") and not found.get("automated"):
-        found["person"] = str(row.get("from_name") or "") or _name_from_address(rec["from"])
+    if found and not found.get("automated") and (
+            not found.get("person") or _is_senders_name(found["person"], rec["from"], rec)):
+        found["person"] = (found.get("person") or str(row.get("from_name") or "")
+                           or _name_from_address(rec["from"]))
         found["person_is_sender"] = True
+        born = str(row.get("date_identified") or row.get("created_at") or "")[:10]
+        try:
+            today = date.fromisoformat(born)
+        except ValueError:
+            today = date.today()
+        found["destinations"] = found.get("destinations") or listed_destinations(notes, today)
     return found
 
 
@@ -1587,7 +1803,6 @@ def migration_plan(conn, *, days: int = 21, today: date | None = None) -> dict:
     the role it takes; closed rows say whether their close holds (a
     submission or the owner's word) or was a reply's or a tap's."""
     led = _ledger()
-    ensure_schema(conn)
     today = today or date.today()
     since = (today - timedelta(days=days)).isoformat()
     rows = conn.execute("SELECT * FROM ledger WHERE source IS NULL AND (status != 'completed' "
@@ -1630,6 +1845,7 @@ def migration_plan(conn, *, days: int = 21, today: date | None = None) -> dict:
                 verdict = "closed on the owner's word: submitted" if role == "destination" else \
                     "closed on the owner's word"
         item = {"id": r["id"], "status": r["status"], "role": role, "verdict": verdict,
+                "listed": found.get("destinations") or [] if role == "case" else [],
                 "closed_by": signal, "destination": found.get("destination") or "",
                 "due": found.get("due") or (str(r["deadline"] or "")[:10]),
                 "method": found.get("method") or "unknown", "link": found.get("link") or "",
@@ -1667,11 +1883,16 @@ def apply_migration(conn, plan: dict, *, reopen: bool = False, actor: str = "mig
                 if r["status"] != "completed":
                     link_row(conn, x["id"], cid, role="case")
                     counts["case_rows"] += 1
+                    for d in x.get("listed") or []:
+                        add_destination(conn, cid, d["name"], d["due"], actor=actor)
+                        counts["destinations"] += 1
                 continue
             reopen_it = r["status"] == "completed" and x["verdict"].endswith("reopen") and reopen
+            where = {"conversation_id": r["conversation_id"] or "",
+                     "sender": (r["from_email"] or "").lower()}
             if r["status"] == "completed" and not reopen_it:
                 did = add_destination(conn, cid, x["destination"], x["due"], x["method"], x["link"],
-                                      x["id"], actor=actor)
+                                      x["id"], actor=actor, **where)
                 conn.execute("UPDATE letter_destinations SET state = 'submitted', submitted_at = ?, "
                              "evidence = ? WHERE id = ?", (r["closed_at"], "closed before letter "
                                                            "cases: " + (x["closed_by"] or "?"), did))
@@ -1684,11 +1905,13 @@ def apply_migration(conn, plan: dict, *, reopen: bool = False, actor: str = "mig
                                         note="a letter closes on its submission, not on a reply")
                 counts["reopened"] += 1
             add_destination(conn, cid, x["destination"], x["due"], x["method"], x["link"], x["id"],
-                            actor=actor)
+                            actor=actor, **where)
             counts["destinations"] += 1
         if g.get("accepted"):
             accept(conn, cid, actor=actor, quote="recorded before letter cases")
-        _maybe_close_case(conn, cid, actor=actor)
+        if _maybe_close_case(conn, cid, actor=actor) is None and not g.get("accepted"):
+            if ask_write(conn, cid):
+                counts["questions"] = counts.get("questions", 0) + 1
     del led
     return counts
 
@@ -1705,8 +1928,9 @@ def plan_report(plan: dict, *, public: bool = True) -> str:
         for x in g["rows"]:
             rid = x["id"] if (not public or _id_is_anonymous(x["id"])) else "(id names a person)"
             extra = "" if public else f" | {x['destination'] or '-'} | {x['description'][:70]}"
+            listed = f", lists {len(x['listed'])} places" if x.get("listed") else ""
             lines.append(f"    {rid} {x['status']} {x['role']}: {x['verdict']}"
-                         f"{' due ' + x['due'] if x['due'] else ''}{extra}")
+                         f"{' due ' + x['due'] if x['due'] else ''}{listed}{extra}")
     return "\n".join(lines)
 
 
@@ -1727,6 +1951,13 @@ def _out(obj) -> int:
 def _err(msg: str) -> int:
     print(json.dumps({"ok": False, "error": msg}))
     return 1
+
+
+def _is_owner() -> bool:
+    try:
+        return bool(_ledger()._is_owner())
+    except Exception:
+        return False
 
 
 def _actor() -> str:
@@ -1783,6 +2014,23 @@ def main(argv=None) -> int:
     s.add_argument("--report", default="", help="write the full report (with names) to this file")
     args = p.parse_args(argv)
     actor = _actor()
+    if args.cmd == "migrate" and args.apply and not _is_owner():
+        return _err("migrate --apply is the owner's step: run it from the owner's shell")
+    if args.cmd == "decline" and not args.quote and not _is_owner():
+        return _err("decline needs --quote with the owner's own words")
+    if args.cmd == "migrate" and not args.apply:
+        # A dry run opens the ledger read-only: it writes nothing at all,
+        # not even the letter tables.
+        led = _ledger()
+        conn = led.guarded_connect(led.DB_PATH, read_only=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            plan = migration_plan(conn, days=args.days)
+        finally:
+            conn.close()
+        if args.report:
+            Path(args.report).write_text(plan_report(plan, public=False) + "\n")
+        return _out({"dry_run": True, "report": plan_report(plan).splitlines()})
     conn = connect()
     try:
         if args.cmd == "list":
@@ -1818,8 +2066,6 @@ def main(argv=None) -> int:
             plan = migration_plan(conn, days=args.days)
             if args.report:
                 Path(args.report).write_text(plan_report(plan, public=False) + "\n")
-            if not args.apply:
-                return _out({"dry_run": True, "report": plan_report(plan).splitlines()})
             res = apply_migration(conn, plan, reopen=args.reopen, actor=actor)
         else:
             return _err(f"unknown command {args.cmd}")

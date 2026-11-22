@@ -6,6 +6,14 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A letter someone asks you to write is one case per person.** The
+  person's own request and each program's or portal's request mail join
+  one case, with a date and a state for each place the letter goes. A
+  reply in the thread never closes a letter and never asks "looks done?";
+  only the submission, your word or your No closes it. Letter requests
+  stay off the Replies card, and no scheduled run drafts a reply to one.
+  A new case asks you once: will you write it?
+
 - **An emailed request can require work instead of an email reply.**
   Recommendation letters, submissions, reports and forms stay out of the
   reply suggestions while their work and deadlines remain open. Old mail
