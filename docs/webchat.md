@@ -728,74 +728,110 @@ the preferences store under the scope `home` ("Liked the Home greeting
 (breezy): ..."), which the next prompt reads; a thumbs down drops the
 model's line at once. No streaks, no scores.
 
-**The deeper briefing** (`preprocessor/home_deeper.py`). An item opened
-on Home asks for it (`POST /api/home/deeper`; `GET /api/home/item` only
-reads it, so a read after the `home-item` event never starts a job again).
-One tool-less model call reads a packet built in code, read-only: the
-item's kind, title and quick briefing; its ledger row (type, status, dates
-with their weekday and month in words, description, last action, notes,
-sender); the row's last events with the owner's quotes; the thread brief's
-records (subject, ask, state, the last messages' gists: never mail text,
-never a quote from mail); the other rows on the conversation, closed ones
-with the owner's own close; his earlier word on the thread; the linked
-project's name, summary and next step; today's and tomorrow's events and
-the free slots up to the due date (the briefing's data); the owner's rules
-for briefings and drafting; and the step kinds the item allows. It stays
-under 24,000 characters, shedding detail first. The answer has a strict
-shape: three short lists (what happened, what is at stake, what Tacitus
-does not know) and two or three steps, each of a fixed kind: draft a reply
-saying X, ask them a question, offer times (a meeting thread only), wait
-until a date, mark it done, start work on it in a conversation, hold time
-on the calendar before the due date. Code checks every sentence and every
-step's words: a number, a weekday, a month or a name the packet does not
-hold (or a link or an address) turns that sentence into "Tacitus could not
-check this." and drops that step; an answer with nothing checked fails.
-Code checks each step against the gates (`allowed_kinds`, `check_step`):
-no draft where the answer is the owner's choice or the ask is work, not a
-reply (`draft_gate.owner_choice`, `mail_completion.non_email_work`), no
-draft that accepts or declines an invitation or says yes or no for him
-(`draft_gate.check`, `answers_invitation`), no reply or question on a
-thread he said gets no reply, nothing but Wait and Done on a kept item,
-dates after today and within 60 days, a hold no later than the due date.
-At the tap, a step that is one of the item's own choices runs as that
-choice (`home_items`: Tell Tacitus what to say with the words, Waiting on
-someone with the date, else Later; Done, else Not needed), with its Undo;
-a step the item does not offer is not shown. Start, Hold and Continue in a conversation open a
-conversation in the item's place (its project room, else Ask Tacitus)
-whose first message is Tacitus's: the item's name on the first line (in
-plain words, at most 60 characters, cut at a word, as a room's briefing
-post is named), the briefing, the steps it saw and the item's id; Start
-and Hold then send the owner's words and the turn starts, Continue leaves
-the composer to him. A kept item never opens a conversation. Nothing here
-sends mail, creates an event with people on it or closes a row by itself.
+**The deeper briefing** (`preprocessor/home_deeper.py`). Each open
+ledger row has a briefing written ahead of the tap and stored, so an
+opened item shows it at once: what happened, what is at stake, what
+Tacitus does not know, and two or three next steps.
 
-Where it runs: an item kept below Summary on the owner's own model alone
-(with none set up, the card shows the quick briefing and says why); any
-other item where the routing table's `briefing` task runs (the briefing
-lane's own decision, `remote_llm.local_for`): the owner's own model
-(`remote_llm.chat`, purpose `chat-home-deeper`, under the schema) or the
-hosted model the table names (`hosted_text.run`, task `briefing`: Codex,
-or Claude on ea-config.json's `models.home_deeper`, else sonnet). When the
-first does not answer the other does and the card says so ("Your own
-model did not answer, so Codex wrote this."); a hosted plan at its limit
-(`briefing_review._plan_full`, or the call's own answer) hands the call to
-the owner's own model ("Claude is at its plan limit, so your own model
-wrote this.") or the card says the limit is reached. The result is kept in
-the web chat's store (`home:deeper`) per item and served again until the
-item's row or thread changes (its status, dates, last action, notes, the
-thread's newest message, state or ask; the quick briefing's day count is
-not a change), so a repeat tap costs nothing. Bounds: one job per item at
-a time, two at once (four more wait), 120 model calls a day (when the
-day's calls are spent the card says "You reached today's limit of 120 deeper
-briefings. They start again tomorrow."), and a prewarm from Home's tick of
-the first two items of Left for you only where the call runs on the
-owner's own model, never on a hosted plan, one try per version and 30 a
-day. A job this process lost (a restart) reads failed, and the next open
-runs it. Each job is one line in `<private_dir>/remote-llm/home-deeper.jsonl`
-(the route, the model, the seconds, the tokens, what code refused; no
-content), and `home_deeper.py usage` sums the days. The `home-item` event
-(`{"ref"}`) goes out when a job starts and ends; an app that shows the
-item open reads it again.
+- *Who writes it, and when.* The owner's own model writes it when the row
+  or its thread changes: the mail tick (`mail_privacy.py tick`, every ten
+  minutes) runs `home_deeper.refresh` after the thread briefs, so a new
+  message, a row written from chat or a changed row gets its briefing
+  again, four a tick and 200 a day at most. At each morning briefing and
+  afternoon update, the hosted model rewrites the briefings of the items on
+  Home's list (the post's items after its review and the replies owed a day
+  or more, 20 at most, kept mail left out) in as few tool-less calls as fit
+  80,000 characters (`hosted_pass`, the routing table's `review` model). It
+  runs in a process of its own that the briefing run starts after it writes
+  Home's list, so the post never waits for it. When that call fails, the
+  local briefing stands. A tap writes one only when none is stored or the
+  stored one is older than the row and its thread: on the owner's own model,
+  with the hosted model when it does not answer.
+- *Where it is kept.* In an owner-private file beside the local model's
+  records (`<private_dir>/remote-llm/home-briefings.sqlite`, 0600), never in
+  the ledger. Hosted turns read the ledger (`ledger.py get`), and the
+  briefing of a kept thread, written by the owner's own model, must not sit
+  where a hosted turn reads more than its level allows. Each briefing
+  carries the version of the row and thread it was written from: Home's
+  own (`home_items.row_version`, which the item carries as `row_version`;
+  never anything that moves with the clock), so the card and the store
+  agree on when it is stale. A row that closes loses its briefing.
+- *Rows written from chat.* `ledger.py add` and `update` tell this module
+  of the row (`ledger.ROW_WRITTEN_HOOKS`, `row_written`). In the
+  resident's chat turn, which cannot reach the owner's store, it notes the
+  row's id in the resident's own state (`home-briefing-queue.jsonl`, kept
+  small). The next refresh writes the noted rows first, and only when
+  their stored briefing is missing or stale by the ledger's own record.
+- *What the card shows.* `GET /api/home/item` gives the stored briefing at
+  once (`deeper.state: "ready"`, with `by`: `local` or `hosted`, and `at`),
+  with `stale: true` when the row or its thread changed since it was
+  written. The app then asks for a new one (`POST /api/home/deeper`); with
+  none stored, the state is `none` and the app asks the same way. The lines
+  that depend on the moment are added in code when the card is read, never
+  stored: how long the other side has waited, his next free time before the
+  item is due, and the due day. A step whose day has passed is left out.
+- *The packet.* It is built in code, read-only: the item's kind and title;
+  its ledger row (type, status, dates with their weekday and month in words,
+  description, last action, notes, sender); the row's last events with the
+  owner's quotes; the thread brief's records (subject, ask, state, the last
+  messages' gists, never mail text and never a quote from mail); the other
+  rows on the conversation, closed ones with the owner's own close; his
+  earlier word on the thread; the linked project's name, summary and next
+  step; the calendar up to the due date; the owner's rules for briefings and
+  drafting; and the step kinds the item allows. One model call reads it,
+  apart from the mail extraction. One call for both was measured on
+  recorded messages: no faster, and its briefings held more claims code
+  could not check.
+- *The answer.* Its shape is strict: three short lists and two or three
+  steps. Each step is of a fixed kind: draft a reply saying X, ask them a
+  question, offer times (a meeting thread only), wait until a date, mark it
+  done, start work on it in a conversation, or hold time before the due date.
+- *Code's check of the words.* Code checks every sentence and every step's
+  words. A number, a weekday, a month or a name that the packet does not
+  hold, a link, an address, or a word tied to the moment (today, ago, a
+  count of days) turns that sentence into "Tacitus could not check this."
+  and drops that step. An answer with nothing checked is not stored.
+- *Code's check of the steps* (`allowed_kinds`, `check_step`):
+  - No draft where the answer is the owner's choice or the ask is work, not
+    a reply (`draft_gate.owner_choice`, `mail_completion.non_email_work`).
+  - No draft, question or task that accepts, declines, consents to or
+    approves anything for him (`draft_gate.check`, `answers_invitation`).
+  - No reply or question on a thread he said gets no reply.
+  - Nothing but Wait and Done on a kept item.
+  - Dates after the day it is written and within 60 days, and a hold no
+    later than the due date.
+- *A step at the tap.* A step that is one of the item's own choices runs as
+  that choice (`home_items`), with its Undo: Tell Tacitus what to say with
+  the words, Waiting on someone with the date (else Later), and Done (else
+  Not needed). A step the item does not offer is not shown. Start, Hold and
+  Continue in a conversation open a conversation in the item's place (its
+  project room, else Ask Tacitus). Its first message is Tacitus's: the
+  item's name on the first line (in plain words, at most 60 characters, cut
+  at a word, as a room's briefing post is named), the briefing, the steps
+  it saw and the item's id. Start and Hold then send the owner's words and
+  the turn starts; Continue leaves the composer to him. A kept item never
+  opens a conversation. Nothing here sends mail, creates an event with
+  people on it or closes a row by itself.
+- *Bounds at the tap.*
+  - One job per item at a time.
+  - Two jobs at once, and four more wait.
+  - 120 model calls a day. When the day's calls are spent, the card says
+    "You reached today's limit of 120 deeper briefings. They start again
+    tomorrow."
+  - From Home's tick, Tacitus writes the first two items of Left for you
+    when theirs are missing or stale. It does this only on the owner's own
+    model, one at a time, never while a tap's job runs, and 30 a day at most.
+  - A job this process lost (a restart) reads failed, and the next open
+    runs it.
+- *The record.* Every write is one line in
+  `<private_dir>/remote-llm/home-deeper.jsonl`, with no content: the kind
+  (ingest, tap, prewarm, hosted-pass with the run id), the route, the
+  model, the seconds, the tokens, and what code refused.
+  `home_deeper.py usage` sums the days. `home_deeper.py backfill --limit N`
+  writes the open rows' missing briefings, N at a time and resumable.
+  `--dry-run` counts them.
+- *The event.* The `home-item` event (`{"ref"}`) goes out when a tap's job
+  starts and when it ends. An app that shows the item open reads it again.
 
 **The briefing.** On the web chat alone (Slack and a shadow keep the
 post), with the web block's `home.briefing` "home" (the default), the

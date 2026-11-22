@@ -7,17 +7,19 @@ repository that preceded it.
 ## Unreleased
 
 - **A Home item you open explains itself.** Opening an item on Home now
-  brings a fuller briefing into the card after a few seconds: what
-  happened so far, what is at stake and what Tacitus does not know, with
-  two or three next steps as buttons (draft a reply that says this, ask
-  them a question, wait until a day, mark it done, start on it, hold time
-  on your calendar). A sentence Tacitus cannot check against its records
-  shows as "Tacitus could not check this." A step never answers a choice
-  that is yours, and never sends anything. Continue in a conversation
-  opens one named after the item, with the briefing as its first message.
-  Mail kept from hosted models stays on your own model. The briefing is
-  kept until the item changes, so opening it again costs nothing, and the
-  card says so when the day's limit is reached.
+  shows a fuller briefing at once: what happened so far, what is at stake
+  and what Tacitus does not know, with two or three next steps as buttons
+  (draft a reply that says this, ask them a question, wait until a day,
+  mark it done, start on it, hold time on your calendar). Your own model
+  writes each item's briefing ahead of time, when its mail or its record
+  changes. At each morning briefing and afternoon update, Claude or Codex
+  rewrites the briefings for the items on your list, except mail kept on
+  your own model. The card adds how long they have waited and your next
+  free time when you open it. A sentence Tacitus cannot check against its
+  records shows as "Tacitus could not check this." A step never answers a
+  choice that is yours, and never sends anything. Continue in a
+  conversation opens one named after the item, with the briefing as its
+  first message.
 - **An emailed request can require work instead of an email reply.**
   Recommendation letters, submissions, reports and forms stay out of the
   reply suggestions while their work and deadlines remain open. Old mail

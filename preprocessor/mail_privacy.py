@@ -897,6 +897,16 @@ def tick(*, graph=None, chat=None, now: datetime | None = None) -> dict:
                                         own_sent=st.get("own_sent") or {})
         except Exception as e:
             out["briefs"] = {"error": str(e)[:200]}
+    if chat is None:
+        # Home's stored briefings: a row whose thread just got a new message,
+        # or a row written since (from chat too), gets its briefing again on
+        # the owner's own model, a few per tick (home_deeper.refresh). A pass
+        # with a stand-in model (a test, a backtest) writes none.
+        try:
+            import home_deeper
+            out["home_briefings"] = home_deeper.refresh()
+        except Exception as e:
+            out["home_briefings"] = {"error": str(e)[:200]}
     try:
         import ghost_week
         tw = ghost_week.tripwire(now=now, cfg=cfg)

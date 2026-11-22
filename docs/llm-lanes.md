@@ -749,6 +749,13 @@ line; it never falls back to a Claude run.
   verdicts (`briefing_audit`); the remote model answers when that call
   fails. Rows it closes or parks leave the post, and code renders the
   post again.
+- **Home's stored briefings** (`preprocessor/home_deeper.py`, docs/webchat.md,
+  Home). After each run writes Home's list, a process of its own has the
+  hosted model rewrite the briefings of the items on it in one or a few
+  tool-less calls (the `review` model), mail kept below Summary left out;
+  the owner's own model writes every open row's briefing between runs, from
+  the mail tick. The run never waits for it, and a failed call leaves the
+  local briefings as they are.
 - **The owner's decisions are not the model's** (`preprocessor/draft_gate.py`).
   A close of a row in the owner's words, or by his click (Handled, Not
   needed), is his decision on that conversation (`ledger.owner_decisions`,

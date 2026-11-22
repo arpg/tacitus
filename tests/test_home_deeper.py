@@ -48,7 +48,8 @@ def make_row(**over) -> dict:
            "description": "Needs response: Rover loan for the field week", "from_name": "Robin Vale",
            "from_email": "robin@example.org", "conversation_id": "conv-1", "date_identified": "2026-11-18",
            "deadline": "2026-12-04", "updated_at": "2026-11-20T10:00:00", "last_action": "",
-           "metadata": json.dumps({"thread_brief": brief})}
+           # the ledger's merged shape (get_open_entries): the metadata's keys beside the row's
+           "thread_brief": brief}
     row.update(over)
     return row
 
@@ -110,7 +111,7 @@ class FakeFE:
 
 
 @pytest.fixture
-def env(monkeypatch):
+def env(monkeypatch, tmp_path):
     """No live source: the ledger, the briefing, the rules, the log and the
     keep check are stand-ins; the owner's own model is ready and the
     briefing runs on it."""
@@ -134,6 +135,9 @@ def env(monkeypatch):
     monkeypatch.setattr(D, "LOCAL", local)
     monkeypatch.setattr(D, "HOSTED", hosted)
     monkeypatch.setattr(D, "_log", lambda rec: calls.setdefault("log", []).append(rec))
+    store_dir = tmp_path / "private" / "remote-llm"
+    monkeypatch.setattr(D, "_store_path", lambda: store_dir / D.STORE_FILE)
+    monkeypatch.setattr(D, "_briefing_now", lambda: {})
     monkeypatch.setattr(D, "_zone", lambda: ZONE)
     monkeypatch.setattr(D, "_sources", lambda: ({}, ""))
     monkeypatch.setattr(D, "_project", lambda lid, conn=None: None)
@@ -155,7 +159,8 @@ def env(monkeypatch):
     monkeypatch.setattr(remote_llm, "local_for", lambda task, switch, cfg=None: bool(switch))
     fe = FakeFE()
     fe._home_deeper = D.Jobs(fe, clock=lambda: NOW, background=False)
-    return {"fe": fe, "calls": calls, "replies": replies, "levels": levels, "mp": monkeypatch}
+    return {"fe": fe, "calls": calls, "replies": replies, "levels": levels, "mp": monkeypatch,
+            "store": D.Store(store_dir / D.STORE_FILE)}
 
 
 # ── the packet at each keep level ────────────────────────────────────
@@ -177,7 +182,9 @@ def test_the_packet_carries_the_records_never_the_mail_and_names_its_days():
     assert p["same_thread"][0]["closed_by_owner"]["said"] == "Done, lent it."
     assert p["project"] == {"name": "Field robots", "summary": "The rover fleet."}
     assert p["steps_you_may_choose"] == ["draft_reply"] and p["owner_rules"] == "Keep replies short."
-    assert p["days_since_they_wrote"] >= 4
+    # nothing tied to the moment: the briefing is stored and read days later
+    assert "days_since_they_wrote" not in p and "standing" not in p["item"].get("quick_briefing", {})
+    assert p["written_on"] == "2026-11-22 (Sunday, November 22)"
 
 
 def test_a_packet_that_does_not_fit_sheds_detail_first(monkeypatch):
@@ -228,9 +235,9 @@ def test_a_kept_item_with_no_local_model_shows_the_quick_briefing_alone(env):
     assert D.start(fe, item["ref"], dict(ITEM, kept=True), row=make_row())["state"] == "unavailable"
 
 
-def test_the_route_follows_the_briefings_choice_and_never_hosts_an_unknown_level(env):
-    assert D.route("full", cfg={"endpoint": "x", "model": "m", "briefings": "remote"}) == ["local", "hosted"]
-    assert D.route("summary", cfg={"endpoint": "x", "model": "m", "briefings": "off"}) == ["hosted", "local"]
+def test_the_owners_own_model_writes_first_and_an_unknown_level_never_goes_hosted(env):
+    assert D.route("full", cfg={"endpoint": "x", "model": "m"}) == ["local", "hosted"]
+    assert D.route("summary", cfg={"endpoint": "x", "model": "m"}) == ["local", "hosted"]
     env["mp"].setattr(D, "local_ready", lambda cfg=None: False)
     assert D.route("full", cfg={}) == ["hosted"]
     assert D.route("", cfg={}) == []  # no level said: fail closed
@@ -251,6 +258,9 @@ def test_a_sentence_with_a_number_a_day_or_a_name_the_records_lack_cannot_show()
     assert not D.checked("They sent seven files.", k)
     assert not D.checked("See https://example.org for it.", k)
     assert D.checked("He may need it, so they sat down and ate on the sun deck.", k)  # plain words
+    for moment in ("The reply is due tomorrow.", "Robin Vale wrote four days ago.", "It has waited 4 days.",
+                   "It is due this week.", "Robin Vale asked about it today."):
+        assert not D.checked(moment, D.Known({"a": "4 four Robin Vale"})), moment
     assert D.checked("It is due Fri, Dec 4.", k) and not D.checked("It is due Wed, Dec 4.", k)
     assert not D.checked("Write to robin@example.org.", k)
 
@@ -330,7 +340,7 @@ def test_what_each_item_allows(env):
     assert D.allowed_kinds(ITEM, no_reply, "full") == ["wait_until", "mark_done", "work_on_it", "hold_slot"]
     assert D.allowed_kinds(ITEM, meeting, "full")[:3] == ["draft_reply", "propose_times", "ask_sender"]
     assert "propose_times" not in D.allowed_kinds(ITEM, row, "full")
-    assert D.allowed_kinds(dict(ITEM, kind="item"), make_row(conversation_id="", metadata="{}"),
+    assert D.allowed_kinds(dict(ITEM, kind="item"), make_row(conversation_id="", thread_brief={}),
                            "full") == ["wait_until", "mark_done", "work_on_it", "hold_slot"]
 
 
@@ -372,14 +382,19 @@ def test_a_result_stays_until_the_row_or_thread_changes_and_a_repeat_tap_costs_n
     fe, calls = env["fe"], env["calls"]
     assert D.state(fe, ITEM["ref"], ITEM, row=make_row()) == {"state": "none"}
     assert D.start(fe, ITEM["ref"], ITEM, row=make_row()) == {"ok": True, "state": "ready"}
+    st = D.state(fe, ITEM["ref"], ITEM, row=make_row())
+    assert st["state"] == "ready" and st["by"] == "local" and st["at"] and "stale" not in st
     assert D.start(fe, ITEM["ref"], ITEM, row=make_row()) == {"ok": True, "state": "ready"}
     assert len(calls["local"]) == 1
-    # a new message on the thread: the result is stale and the next tap runs it again
-    newer = make_row(brief={"messages": [{"received": "2026-11-21T10:00", "own": False, "from": "Robin Vale",
-                                          "gist": "Robin Vale asked again."}]})
-    assert D.state(fe, ITEM["ref"], ITEM, row=newer) == {"state": "none"}
+    # a tick that rewrites the same facts (a new update stamp) changes nothing
+    assert "stale" not in D.state(fe, ITEM["ref"], ITEM, row=make_row(updated_at="2026-11-22T11:00:00"))
+    # a new message on the thread: the stored one shows, marked stale, and the next tap writes again
+    newer = make_row(brief={"latest": "2026-11-21T10:00", "messages": [
+        {"received": "2026-11-21T10:00", "own": False, "from": "Robin Vale", "gist": "Robin Vale asked again."}]})
+    st = D.state(fe, ITEM["ref"], ITEM, row=newer)
+    assert st["state"] == "ready" and st["stale"] is True and "Robin Vale asked on November 18" in st["text"]
     D.start(fe, ITEM["ref"], ITEM, row=newer)
-    assert len(calls["local"]) == 2
+    assert len(calls["local"]) == 2 and "stale" not in D.state(fe, ITEM["ref"], ITEM, row=newer)
     # the quick briefing's day count is not a change
     later = dict(ITEM, brief={"standing": ["Waiting 5 days"]})
     assert D.state(fe, ITEM["ref"], later, row=newer)["state"] == "ready"
@@ -459,18 +474,19 @@ def test_a_prewarm_runs_only_on_the_owners_own_model_and_within_its_bound(env):
     assert D.prewarm(fe, left) == 0  # inline jobs report ready, not working
     assert len(calls["local"]) == 1  # the card is never prewarmed, the third is past the top two
     D.prewarm(fe, left)
-    assert len(calls["local"]) == 1  # one try per version
-    # hosted first: no prewarm spends a hosted plan
-    env["mp"].setattr(D, "_remote_cfg", lambda: {"endpoint": "x", "model": "m", "briefings": "off"})
+    assert len(calls["local"]) == 1  # stored: nothing to do
+    env["replies"]["local"] = {"ok": False, "text": "", "usage": {}, "reason": "timeout"}
     D.prewarm(fe, [{"id": "reply:p4", "kind": "reply", "title": "Four"}])
-    assert len(calls["local"]) == 1 and calls["hosted"] == []
-    assert D.state(fe, "reply:p4", {"kind": "reply", "title": "Four"},
-                   row=make_row(id="p4"))["state"] == "none"
-    # its own daily bound
-    env["mp"].setattr(D, "_remote_cfg", lambda: {"endpoint": "x", "model": "m", "briefings": "remote"})
+    D.prewarm(fe, [{"id": "reply:p4", "kind": "reply", "title": "Four"}])
+    assert len(calls["local"]) == 2 and calls["hosted"] == []  # one try per version, never hosted
+    # no local model: no prewarm at all
+    env["mp"].setattr(D, "local_ready", lambda cfg=None: False)
+    assert D.prewarm(fe, [{"id": "reply:p5", "kind": "reply", "title": "Five"}]) == 0
+    env["mp"].setattr(D, "local_ready", lambda cfg=None: True)
     env["mp"].setattr(D, "PREWARM_DAILY", 1)
-    D.prewarm(fe, [{"id": "reply:p5", "kind": "reply", "title": "Five"}])
-    assert len(calls["local"]) == 1
+    env["replies"]["local"] = answer()
+    D.prewarm(fe, [{"id": "reply:p6", "kind": "reply", "title": "Six"}])
+    assert len(calls["local"]) == 2  # its own daily bound
 
 
 # ── the fallbacks ────────────────────────────────────────────────────
@@ -480,25 +496,25 @@ def test_the_other_model_answers_when_the_first_does_not_and_the_card_says_so(en
     env["replies"]["local"] = {"ok": False, "text": "", "usage": {}, "reason": "RemoteLLMError: circuit open"}
     D.start(fe, ITEM["ref"], ITEM, row=make_row())
     st = D.state(fe, ITEM["ref"], ITEM, row=make_row())
-    assert st["state"] == "ready" and st["model"] == "Codex"
+    assert st["state"] == "ready" and st["model"] == "Codex" and st["by"] == "hosted"
     assert st["note"] == "Your own model did not answer, so Codex wrote this."
     assert len(calls["local"]) == 1 and len(calls["hosted"]) == 1
 
 
-def test_a_hosted_plan_at_its_limit_hands_the_call_to_the_owners_model_or_fails_plainly(env):
+def test_a_hosted_plan_at_its_limit_fails_plainly_when_the_owners_model_did_not_answer(env):
     fe, calls = env["fe"], env["calls"]
-    env["mp"].setattr(D, "_remote_cfg", lambda: {"endpoint": "x", "model": "m", "briefings": "off"})
+    env["replies"]["local"] = {"ok": False, "text": "", "usage": {}, "reason": "timeout"}
     env["replies"]["hosted"] = {"ok": False, "text": "", "usage": {}, "reason": "limit"}
     D.start(fe, ITEM["ref"], ITEM, row=make_row())
     st = D.state(fe, ITEM["ref"], ITEM, row=make_row())
-    assert st["state"] == "ready" and st["note"] == "Codex is at its plan limit, so your own model wrote this."
+    assert st == {"state": "failed", "note": "Codex is at its plan limit. Open this again after it resets."}
     assert fe._home_deeper.day()["calls"] == 1  # the plan check made no call
+    plain(st["note"])
+    # with the plan spent and no local model, the same line
     env["mp"].setattr(D, "local_ready", lambda cfg=None: False)
     ref = "reply:other"
     D.start(fe, ref, dict(ITEM, ref=ref), row=make_row(id="other"))
-    st = D.state(fe, ref, dict(ITEM, ref=ref), row=make_row(id="other"))
-    assert st == {"state": "failed", "note": "Codex is at its plan limit. Open this again after it resets."}
-    plain(st["note"])
+    assert D.state(fe, ref, dict(ITEM, ref=ref), row=make_row(id="other"))["note"] == st["note"]
 
 
 def test_a_kept_item_never_falls_back_to_a_hosted_model(env):
@@ -515,7 +531,7 @@ def test_each_job_is_one_log_line_with_no_content(env):
     fe, calls = env["fe"], env["calls"]
     D.start(fe, ITEM["ref"], ITEM, row=make_row())
     rec = calls["log"][-1]
-    assert rec["ok"] and rec["via"] == "local" and rec["usage"] == {"in": 900, "out": 200}
+    assert rec["ok"] and rec["kind"] == "tap" and rec["via"] == "local" and rec["usage"] == {"in": 900, "out": 200}
     assert "rover" not in json.dumps(rec).lower() and ITEM["ref"] not in json.dumps(rec)
 
 
@@ -563,12 +579,14 @@ def test_a_long_title_names_the_conversation_in_sixty_characters_cut_at_a_word(e
 
 
 def test_continue_goes_to_the_items_project_room_when_it_has_one(env):
+    """The room Home's own Start it with Tacitus picks (home_items._room)."""
     fe = env["fe"]
-    env["mp"].setattr(D, "_project", lambda lid, conn=None: {"id": "rovers", "name": "Rovers"})
-    import briefing_rooms
-    env["mp"].setattr(briefing_rooms, "rooms", lambda **kw: {"rovers": {"channel": "r7", "room": "ea-rovers"}})
+    import home_items
+    picked = []
+    env["mp"].setattr(home_items, "_room", lambda fe_, f: picked.append((f.lid, f.conv)) or "r7")
     D.start(fe, ITEM["ref"], ITEM, row=make_row())
     assert D.step(fe, ITEM["ref"], "continue", ITEM, row=make_row())["goto"] == "#/r7/t1"
+    assert picked == [("response-t1", "conv-1")]
 
 
 def test_a_work_step_opens_the_conversation_and_sends_its_words_for_the_owner(env):
@@ -646,3 +664,202 @@ def test_the_calendar_part_holds_what_is_ahead_up_to_the_due_date():
     cal = D._calendar(briefing, now=NOW, zone=ZONE, until=date(2026, 12, 4))
     assert [e.split(": ")[-1] for e in cal["events"]] == ["Seminar", "Site visit"]  # the 8 AM one is past
     assert cal["free_slots"] == ["Tuesday, November 24 9:00 to 10:30 (90 minutes)"]
+
+
+# ── the stored briefings ─────────────────────────────────────────────
+
+def test_the_store_is_owner_private_and_never_the_ledger(env, tmp_path):
+    import os
+    import stat
+    import ledger
+    env["levels"]["level"] = "local"
+    env["mp"].setattr(ledger, "set_metadata", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ledger")))
+    got = D.refresh(rows=[make_row()])
+    assert got["written"] == 1 and env["calls"]["hosted"] == []
+    path = D._store_path()
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600 and path.name == "home-briefings.sqlite"
+    rec = env["store"].get("response-t1")
+    assert rec["by"] == "local" and rec["level"] == "local" and rec["version"] == D.row_version(make_row())
+
+
+def test_the_version_moves_with_the_thread_and_the_owners_word_not_the_stamp():
+    base = D.row_version(make_row())
+    assert D.row_version(make_row(updated_at="2027-01-01T00:00:00")) == base
+    assert D.row_version(make_row(brief={"latest": "2026-11-21T10:00"})) != base
+    assert D.row_version(make_row(last_action="Replied by phone")) != base
+    # Home's own version: the item and the stored briefing agree on stale
+    import home_items
+    assert D.row_version(make_row()) == home_items.row_version(make_row())
+
+
+def test_refresh_writes_what_is_stale_a_few_at_a_time_within_the_day(env):
+    store = env["store"]
+    rows = [make_row(id=f"r{i}", updated_at=f"2026-11-2{i}T08:00:00") for i in range(5)]
+    got = D.refresh(rows=rows, limit=2, prefer=["r1"])
+    assert got["stale"] == 5 and got["written"] == 2
+    assert set(store.versions()) == {"r1", "r4"}  # Home's item first, then the newest
+    assert D.refresh(rows=rows, dry_run=True)["stale"] == 3
+    D.refresh(rows=rows, limit=10, daily=4)
+    assert len(store.versions()) == 4  # the day's bound
+    assert D.refresh(rows=rows, limit=10, daily=4)["skipped"] == "the day's writes are spent"
+    # a row closed since: its briefing goes
+    D.refresh(rows=rows[:2], limit=0)
+    assert set(store.versions()) == {"r1"}
+    env["mp"].setattr(D, "local_ready", lambda cfg=None: False)
+    assert D.refresh(rows=rows)["skipped"] == "no local model"
+
+
+def test_a_kept_row_is_written_on_the_owners_own_model_alone_at_ingest(env):
+    env["levels"]["level"] = "facts"
+    env["replies"]["local"] = {"ok": False, "text": "", "usage": {}, "reason": "timeout"}
+    got = D.refresh(rows=[make_row()])
+    assert got["failed"] == 1 and env["calls"]["hosted"] == []
+
+
+def test_the_card_adds_the_moments_lines_in_code_and_drops_a_step_whose_day_passed(env):
+    fe = env["fe"]
+    env["replies"]["local"] = answer(steps=[
+        {"kind": "wait_until", "say": "", "question": "", "date": "2026-11-24", "minutes": 0, "ask": "", "why": ""},
+        {"kind": "mark_done", "say": "", "question": "", "date": "", "minutes": 0, "ask": "", "why": ""}])
+    todo = dict(ITEM, choices=[{"id": "later"}, {"id": "not_needed"}])
+    D.start(fe, ITEM["ref"], todo, row=make_row())
+    stored = env["store"].get("response-t1")["text"]
+    assert "ago" not in stored and "Now" not in stored
+    st = D.state(fe, ITEM["ref"], todo, row=make_row())
+    for line in st["text"].split("\n"):
+        plain(line)
+    assert st["text"].startswith("Now\n- They wrote 4 days ago and wait for your answer.\n"
+                                 "- It is due Friday, December 4.\n\nWhat happened")
+    assert [s["label"] for s in st["steps"]][:2] == ["Wait until Tue, Nov 24", "Not needed"]
+    fe._home_deeper.clock = lambda: NOW + 3 * 86400  # Nov 25: the wait's day passed
+    st = D.state(fe, ITEM["ref"], todo, row=make_row())
+    assert [s["label"] for s in st["steps"]] == ["Not needed", "Continue in a conversation"]
+    assert "They wrote 7 days ago" in st["text"]
+
+
+def test_now_lines_name_the_next_free_time_before_it_is_due():
+    briefing = {"availability_merged": [{"start": "2026-11-24T16:00:00+00:00", "end": "2026-11-24T17:00:00+00:00"}]}
+    lines = D.now_lines(make_row(), now=NOW, zone=ZONE, briefing=briefing)
+    assert "Your next free time before it is due: Tuesday, November 24 9:00 to 10:00 (60 minutes)." in lines
+    replied = make_row(brief={"user_replied_after_latest": True})
+    assert not any("wait for your answer" in x for x in D.now_lines(replied, now=NOW, zone=ZONE))
+
+
+# ── the hosted rewrite at briefing time ──────────────────────────────
+
+def _hosted_answer(refs, **over):
+    one = json.loads(answer(**over))
+    return json.dumps({"items": [dict(one, ref=r) for r in refs]})
+
+
+def test_the_hosted_pass_rewrites_the_days_list_in_one_call_and_skips_kept_mail(env):
+    store = env["store"]
+    rows = [make_row(id="a1"), make_row(id="a2"), make_row(id="k1")]
+    env["mp"].setattr(D._mod("keep_gate"), "levels",
+                      lambda rs, **kw: {r["id"]: ("local" if r["id"] == "k1" else "full") for r in rs})
+    asked = []
+
+    def call(prompt):
+        asked.append(prompt)
+        return {"ok": True, "text": _hosted_answer(["item:a1", "item:a2", "item:k1"]), "model": "codex",
+                "usage": {"in": 9000, "out": 800}, "reason": ""}
+    items = [{"ledger_id": "a1", "kept": ""}, {"ledger_id": "k1", "kept": ""}, {"ledger_id": "x9", "kept": "facts"}]
+    briefing = {"reply_backlog": [{"id": "a2", "age_days": 2}, {"id": "a1", "age_days": 3}]}
+    got = D.hosted_pass(items, briefing=briefing, rows=rows, now=NOW, call=call)
+    assert len(asked) == 1 and got["calls"] == 1 and got["items"] == 2 and got["kept"] == 2
+    assert got["stored"] == 2 and got["tokens_in"] == 9000 and got["tokens_out"] == 800 and got["seconds"] >= 0
+    assert store.get("a1")["by"] == "hosted" and store.get("a2")["by"] == "hosted"
+    assert store.get("k1") is None and "k1" not in asked[0]  # kept mail never goes to the hosted model
+    assert QUOTE not in asked[0]
+
+
+def test_when_the_hosted_pass_fails_the_local_briefing_stands(env):
+    store = env["store"]
+    D.refresh(rows=[make_row(id="a1")])
+    before = store.get("a1")
+    got = D.hosted_pass([{"ledger_id": "a1", "kept": ""}], rows=[make_row(id="a1")], now=NOW,
+                        call=lambda p: {"ok": False, "text": "", "usage": {}, "reason": "limit"})
+    assert got["ok"] is False and got["reason"] == "limit" and got["calls"] == 0
+    assert store.get("a1") == before
+    # an answer code cannot check is not stored either
+    bad = json.dumps({"items": [{"ref": "item:a1", "history": ["Jordan Pike paid 900 dollars."], "stakes": [],
+                                 "unknown": [], "steps": []}]})
+    got = D.hosted_pass([{"ledger_id": "a1", "kept": ""}], rows=[make_row(id="a1")], now=NOW,
+                        call=lambda p: {"ok": True, "text": bad, "usage": {}, "reason": ""})
+    assert got["refused"] == 1 and store.get("a1")["by"] == "local"
+
+
+def test_the_hosted_pass_splits_a_list_too_big_for_one_call(env):
+    rows = [make_row(id=f"b{i}") for i in range(4)]
+    one = D.prepare("item:b0", {"ref": "item:b0", "kind": "reply", "title": "x"}, rows[0], now=NOW, zone=ZONE)
+    env["mp"].setattr(D, "HOSTED_PROMPT_MAX", len(D.hosted_prompt([one["packet"]] * 2)) + 10)
+    asked = []
+
+    def call(prompt):
+        asked.append(prompt)
+        refs = [f"item:b{i}" for i in range(4) if f'"item:b{i}"' in prompt]
+        return {"ok": True, "text": _hosted_answer(refs), "usage": {}, "reason": "", "model": "codex"}
+    got = D.hosted_pass([{"ledger_id": f"b{i}", "kept": ""} for i in range(4)], rows=rows, now=NOW, call=call)
+    assert len(asked) > 1 and got["stored"] == 4
+    assert D.hosted_pass([{"ledger_id": "b0", "kept": ""}], rows=rows, now=NOW, call=call,
+                         dry_run=True)["reason"] == "dry run"
+
+
+def test_a_briefing_run_hands_the_hosted_pass_to_a_process_of_its_own(env, monkeypatch):
+    import briefing_review
+    started = []
+    monkeypatch.setattr(briefing_review, "enabled", lambda cfg=None: True)
+    got = D.spawn_hosted_pass("morning-briefing", "run-7", "/tmp/b.json", popen=lambda cmd, **kw: started.append((cmd, kw)))
+    assert got == {"started": True}
+    cmd, kw = started[0]
+    assert cmd[-7:] == ["hosted-pass", "--agent", "morning-briefing", "--run-id", "run-7", "--briefing", "/tmp/b.json"]
+    assert kw["start_new_session"] is True  # the post never waits for it
+    monkeypatch.setattr(briefing_review, "enabled", lambda cfg=None: False)
+    assert D.spawn_hosted_pass("morning-briefing", "run-8", "/tmp/b.json", popen=lambda *a, **k: 1/0)["started"] is False
+    # the run's list, then the pass, its record carrying the run id
+    import remote_briefing
+    monkeypatch.setattr(remote_briefing, "home_handoff",
+                        lambda agent, run_id: {"items": [{"ledger_id": "a1", "kept": ""}]} if run_id == "run-7" else None)
+    monkeypatch.setattr(remote_briefing, "_load", lambda path: {})
+    monkeypatch.setattr(D, "_open_rows", lambda: [make_row(id="a1")])
+    monkeypatch.setattr(D, "HOSTED_BATCH", lambda p: {"ok": True, "text": _hosted_answer(["item:a1"]), "usage": {},
+                                                     "reason": "", "model": "codex"})
+    assert D.hosted_pass_for_run("morning-briefing", "run-7", "/tmp/b.json")["stored"] == 1
+    assert env["calls"]["log"][-1]["run_id"] == "run-7" and env["calls"]["log"][-1]["kind"] == "hosted-pass"
+    assert D.hosted_pass_for_run("morning-briefing", "run-9", "/tmp/b.json")["ok"] is False
+
+
+# ── rows written from chat ───────────────────────────────────────────
+
+def test_a_row_written_in_the_residents_turn_is_noted_and_written_first(env, tmp_path, monkeypatch):
+    import owner_trust
+    state = tmp_path / "ea" / "state"
+    state.mkdir(parents=True)
+    monkeypatch.setattr(owner_trust, "ea_dir", lambda: tmp_path / "ea")
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
+    import resident_io
+    monkeypatch.setattr(resident_io, "read_text", lambda path: Path(path).read_text() if Path(path).exists() else None)
+    D.row_written("r3", created=True)
+    D.row_written("r1")
+    assert D.queued_ids()[:2] == ["r1", "r3"]
+    rows = [make_row(id=f"r{i}", updated_at=f"2026-11-2{i}T08:00:00") for i in range(5)]
+    D.refresh(rows=rows, limit=2)
+    assert set(env["store"].versions()) == {"r1", "r3"}  # the noted rows first, not the newest
+    # an owner process notes nothing: refresh finds the row by its version
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
+    before = (state / D.QUEUE_FILE).read_text()
+    D.row_written("r4")
+    assert (state / D.QUEUE_FILE).read_text() == before
+    # the note stays small
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
+    monkeypatch.setattr(D, "QUEUE_MAX_BYTES", 2000)
+    monkeypatch.setattr(D, "QUEUE_KEEP", 20)
+    for i in range(100):
+        D.row_written(f"x{i}")
+    assert (state / D.QUEUE_FILE).stat().st_size < 2000 + 200
+    assert D.queued_ids()[0] == "x99"
+
+
+def test_the_ledger_hook_reaches_row_written():
+    import ledger
+    assert "home_deeper" in ledger.ROW_WRITTEN_HOOKS and callable(D.row_written)
