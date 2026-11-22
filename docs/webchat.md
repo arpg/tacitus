@@ -876,10 +876,9 @@ drawer's first row is Home, and the app's name at its top leads there. Home
 sits in the list's pane and takes the conversation's room from 600 px,
 as Action requests does; the status light stays in the top bar. Each
 waiting item is a block with its edge in the urgency colour, as a
-request's: a request opens its block in Action requests (its buttons,
-Send among them, stay there; Home has none), anything else opens a new
-conversation in Ask Tacitus with the item's words in the composer and
-the keyboard up. A conversation opened from Home goes back to Home. The
+request's, that opens in place (Home items, below); Send stays in
+Action requests, and Home has none. A conversation opened from Home goes
+back to Home. The
 app reads Home on a visit (`checkin=1`), on each `home` event, on a card
 or status in Action requests, on a `light` event, when its stream opens
 again and every five minutes while Home shows; a part the owner opened
@@ -999,6 +998,42 @@ tell `home_briefing_queue` of each open row they write (`ledger._row_written`, t
 `ledger.ROW_WRITTEN_HOOKS`, each loaded only when its source defines
 `row_written`, since the resident's process cannot cache bytecode in the
 install tree); a hook that is missing or fails never fails the write.
+
+**In the app.** A tap or Enter on an item opens its card in place, one
+at a time, as a request's block opens (the head stays under the finger
+when a card above it closes); the ring and Open the first one open the
+first item's card. The card shows, in this order: the quick briefing
+(`what`, `asked`, `due`, `standing` as a list, `next`); the deeper
+briefing when it was there and current as the card opened (its text,
+folded past a few lines behind Show more, then its next steps as
+buttons, and the model that wrote it only where Settings shows agent and
+model details); the item's own choices (a choice that only leads
+somewhere the item names, Open it in Action requests or Open in Outlook,
+is a link to `goto`; a question with answers draws them with the decision
+control of Action requests); the line or the days a choice asks for (Tell
+Tacitus what to say: one line and Draft it; Later: its `options`, Pick a
+date a date field within `min` and `max`); the bot's line; and Ask about
+this (`ask`). The page asks for the deeper briefing (`POST
+/api/home/deeper`) only on an open, and only when the item says `none`,
+`failed` or `stale`; meanwhile the card shows "Reading the messages..."
+(under the old text of a stale one, with no steps) and reads the item
+again on its `home-item` event and on the way back to Home. A briefing
+that comes after the card opened goes below everything the owner could
+tap, so nothing under a thumb moves; the next open shows it above the
+choices. A draft (Draft a reply, Tell Tacitus what to say, an answer, a
+step that drafts) keeps the owner on Home: the card shows the bot's line
+with a link to the line in Action requests where the Send card comes; a
+choice that opens a conversation goes there with the bot's line as a
+toast. Done, Not needed, Waiting and Later show the bot's line and Undo
+with the seconds left of the bot's window (`undo_until`), and the item
+keeps its place until then, though Home read again no longer lists it.
+An error is the bot's plain words in the card. A device that may not
+press card buttons sees the choices and steps disabled, with Action
+requests' line. Home drawn again (a `home` event, a read every five
+minutes) keeps the open card's block itself, so a choice made, words
+typed and the focus stay, and the card draws again only its parts whose
+data changed; Action requests keeps its open block the same way while
+its request has not changed.
 
 ## Unread
 

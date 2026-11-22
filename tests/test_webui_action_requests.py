@@ -253,6 +253,35 @@ def test_a_quick_answer_goes_through_its_own_button_and_skip_stays_quiet(app):
     assert not errors, errors
 
 
+def test_a_redraw_keeps_the_open_decision_its_answer_and_the_words_typed(app):
+    """Action requests is drawn again on a card's arrival and on a read: the
+    open block whose request has not changed stays as it is, with the quick
+    answer chosen, the words typed in its field and the focus there."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    m = _decision(stub)
+    page.evaluate("location.hash = '#/stream%3A7'")
+    block = page.locator(f'.req[data-id="{m["id"]}"]')
+    block.locator(".req-head").click()
+    card = block.locator(".card.answer")
+    card.locator(".answer-pick").first.click()
+    field = card.locator(".answer-ctl input")
+    field.focus()
+    page.keyboard.type("Yes, if")
+    page.evaluate("document.querySelector('.place-note').dataset.old = '1'")
+    other = _request(stub, "Send the agenda?")  # a card comes: the list is read and drawn again
+    expect(page.locator(f'.req[data-id="{other["id"]}"]')).to_have_count(1)
+    expect(page.locator(".place-note[data-old]")).to_have_count(0)
+    page.keyboard.type(" the deadline moves.")
+    expect(field).to_have_value("Yes, if the deadline moves.")
+    expect(field).to_be_focused()
+    field.press("Enter")
+    wait_for(lambda: stub.clicks)
+    assert stub.clicks[0]["text"] == "Yes, if the deadline moves."
+    assert not errors, errors
+
+
 def test_a_draft_that_did_not_start_offers_try_again_with_the_answer_kept(app):
     from playwright.sync_api import expect
     page, stub, errors = app()

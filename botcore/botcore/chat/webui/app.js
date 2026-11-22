@@ -14,7 +14,8 @@
 
 const BASE = location.pathname.replace(/\/index\.html$/, '').replace(/\/+$/, '');
 const enc = encodeURIComponent;
-const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release', 'read', 'light', 'home'];
+const EVENT_TYPES = ['message', 'update', 'reaction', 'card', 'status', 'file', 'channel', 'thread_state', 'release', 'read', 'light', 'home',
+  'home-item'];
 const CREATED = new Set(['message', 'card', 'file']); // the event types that post a message
 const KIND_ORDER = { main: 0, dm: 1, sched: 2, room: 3, digest: 4 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
@@ -182,7 +183,7 @@ async function call(method, path, body) {
   try { data = await res.json(); } catch { /* an empty or non-JSON body */ }
   if (res.status === 401 && !T.relay) { showPair(); throw new Error('This browser is not signed in.'); }
   if (T.relay) relayNote(res.status === 403 && data && data.pending ? pendingNote(T.rec) : '');
-  if (!res.ok) throw Object.assign(new Error((data && data.error) || `HTTP ${res.status}`), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error((data && (data.error || data.said)) || `HTTP ${res.status}`), { status: res.status });
   return data;
 }
 
@@ -997,10 +998,10 @@ function renderThreads() {
     if (old.length) box.append(olderPart(old));
     return;
   }
-  if ((chan(S.channel) || {}).kind === 'dm') { // drawn again, the request that had the focus keeps it
-    const had = document.activeElement && document.activeElement.closest('.req');
-    box.replaceChildren(...requestsPart().filter(Boolean));
-    const again = had && box.querySelector(`.req[data-id="${CSS.escape(had.dataset.id)}"] .req-head`);
+  if ((chan(S.channel) || {}).kind === 'dm') { // drawn again, an open request the same as before stays; one redrawn keeps the focus
+    const had = document.activeElement && document.activeElement.closest('.req'), keep = had && had.matches('.open') ? had : box.querySelector('.req.open');
+    keepOpen(box, requestsPart().filter(Boolean), keep && `.req.open[data-id="${CSS.escape(keep.dataset.id)}"][data-sig="${CSS.escape(keep.dataset.sig)}"]`);
+    const again = had && !had.isConnected && box.querySelector(`.req[data-id="${CSS.escape(had.dataset.id)}"] .req-head`);
     if (again) again.focus({ preventScroll: true });
     return;
   }
@@ -1096,7 +1097,8 @@ function reqBlock(r) {
       : !asked && (r.who || r.when) ? h('span', { class: 'req-who' }, [r.who, r.when].filter(Boolean).join(' · ')) : null,
     !busy && (why || r.project) ? h('span', { class: 'req-meta' }, why ? h('span', {}, why) : null,
       r.project ? h('span', { class: 'req-proj' }, r.project) : null) : null);
-  return h('li', { class: `req u-${busy ? 'working' : done ? 'done' : r.urgency || 'calm'}${open ? ' open' : ''}`, 'data-id': r.id }, head,
+  return h('li', { class: `req u-${busy ? 'working' : done ? 'done' : r.urgency || 'calm'}${open ? ' open' : ''}`, 'data-id': r.id,
+    'data-sig': JSON.stringify([r.updated_at, r.waiting, busy, (r.lines || []).length, r.next]) }, head,
     h('div', { class: 'req-body', id, hidden: !open }, open ? reqBody(r) : null));
 }
 
@@ -1116,9 +1118,10 @@ function reqBody(r) {
 // question is the headline, with who wrote and how long it has waited, then one "Your answer" control, the quick
 // answers the card offers and a line to type, and one primary button, pressable once there is an answer, that drafts
 // the reply. Each press is one of the card's own actions on the card's own route; Skip and Not needed stay quiet below.
-function answerCard(msg) {
+// A Home item that waits on an answer draws its choices here too, each press sent its own way (`send`).
+function answerCard(msg, send = (body, box) => act(msg, body, box)) {
   const c = msg.card, q = c.question;
-  const picks = (c.actions || []).filter((a) => /^reply_choice_/.test(a.id)), ask = (c.actions || []).find((a) => a.ask);
+  const picks = (c.actions || []).filter((a) => a.pick || /^reply_choice_/.test(a.id)), ask = (c.actions || []).find((a) => a.ask);
   const rest = (c.actions || []).filter((a) => a !== ask && !picks.includes(a));
   const box = h('div', { class: 'card answer', 'data-kind': c.kind || '' });
   const words = (a) => oneLine(stripInert(a.label || a.word || a.id).replace(/^\s*:[a-z0-9_+-]+:\s*/, ''), 80);
@@ -1126,7 +1129,7 @@ function answerCard(msg) {
   const field = ask ? h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
     'aria-label': 'Your answer', placeholder: picks.length ? 'Or type your answer' : 'Type your answer' }) : null;
   if (field && !chosen && q.answer) field.value = q.answer;
-  const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Try again' : 'Draft the reply');
+  const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Try again' : q.go || 'Draft the reply');
   const chips = picks.map((a) => h('button', { type: 'button', class: 'btn answer-pick', 'data-action': a.id,
     onclick: () => { chosen = chosen === a ? null : a; if (chosen && field) field.value = ''; sync(); } }, words(a)));
   const locked = Boolean(S.me && S.me.card_actions === false);
@@ -1134,7 +1137,7 @@ function answerCard(msg) {
     chips.forEach((b, i) => b.setAttribute('aria-pressed', String(picks[i] === chosen)));
     go.disabled = locked || !(chosen || (field && field.value.trim()));
   };
-  const press = () => !go.disabled && act(msg, chosen ? { action_id: chosen.id, value: chosen.value ?? '' }
+  const press = () => !go.disabled && send(chosen ? { action_id: chosen.id, value: chosen.value ?? '' }
     : { action_id: ask.id, value: ask.value ?? '', text: field.value.trim() }, box).then(sync);
   go.addEventListener('click', press);
   if (field) {
@@ -1143,15 +1146,15 @@ function answerCard(msg) {
     field.addEventListener('focus', () => setTimeout(() => field.scrollIntoView({ block: 'center' }), 250)); // above the keyboard
   }
   const since = Date.parse(q.since || '');
-  box.append(...[h('p', { class: 'answer-q' }, oneLine(q.text, 300)),
-    h('p', { class: 'answer-from' }, [q.from && `From ${q.from}`, since && `waiting ${ageDays(since / 1000)}`].filter(Boolean).join(' · ')),
+  const from = [q.from && `From ${q.from}`, since && `waiting ${ageDays(since / 1000)}`].filter(Boolean).join(' · ');
+  box.append(...[q.text ? h('p', { class: 'answer-q' }, oneLine(q.text, 300)) : null, from ? h('p', { class: 'answer-from' }, from) : null,
     q.about ? h('p', { class: 'answer-about' }, oneLine(q.about, 120)) : null,
     q.failed ? h('p', { class: 'answer-failed', role: 'alert' }, 'The draft did not start. Your answer is kept: tap Try again.') : null,
     h('fieldset', { class: 'card-actions answer-ctl' }, h('legend', {}, 'Your answer'),
       chips.length ? h('div', { class: 'answer-picks', role: 'group', 'aria-label': 'Quick answers' }, chips) : null, field, go),
     rest.length ? h('div', { class: 'card-actions answer-more' }, rest.map((a) => h('button', { type: 'button',
       class: 'btn plain small' + (a.style === 'danger' ? ' danger' : ''), 'data-action': a.id,
-      onclick: () => act(msg, { action_id: a.id, value: a.value ?? '' }, box) }, words(a)))) : null,
+      onclick: () => send({ action_id: a.id, value: a.value ?? '' }, box) }, words(a)))) : null,
     h('div', { class: 'card-note', 'aria-live': 'polite' }, locked ? noCards() : null)].filter(Boolean));
   if (locked) box.querySelectorAll('button, input').forEach((x) => { x.disabled = true; });
   sync();
@@ -1185,8 +1188,7 @@ function tapSoon() {
 // Home (GET /api/home) is what Tacitus did today against what is left for the owner, the next gap in the calendar,
 // what changed since the last visit and one line that greets them. The bot builds every number and list, for this
 // device's time zone (a phone on a trip says where it is); a `home` event says Home changed and the page reads it
-// again. A waiting item opens its place: a request its block in Action requests, anything else a new conversation in
-// Ask Tacitus that starts with its words. Home has no Send of its own: the buttons stay in the request's block.
+// again. A waiting item opens in place (Home items, below). Home has no Send of its own: the buttons stay in the request's block.
 const HOME = 'home';
 const VISIT_MS = 30 * 60000; // back after this long, a visit: "since you last checked in" counts from the one before
 Object.assign(S, { home: null, homeView: false, homeAt: 0, homeStale: false, homeFocus: '', backHome: false, voted: {} });
@@ -1200,6 +1202,7 @@ async function loadHome(checkin = false) {
   if (checkin) S.homeAt = Date.now();
   S.homeStale = false;
   if (S.homeView && !S.search && S.ready) renderThreads();
+  if (((S.homeCards.get(S.homeOpen) || {}).deeper || {}).state === 'working') loadItem(S.homeOpen); // an event the stream missed
 }
 // A change the page hears of: Home is read again in a moment while it shows, and on the next visit otherwise.
 const homeSoon = () => {
@@ -1211,6 +1214,7 @@ setInterval(() => { if (S.homeView && document.visibilityState === 'visible') lo
 function enterHome() { // its push (Home is ready) clears as a thread's does: tagInView, watchSeen
   const visit = !S.homeAt || Date.now() - S.homeAt > VISIT_MS;
   if (visit || S.homeStale || !S.home) loadHome(visit);
+  if (S.homeOpen) loadItem(S.homeOpen); // the open item as it is now (its deeper briefing may have come while away)
 }
 
 // A conversation about an item: a new one in Ask Tacitus, its words in the composer, the keyboard up within the tap.
@@ -1226,37 +1230,40 @@ function askAbout(text) {
   $('text').focus();
   $('text').setSelectionRange(text.length, text.length);
 }
-const openItem = (it) => (it.href ? goTo(it.href) : it.ask ? askAbout(it.ask) : it.link && window.open(it.link, '_blank', 'noopener'));
 
 const svgEl = (tag, attrs) => {
   const el = document.createElementNS($('menu').querySelector('svg').namespaceURI, tag);
   Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, String(v)));
   return el;
 };
-// The day's split: a ring whose filled part is what got done, beside the two numbers it stands for.
+// The day's split: a ring whose filled part is what got done, beside the two numbers it stands for; a tap opens the first item.
 function tally(x) {
-  const done = x.tally.done, left = x.tally.left, all = done + left, round = 2 * Math.PI * 26;
+  const done = x.tally.done, left = x.tally.left, all = done + left, round = 2 * Math.PI * 26, first = x.left.length > 0;
   const ring = svgEl('svg', { viewBox: '0 0 64 64', class: 'h-ring', 'aria-hidden': 'true' });
   ring.append(svgEl('circle', { cx: 32, cy: 32, r: 26, class: 'h-track' }));
   if (done) ring.append(svgEl('circle', { cx: 32, cy: 32, r: 26, class: 'h-arc', transform: 'rotate(-90 32 32)',
     'stroke-dasharray': `${(round * done / all).toFixed(1)} ${round.toFixed(1)}` }));
-  return h('section', { class: 'h-card h-tally', 'aria-label': `${done} done today, ${left} left for you` }, ring,
-    h('p', { class: 'h-count' }, h('span', {}, h('b', {}, String(done)), ' done so far'),
+  return h(first ? 'button' : 'section', { type: first ? 'button' : null, class: 'h-card h-tally', onclick: first ? openFirst : null,
+    'aria-label': `${done} done today, ${left} left for you${first ? '. Open the first one.' : ''}` }, ring,
+    h('span', { class: 'h-count' }, h('span', {}, h('b', {}, String(done)), ' done so far'),
       h('span', {}, h('b', {}, String(left)), left === 1 ? ' thing left for you' : ' things left for you')));
 }
 
+// An item: a block as a request's, its edge by urgency, opened in place (Home items, below); a row of So far today
+// opens the same way under its line. A kept item (Kept mail, below Summary) has the fixed words alone.
 const homeItem = (it) => {
-  const word = URGENT[it.urgency];
-  const kids = [h('span', { class: 'h-top' }, h('span', { class: 'h-label' }, it.label),
-    word ? h('span', { class: `req-flag u-${it.urgency}` }, word) : null, it.project ? h('span', { class: 'req-proj' }, it.project) : null),
-  h('span', { class: 'h-title' }, it.title), it.detail ? h('span', { class: 'h-detail' }, it.detail) : null];
-  const cls = `h-item u-${it.urgency || 'calm'}`;
-  // A kept item (Kept mail, below Summary) has the fixed words alone: its Outlook link where the post had one.
-  return h('li', {}, it.href ? h('a', { class: cls, href: it.href }, ...kids)
-    : it.ask ? h('button', { type: 'button', class: cls, onclick: () => askAbout(it.ask) }, ...kids, h('span', { class: 'h-ask' }, 'Ask about this'))
-      : it.link ? h('a', { class: cls, href: it.link, target: '_blank', rel: 'noopener noreferrer' }, ...kids) : h('div', { class: cls }, ...kids));
+  const ref = refOf(it), a = S.homeActed.get(ref), open = S.homeOpen === ref || Boolean(a && !a.back), id = `hb-${ref}`;
+  const row = DONE_KINDS.has(it.kind), word = !row && URGENT[it.urgency];
+  return h('li', { class: `${row ? '' : `req u-${a && !a.back ? 'done' : it.urgency || 'calm'} `}h-block${open ? ' open' : ''}`, 'data-ref': ref },
+    h('button', { type: 'button', class: row ? 'h-row' : 'req-head h-item', 'aria-expanded': String(open), 'aria-controls': id,
+      'data-key': `${ref}/head`, onclick: () => toggleItem(ref) }, ...(row ? [h('span', { class: `h-by by-${it.by}` }, it.by === 'you' ? 'You' : 'Tacitus'),
+      h('span', { class: 'h-title' }, `${DONE_WORDS[it.kind] || ''}${it.title}`), h('time', {}, hm(it.at))]
+      : [h('span', { class: 'h-top' }, h('span', { class: 'h-label' }, it.label), word ? h('span', { class: `req-flag u-${it.urgency}` }, word) : null,
+        it.project ? h('span', { class: 'req-proj' }, it.project) : null), h('span', { class: 'h-title' }, it.title),
+      it.detail ? h('span', { class: 'h-detail' }, it.detail) : null])),
+    h('div', { class: 'req-body h-body', id, hidden: !open }, open ? itemBody(it) : null));
 };
-const items = (list, label) => h('ul', { class: 'h-items', 'aria-label': label }, list.map(homeItem));
+const items = (list, label, kind) => h('ul', { class: 'h-items', 'aria-label': label }, withActed(list, kind).map(homeItem));
 
 // The greeting's thumbs: the owner's vote on the line, which Tacitus keeps and the next lines follow.
 function voteRow(text) {
@@ -1274,7 +1281,7 @@ async function vote(how, text) {
   if (S.homeView) renderThreads();
 }
 
-const DONE_WORDS = { drafted: 'Drafted: ' };
+const DONE_WORDS = { drafted: 'Drafted: ' }, DONE_KINDS = new Set(['closed', 'drafted', 'answered']);
 const hm = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 function renderHome(box) {
@@ -1297,13 +1304,12 @@ function renderHome(box) {
   }
   if (x.next) {
     main.push(h('section', { class: 'h-card h-next' }, h('h2', {}, 'Your next gap'), h('p', {}, x.next.line),
-      x.left.some((it) => it.href || it.ask) ? h('button', { type: 'button', class: 'btn primary',
-        onclick: () => openItem(x.left.find((it) => it.href || it.ask)) }, 'Open the first one') : null));
+      x.left.length ? h('button', { type: 'button', class: 'btn primary', onclick: openFirst }, 'Open the first one') : null));
   }
-  if (x.left.length) main.push(h('section', { class: 'h-card' }, h('h2', {}, `Left for you (${x.left.length})`), items(x.left, 'Left for you')));
+  if (x.left.length) main.push(h('section', { class: 'h-card' }, h('h2', {}, `Left for you (${x.left.length})`), items(x.left, 'Left for you', 'left')));
   if (x.held && x.held.length) {
     main.push(h('details', { class: 'h-card h-peek', open: was('h-peek') }, h('summary', {}, md.kind === 'vacation' ? 'Peek anyway' : `Show the rest (${x.held.length})`),
-      items(x.held, 'Held for later')));
+      items(x.held, 'Held for later', 'held')));
   }
   const q = x.question;
   if (q) {
@@ -1322,9 +1328,7 @@ function renderHome(box) {
   if (done.length) {
     const shown = S.doneAll ? done : done.slice(0, 5);
     side.push(h('section', { class: 'h-card h-done' }, h('h2', {}, `So far today (${done.length})`),
-      h('ul', {}, shown.map((d) => h('li', {}, h(d.href ? 'a' : 'span', { class: 'h-row', href: d.href || null },
-        h('span', { class: `h-by by-${d.by}` }, d.by === 'you' ? 'You' : 'Tacitus'),
-        h('span', { class: 'h-title' }, `${DONE_WORDS[d.kind] || ''}${d.title}`), h('time', {}, hm(d.at)))))),
+      h('ul', {}, withActed(shown, 'done').map(homeItem)),
       done.length > 5 ? h('button', { type: 'button', id: 'done-all', class: 'btn plain small', 'aria-expanded': String(Boolean(S.doneAll)),
         onclick: () => { S.doneAll = !S.doneAll; renderThreads(); $('done-all').focus(); } }, S.doneAll ? 'Show less' : 'Show all') : null));
   }
@@ -1337,9 +1341,261 @@ function renderHome(box) {
       h('summary', {}, r.title), h('div', { class: 'text' }, markdown(r.text)),
       h('button', { type: 'button', class: 'btn small', onclick: () => askAbout(`About ${r.title.toLowerCase()}: `) }, 'Ask about it')));
   }
-  box.replaceChildren(h('div', { class: 'h-page' }, h('div', { class: 'h-main' }, ...main), h('div', { class: 'h-side' }, ...side)));
+  keepOpen(box, [h('div', { class: 'h-page' }, h('div', { class: 'h-main' }, ...main), h('div', { class: 'h-side' }, ...side))],
+    S.homeOpen && `.h-block[data-ref="${CSS.escape(S.homeOpen)}"]`);
   const focus = S.homeFocus && $(`home-${S.homeFocus}`);
   if (focus) { S.homeFocus = ''; focus.scrollIntoView({ block: 'start' }); }
+}
+
+/* -- Home items, opened in place (docs/webchat.md, Home) ------------- */
+
+// A tap opens an item in place, one at a time, as a request's block (GET /api/home/item): the quick briefing the bot
+// builds in code, the deeper briefing a model wrote ahead of the tap with its next steps, then the item's own choices
+// and the line or the date a choice asks for. Only where the bot has none, one older than the thread or a failed one
+// does the page ask for it (POST /api/home/deeper) and read the item again on its `home-item` event; one that comes
+// after the card opened goes below everything, so nothing under a thumb moves, and above the choices on the next open.
+// A choice acts at once (POST /api/home/act) and the card says what the bot did; one it can take back
+// offers Undo, counting down to the end of the bot's window (`undo_until`). The item holds its place from the tap until
+// then, though Home read again lacks it. No choice sends: Send stays in Action requests.
+Object.assign(S, { homeOpen: '', homeCards: new Map(), homeActed: new Map(), homeSaid: new Map(), homeIn: null, itemSeq: {}, undoMs: 30000,
+  homeTop: {}, homeMore: new Set() });
+const ready = (x) => Boolean(x && x.deeper && x.deeper.state === 'ready' && !x.deeper.stale);
+// The milliseconds left of the bot's Undo window ending at `until` (its clock's seconds); a clock far from the bot's reads its whole window.
+const undoLeft = (until) => { const ms = until * 1000 - Date.now(); return ms > 0 && ms <= 60000 ? ms : S.undoMs; };
+const undoWords = (end) => `${Math.max(0, Math.ceil((end - Date.now()) / 1000))} seconds to undo`;
+const undoTick = () => { S.undoTick = S.undoTick || setInterval(() => { // the seconds left, on each card that offers Undo
+  const on = $('thread-list').querySelectorAll('[data-end]');
+  on.forEach((el) => { el.textContent = undoWords(Number(el.dataset.end)); });
+  if (!on.length) S.undoTick = clearInterval(S.undoTick);
+}, 1000); };
+const refOf = (it) => it.ref || it.id;
+const cardsOff = () => Boolean(S.me && S.me.card_actions === false); // the rule Action requests' buttons follow
+const itemLi = (ref) => $('thread-list').querySelector(`.h-block[data-ref="${CSS.escape(ref)}"]`);
+const listOf = (ref) => ['left', 'held', 'done'].find((k) => (S.home[k] || []).some((it) => refOf(it) === ref));
+const listed = (ref) => (listOf(ref) ? S.home[listOf(ref)].find((it) => refOf(it) === ref) : (S.homeActed.get(ref) || {}).it);
+const withActed = (list, kind) => [...S.homeActed].reduce((out, [ref, a]) => (a.list === kind && !out.some((it) => refOf(it) === ref)
+  ? [...out.slice(0, a.at), a.it, ...out.slice(a.at)] : out), list);
+
+// Gives `parent` the children `kids`, where those it holds already stay in the page: a focused field among them keeps
+// its focus, its words and a phone's keyboard through a redraw.
+function patch(parent, kids) {
+  [...parent.childNodes].forEach((n) => { if (!kids.includes(n)) n.remove(); });
+  let at = parent.firstChild;
+  for (const k of kids) { if (k === at) at = at.nextSibling; else parent.insertBefore(k, at); }
+}
+const sameAttrs = (a, b) => {
+  [...a.attributes].forEach((x) => { if (!b.hasAttribute(x.name)) a.removeAttribute(x.name); });
+  [...b.attributes].forEach((x) => a.setAttribute(x.name, x.value));
+};
+// A list drawn again (an event, a read every five minutes) as `kids`, the open block `sel` finds in both kept as it is
+// (an answer chosen, words typed, the focus), the new drawing around it: Home's open item, Action requests' open request.
+function keepOpen(box, kids, sel) {
+  const wrap = h('div', {}, ...kids), old = sel && box.querySelector(sel), twin = old && wrap.querySelector(sel);
+  const up = (n, top) => { const out = []; for (; n && n !== top; n = n.parentNode) out.push(n); return out; };
+  const A = twin ? up(old, box) : [], B = twin ? up(twin, wrap) : [];
+  if (!twin || A.length !== B.length || A.some((n, i) => n.tagName !== B[i].tagName)) { box.replaceChildren(...wrap.childNodes); return; }
+  for (let i = 1; i < A.length; i++) { patch(A[i], [...B[i].childNodes].map((n) => (n === B[i - 1] ? A[i - 1] : n))); sameAttrs(A[i], B[i]); }
+  patch(box, [...wrap.childNodes].map((n) => (n === B[B.length - 1] ? A[A.length - 1] : n)));
+}
+// One item drawn again where it is: its head, and each part of its card whose data changed (`data-sig`).
+function drawItem(ref) {
+  const old = ref && itemLi(ref), it = old && listed(ref);
+  if (!it) return;
+  const fresh = homeItem(it), [h0, b0] = old.children, [h1, b1] = fresh.children;
+  sameAttrs(old, fresh); sameAttrs(h0, h1); h0.replaceChildren(...h1.childNodes); sameAttrs(b0, b1);
+  patch(b0, [...b1.children].map((n) => [...b0.children].find((o) => o.dataset.part && o.dataset.part === n.dataset.part
+    && o.dataset.sig === n.dataset.sig) || n));
+}
+
+// The tapped item opens and the open one closes; the tapped one stays under the finger while one above it closes.
+function toggleItem(ref) {
+  const head = () => itemLi(ref) && itemLi(ref).querySelector('.h-block > button'), top = head() ? head().getBoundingClientRect().top : 0;
+  const was = S.homeOpen;
+  S.homeOpen = was === ref ? '' : ref;
+  S.homeIn = null; // a line or the days a choice opened close with it
+  S.homeSaid.delete(ref);
+  S.homeMore.delete(ref);
+  S.homeTop = { ref, top: ready(S.homeCards.get(ref)) }; // the bot's first answer on this open may move it
+  if (was !== ref) drawItem(was);
+  drawItem(ref);
+  if (head()) { $('thread-list').scrollTop += head().getBoundingClientRect().top - top; head().focus({ preventScroll: true }); }
+  if (S.homeOpen) loadItem(ref, true);
+}
+function openFirst() {
+  const ref = S.home.left[0] && refOf(S.home.left[0]);
+  if (ref && S.homeOpen !== ref) toggleItem(ref);
+  if (ref) { itemLi(ref).scrollIntoView({ block: 'start' }); itemLi(ref).querySelector('.req-head').focus({ preventScroll: true }); }
+}
+
+// The item from the bot (the last answer asked for wins). An open asks for a deeper briefing the bot lacks, holds from
+// an older thread or could not write; a read after the `home-item` event never does.
+async function loadItem(ref, opened = false) {
+  const n = (S.itemSeq[ref] = (S.itemSeq[ref] || 0) + 1);
+  let x;
+  try { x = await call('GET', `/home/item?ref=${enc(ref)}&tz=${enc(homeZone())}`); } catch (e) {
+    x = { ...S.homeCards.get(ref), error: `Tacitus could not open this item: ${e.message}` };
+  }
+  if (n !== S.itemSeq[ref]) return;
+  S.homeCards.set(ref, x);
+  if (opened && S.homeOpen === ref) S.homeTop = { ref, top: ready(x) };
+  drawItem(ref);
+  const d = x.deeper || {};
+  if (opened && S.homeOpen === ref && !x.error && !x.pending && (['none', 'failed'].includes(d.state) || d.stale)) deeper(ref);
+}
+async function deeper(ref) {
+  const n = S.itemSeq[ref];
+  let out;
+  try { out = await call('POST', '/home/deeper', { ref }); } catch (e) { out = { state: 'failed', note: `Tacitus could not start reading it: ${e.message}` }; }
+  const x = S.itemSeq[ref] === n && S.homeCards.get(ref); // a read since is newer than this answer
+  if (x && ['working', 'failed'].includes(out.state)) { x.deeper = { ...x.deeper, state: out.state, note: out.note }; drawItem(ref); }
+  else if (x && out.state !== (x.deeper || {}).state) loadItem(ref);
+}
+
+// The card: the quick briefing, the deeper briefing (here when it was ready as the card opened), the choices, the line
+// or the date a choice asks for, the bot's line, Ask about this (and the deeper briefing that came later). An act Undo
+// can take back: the bot's line and Undo.
+function itemBody(it) {
+  const ref = refOf(it), a = S.homeActed.get(ref), x = S.homeCards.get(ref) || (it.brief ? it : null), b = (x && x.brief) || {};
+  const held = a && !a.back ? a : x && x.pending && { ...x.pending, end: Date.now() + undoLeft(x.pending.until) };
+  if (held) {
+    undoTick();
+    return [h('p', { class: 'h-said', role: 'status' }, held.said), held.undo ? h('p', { class: 'h-undo' }, h('button', { type: 'button',
+      class: 'btn small', 'data-key': `${ref}/undo`, onclick: () => undoItem(ref, held.undo) }, 'Undo'),
+    h('span', { class: 'h-quiet', 'data-end': held.end }, undoWords(held.end))) : null];
+  }
+  const part = (name, sig, ...kids) => h('div', { class: `h-${name}`, 'data-part': name, 'data-sig': JSON.stringify(sig) }, ...kids);
+  const m = S.homeIn && S.homeIn.ref === ref ? S.homeIn : null, step = Boolean(m && m.id.startsWith('step:'));
+  const none = Boolean(x && !(x.choices || []).length), ask = (x && x.ask) || it.ask, said = S.homeSaid.get(ref) || {};
+  const top = S.homeTop.ref === ref && S.homeTop.top, d = (x && x.deeper) || {};
+  const deep = x ? part('deeper', [d, step && [m.id, m.mode], cardsOff(), S.showDetails, S.homeMore.has(ref)], deeperPart(it, d, step && m)) : null;
+  return [part('brief', [x && b, x && x.error], x ? [...[b.what, b.asked, b.due].filter(Boolean).map((t) => h('p', {}, t)),
+    (b.standing || []).length ? h('ul', {}, b.standing.map((t) => h('li', {}, t))) : null, b.next ? h('p', { class: 'h-then' }, b.next) : null,
+    x.error ? h('p', { class: 'answer-failed', role: 'alert' }, x.error) : null] : h('p', { class: 'h-quiet' }, 'Loading...')),
+  top ? deep : null, x && !none ? part('choices', [x.kind, x.choices, x.goto, cardsOff()], choiceRow(it, x)) : null,
+  part('in', !step && m && [m.id, m.mode], !step && m ? inputRow(it, m) : null),
+  h('p', { class: 'card-note h-note', 'data-part': 'note', 'data-sig': JSON.stringify(said), 'aria-live': 'polite' }, said.text || '',
+    said.goto ? [' ', h('a', { class: 'req-from', href: said.goto }, 'Open it in Action requests')] : null),
+  part('links', [none, ask], none && it.href ? h('a', { class: 'req-from', href: it.href }, 'Open it there') : null,
+    none && it.link ? h('a', { class: 'req-from', href: it.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open in Outlook') : null,
+    ask ? h('button', { type: 'button', class: 'btn plain', onclick: () => askAbout(ask) }, 'Ask about this') : null),
+  top ? null : deep];
+}
+// The choices as buttons, as Action requests' decision draws its answers for an item that waits on one.
+function choiceRow(it, x) {
+  if (x.kind === 'question' && x.choices.some((c) => /^answer/.test(c.id))) {
+    const acts = x.choices.map((c) => ({ ...c, pick: /^answer:/.test(c.id), ask: c.input === 'text' && c.label }));
+    return answerCard({ card: { question: { go: x.choices.some((c) => c.id === 'not_needed') ? '' : 'Answer' }, actions: acts } },
+      ({ action_id: id, text }) => choose(it, x.choices.find((c) => c.id === id), text));
+  }
+  return [h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next step' }, x.choices.map((c) => choiceBtn(it, c, x))),
+    cardsOff() ? h('p', { class: 'card-note' }, noCards()) : null];
+}
+// A choice that only leads where the item names (its block, Outlook) is a link; the rest are buttons, a step's with its words.
+function choiceBtn(it, c, x) {
+  const ref = refOf(it), cls = `btn${{ primary: ' primary', danger: ' danger', plain: ' plain' }[c.style] || ''}`;
+  if (['open', 'outlook'].includes(c.id) && x.goto) {
+    return h('a', { class: cls, href: x.goto, ...(/^https:/.test(x.goto) ? { target: '_blank', rel: 'noopener noreferrer' } : {}) }, c.label);
+  }
+  return h('button', { type: 'button', class: cls, 'data-key': `${ref}/${c.id}`, disabled: cardsOff(), onclick: () => choose(it, c),
+    'aria-expanded': c.input ? String(Boolean(S.homeIn && S.homeIn.ref === ref && S.homeIn.id === c.id)) : null },
+  c.label, c.detail ? [' ', h('span', { class: 'h-detail' }, c.detail)] : null);
+}
+// Later's days, or one line of the owner's words (what the reply says), its own button acting with it.
+function inputRow(it, m) {
+  const ref = refOf(it), go = (arg) => homeAct(it, m.id, arg), btn = (label, onclick) => h('button', { type: 'button', class: 'btn', onclick }, label);
+  if (m.mode === 'later') {
+    return h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Later' }, (m.options || [{ arg: 'tomorrow', label: 'Tomorrow' },
+      { arg: 'monday', label: 'Monday' }, { arg: 'date', label: 'Pick a date' }]).map((o) => btn(o.label, () => (o.arg !== 'date' ? go(o.arg)
+      : (Object.assign(m, { mode: 'date', min: o.min, max: o.max }), drawItem(ref), itemLi(ref).querySelector(`[data-key="${CSS.escape(ref)}/in"]`).focus())))));
+  }
+  const day = m.mode === 'date', f = h('input', { class: 'card-ask', type: day ? 'date' : 'text', maxlength: 300, autocomplete: 'off',
+    'data-key': `${ref}/in`, 'aria-label': day ? 'The date' : m.label, placeholder: day ? null : 'What should it say?', enterkeyhint: 'done',
+    min: day ? m.min || new Date(Date.now() + 864e5).toLocaleDateString('en-CA') : null, max: day ? m.max : null });
+  f.value = m.text;
+  const ok = () => f.value.trim() && go(f.value.trim());
+  f.addEventListener('input', () => { m.text = f.value; });
+  f.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ok(); } });
+  return h('div', { class: 'card-actions' }, f, h('button', { type: 'button', class: 'btn primary', onclick: ok }, day ? 'Use this date' : 'Draft it'));
+}
+// The deeper briefing: its text (folded past a few lines, with Show more), its next steps as buttons (the last one
+// Continue in a conversation), which model wrote it only where Settings shows agent and model details; while a newer
+// one is written, the old text and a quiet line, no steps; a failure or the day's limit in the bot's plain words.
+function deeperPart(it, d, m) {
+  const ref = refOf(it), x = S.homeCards.get(ref) || {}, busy = ['working', 'none'].includes(d.state) || d.stale;
+  const done = d.state === 'ready' && !busy, more = S.homeMore.has(ref), long = (d.text || '').length > 320 || (d.text || '').split('\n').length > 8;
+  const by = S.showDetails === true && done && (d.by === 'local' ? 'Your own model' : d.model || (d.by && 'Claude or Codex'));
+  const note = d.note || (d.state === 'failed' ? 'Tacitus could not read the messages this time.' : d.state === 'unavailable' && d.text);
+  return [...(d.text && d.state !== 'unavailable' ? [h('p', { class: 'h-label' }, 'From the messages'),
+    h('div', { class: `text${long && !more ? ' h-fold' : ''}` }, markdown(d.text)), long ? h('button', { type: 'button', class: 'btn plain small',
+      'aria-expanded': String(more), onclick: () => { more ? S.homeMore.delete(ref) : S.homeMore.add(ref); drawItem(ref); } },
+    more ? 'Show less' : 'Show more') : null] : []),
+    busy ? h('p', { class: 'req-busy', role: 'status' }, 'Reading the messages...') : null,
+    by ? h('p', { class: 'h-quiet' }, [by, d.at && when(d.at)].filter(Boolean).join(' · ')) : null,
+    note ? h('p', { class: 'h-quiet' }, note, d.state === 'failed' ? h('button', { type: 'button', class: 'btn small',
+      onclick: () => deeper(ref) }, 'Try again') : null) : null,
+    done && (d.steps || []).length ? h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next steps' }, d.steps.map((st) =>
+      choiceBtn(it, { ...st, id: `step:${st.id}`, style: st.id === 'continue' ? 'plain' : st.style }, x))) : null, m ? inputRow(it, m) : null];
+}
+
+// A choice that asks for words or a day opens its part first; the rest act at once.
+function choose(it, c, arg) {
+  const ref = refOf(it);
+  if (c.input && arg == null) {
+    S.homeIn = S.homeIn && S.homeIn.id === c.id ? null : { ref, id: c.id, mode: c.input, label: c.label, options: c.options, text: '' };
+    drawItem(ref);
+    const li = itemLi(ref), own = li.querySelector(`[data-key="${CSS.escape(`${ref}/${c.id}`)}"]`);
+    li.querySelectorAll('.h-body [aria-expanded]').forEach((el) => el.setAttribute('aria-expanded', String(el === own && Boolean(S.homeIn))));
+    const f = li.querySelector('.h-in input, .h-in button, .h-deeper input, .h-deeper [role="group"][aria-label="Later"] button') || own;
+    if (f) f.focus(); // within the tap, so a phone's keyboard comes up
+    return Promise.resolve();
+  }
+  return c.confirm && !confirm(c.confirm) ? Promise.resolve() : homeAct(it, c.id, arg);
+}
+async function homeAct(it, choice, arg) {
+  const ref = refOf(it), ctl = [...itemLi(ref).querySelectorAll('.h-body button, .h-body input')], note = () => itemLi(ref).querySelector('.h-note');
+  const list = listOf(ref) || 'left', spot = { it, list, at: Math.max(0, (S.home[list] || []).findIndex((x) => refOf(x) === ref)), back: true };
+  S.homeActed.set(ref, spot);
+  ctl.forEach((c) => { c.disabled = true; });
+  note().textContent = 'Working...';
+  let out;
+  try {
+    out = await call('POST', '/home/act', { ref, choice, version: (S.homeCards.get(ref) || {}).version, ...(arg == null ? {} : { arg }) });
+  } catch (e) { out = { said: e.status === 403 && T.relay ? noCards() : `That did not work: ${e.message}` }; }
+  ctl.forEach((c) => { c.disabled = cardsOff(); });
+  if (out.item) S.homeCards.set(ref, out.item); // a refusal carries the item as it is now
+  if (!out.ok) {
+    if (S.homeActed.get(ref) === spot) S.homeActed.delete(ref);
+    if (itemLi(ref)) { drawItem(ref); note().textContent = out.said || 'That did not work.'; }
+    return;
+  }
+  S.homeIn = null;
+  const ms = out.undo ? undoLeft(out.undo_until) : S.undoMs;
+  const req = /^#\//.test(out.goto || '') && (chan(decodeURIComponent(out.goto.split('/')[1] || '')) || {}).kind === 'dm';
+  if (out.undo) Object.assign(spot, { said: out.said, undo: out.undo, back: false, end: Date.now() + ms });
+  else S.homeSaid.set(ref, { text: out.said || '', goto: req ? out.goto : '' }); // a draft's place: a link, Home stays
+  setTimeout(() => { if (S.homeActed.get(ref) === spot) { S.homeActed.delete(ref); if (S.homeView) renderThreads(); } }, ms);
+  homeSoon();
+  if (out.goto && /^https:/.test(out.goto)) window.open(out.goto, '_blank', 'noopener');
+  else if (out.goto && !req) { goTo(out.goto); if (out.said) toast(out.said); } // a conversation where the work goes on
+  else if (itemLi(ref)) drawItem(ref); else if (S.homeView) renderThreads();
+}
+async function undoItem(ref, token) {
+  let out;
+  try { out = await call('POST', '/home/undo', { token }); } catch (e) { out = { said: `Could not undo: ${e.message}` }; }
+  const a = S.homeActed.get(ref), x = S.homeCards.get(ref);
+  if (!out.ok && a && !a.back) Object.assign(a, { said: out.said || 'Could not undo.', undo: '' });
+  else if (!out.ok) toast(out.said || 'Could not undo.');
+  else {
+    if (a) a.back = true; // the open card again, until Home lists it again
+    if (x) delete x.pending;
+    S.homeSaid.set(ref, { text: out.said || 'Undone.' });
+    const was = S.homeOpen;
+    S.homeOpen = ref;
+    drawItem(was !== ref && was); // the one opened since closes
+    homeSoon();
+    loadItem(ref);
+  }
+  drawItem(ref);
 }
 
 function setFilter(v) {
@@ -1767,6 +2023,7 @@ function apply(type, data, seq = 0) {
   if (RECENT_CUES.has(type)) recentSoon();
   if (TAP_CUES.has(type) && (chan(data.channel) || {}).kind === 'dm') { tapSoon(); homeSoon(); }
   if (type === 'home') { homeSoon(); return; }
+  if (type === 'home-item') { if (data.ref && data.ref === S.homeOpen) loadItem(data.ref); return; }
   if (type === 'thread_state') {
     if (data.channel && data.thread_key) onState(data);
     return;
