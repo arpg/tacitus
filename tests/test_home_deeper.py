@@ -934,3 +934,14 @@ def test_a_conversation_never_opens_in_a_room_when_rooms_are_off(env):
     env["mp"].setattr(briefing_rooms, "rooms", lambda **kw: {"rovers": {"channel": "r7", "room": "ea-rovers"}})
     D.start(fe, ITEM["ref"], ITEM, row=make_row())
     assert D.step(fe, ITEM["ref"], "continue", ITEM, row=make_row())["goto"] == "#/main/t1"
+
+
+def test_a_step_whose_words_do_not_fit_its_label_says_them_once():
+    words = "Thursday at 2:00 works for me. The room is held until Friday noon for the seminar."
+    cut = {"id": "s1", "kind": "draft_reply", "label": D._step_label("draft_reply", {"say": words}),
+           "params": {"say": words}}
+    assert words not in cut["label"]
+    assert D._public_step(cut) == {"id": "s1", "label": "Draft a reply", "detail": words}
+    short = {"id": "s2", "kind": "ask_sender", "label": D._step_label("ask_sender", {"question": "Which day?"}),
+             "params": {"question": "Which day?"}}
+    assert D._public_step(short) == {"id": "s2", "label": "Ask them: Which day?"}

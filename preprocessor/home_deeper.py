@@ -1603,12 +1603,17 @@ def _level(item: dict, row: dict | None) -> str:
     return kg.stricter(found, said) if said in kg.LEVELS else found
 
 
+STEP_HEADS = {"draft_reply": "Draft a reply", "ask_sender": "Ask them", "work_on_it": "Start it"}
+
+
 def _public_step(s: dict) -> dict:
-    """A step as the app draws it: its id and label, and its whole words
-    (`detail`) when the label had to cut them."""
+    """A step as the app draws it: its id and label. When the label had to
+    cut the step's words, the label is the action alone and the whole
+    words are its `detail`, so the button says them once."""
     out = {"id": s["id"], "label": s["label"]}
     words = next((s["params"].get(k) for k in ("say", "question", "ask") if s["params"].get(k)), "")
     if words and words not in s["label"]:
+        out["label"] = STEP_HEADS.get(s.get("kind") or "", s["label"])
         out["detail"] = words
     return out
 
