@@ -887,9 +887,9 @@ def _verb(monkeypatch, *argv) -> int:
 def test_add_and_update_tell_the_briefings_writer_of_an_open_row(ledger_db, monkeypatch, capsys):
     import types
     told = []
-    monkeypatch.setitem(sys.modules, "home_deeper",
+    monkeypatch.setitem(sys.modules, "home_briefing_queue",
                         types.SimpleNamespace(row_written=lambda rid, created: told.append((rid, created))))
-    assert ledger.ROW_WRITTEN_HOOKS == ("home_deeper",)
+    assert ledger.ROW_WRITTEN_HOOKS == ("home_briefing_queue",)
     assert _verb(monkeypatch, "add", "--id", "task-z1", "--type", "task", "--description",
                  "Order the poster tubes", "--deadline", "2026-12-04") == 0
     assert _verb(monkeypatch, "update", "--id", "task-z1", "--last-action", "asked for a quote") == 0
@@ -906,13 +906,13 @@ def test_a_hook_that_fails_never_fails_the_write(ledger_db, monkeypatch, capsys)
 
     def broken(rid, created):
         raise RuntimeError("the queue is full")
-    monkeypatch.setitem(sys.modules, "home_deeper", types.SimpleNamespace(row_written=broken))
+    monkeypatch.setitem(sys.modules, "home_briefing_queue", types.SimpleNamespace(row_written=broken))
     assert _verb(monkeypatch, "add", "--id", "task-z2", "--type", "task", "--description",
                  "Book the room", "--deadline", "2026-12-04") == 0
     out = capsys.readouterr()
     assert json.loads(out.out.strip().splitlines()[-1])["ok"] is True
     assert "was not told of task-z2" in out.err
-    monkeypatch.setitem(sys.modules, "home_deeper", types.SimpleNamespace())  # no hook in it
+    monkeypatch.setitem(sys.modules, "home_briefing_queue", types.SimpleNamespace())  # no hook in it
     assert _verb(monkeypatch, "update", "--id", "task-z2", "--last-action", "booked") == 0
 
 

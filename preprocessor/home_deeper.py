@@ -3,11 +3,16 @@
 briefing"): what happened, what is at stake, what Tacitus does not know,
 and two or three next steps the owner can tap.
 
-The owner taps an item on Home. The app shows the quick briefing at once
-(code-built, home_items) and asks for this one (`POST /api/home/deeper`).
-One model call, with no tools, reads a packet code builds and answers
-under a strict shape; code checks the answer and keeps it on the item
-until the item's row or thread changes. A repeat tap costs nothing.
+Each open ledger row's briefing is written ahead of the tap and stored
+(Store, an owner-private file, never the ledger): by the owner's own model
+when the row or its thread changes (refresh, from the mail tick; backfill),
+and by the hosted model for the items on Home's list after each briefing
+run (hosted_pass, in a process of its own; kept mail left out). One model
+call, with no tools, reads a packet code builds and answers under a strict
+shape; code checks the answer before it is stored. A tap shows the stored
+briefing at once, with the lines that depend on the moment added in code
+(now_lines); only a missing or stale one (row_version) is written at the
+tap (`POST /api/home/deeper`).
 
 The packet (build_packet), read-only:
 
@@ -20,19 +25,18 @@ The packet (build_packet), read-only:
               owner's own close in his words
   his word    the owner's earlier decision on the thread (owner_said)
   project     the project the row is linked to: its name, summary, next
-  calendar    today's and tomorrow's events and the free slots up to the
-              due date (the briefing's data)
+  calendar    the events ahead and the free slots up to the due date (the
+              briefing's data), for a step's date alone
   rules       the owner's rules for briefings and drafting (preferences)
   steps       the step kinds this item allows (allowed_kinds)
 
 Where it runs (route). An item kept from hosted models below Summary
 (keep_gate) runs on the owner's own model alone; with none set up the card
-shows the quick briefing alone. Any other item follows the routing table's
-`briefing` task (model_routing): the owner's own model where the briefing
-runs there, else the hosted model the table names (hosted_text: Claude or
-Codex). When the first choice does not answer, the other one does, and the
-card says so in one line; a hosted model at its plan limit hands the call
-to the owner's own model, or the card says the limit is reached.
+shows the quick briefing alone. Any other item runs on the owner's own
+model, and on the hosted model (hosted_text: Claude or Codex) when it does
+not answer or there is none, and the card says so in one line; a hosted
+plan at its limit makes the card say the limit is reached. The day's list
+is the hosted model's at briefing time (hosted_pass, the `review` model).
 
 What code checks in the answer (check_answer):
 
@@ -60,12 +64,19 @@ the owner's own model, never on a hosted plan. Each job is one line in
 model, the time, the tokens, what code refused); `usage` prints the day.
 
 The hook (docs/webchat.md, Home): home_items calls state(), start() and
-step(); Home.tick calls prewarm(). The store is the web chat's own
-(WebStore.home_get / home_set, record `deeper`); the `home-item` event
-tells an app that shows the item open to read it again.
+step(); Home.tick calls prewarm(); mail_privacy.tick calls refresh();
+ledger.py notes a row it adds or changes (home_briefing_queue);
+remote_briefing's run starts the hosted pass (spawn_hosted_pass). A tap's
+job state is kept in the web chat's own store (record `deeper`), and the
+`home-item` event tells an app that shows the item open to read it again.
 
     home_deeper.py usage [--days N]     today's and recent calls, by route
     home_deeper.py packet --ref <ref>   the packet for one item, read-only
+    home_deeper.py backfill [--limit N] [--dry-run]
+                                        write the missing or stale briefings of the
+                                        open rows, N at most (20); run it again to go
+                                        on (each row takes about 4 s on the owner's
+                                        own model); --dry-run counts them
 """
 from __future__ import annotations
 
@@ -249,8 +260,10 @@ def ref_ids(ref: str) -> tuple[str, str]:
 
 
 def read_row(ref: str, *, conn=None) -> dict | None:
-    """The ledger row behind a Home ref, read-only; None for a card or a
-    ref that names no row."""
+    """The ledger row behind a Home ref, read-only, in the shape Home reads
+    rows (ledger.get_open_entries: metadata merged, the owner's word on the
+    thread beside it), so its version is the one Home's row has; None for a
+    card or a ref that names no row."""
     lid, conv = ref_ids(ref)
     if not lid and not conv:
         return None
@@ -268,29 +281,27 @@ def read_row(ref: str, *, conn=None) -> dict | None:
             row = conn.execute("SELECT * FROM ledger WHERE conversation_id = ? ORDER BY "
                                "CASE WHEN status IN ('completed', 'closed') THEN 1 ELSE 0 END, "
                                "updated_at DESC LIMIT 1", (conv,)).fetchone()
-        return dict(row) if row else None
     finally:
         conn.row_factory = factory
         if own:
             conn.close()
+    if not row:
+        return None
+    out = {k: v for k, v in dict(row).items() if k != "metadata" and v is not None}
+    out.update(_meta(row))
+    try:
+        _mod("ledger").with_owner_decisions([out])
+    except Exception:
+        pass
+    return out
 
 
 def signature(ref: str, item: dict | None, row: dict | None) -> str:
-    """What makes a kept result stale: the row's own state (status, dates,
-    last action, notes, its update stamp) and its thread's (the newest
-    message, the state, the ask); for an item with no row, its title. The
-    quick briefing's day counts are not in it, so a result outlives
-    midnight, and a prewarm (which has no quick briefing) serves the tap."""
-    row = row or {}
-    brief = _brief(row)
-    msgs = [m for m in brief.get("messages") or [] if isinstance(m, dict)]
-    key = [ref, item_kept(item),
-           row.get("status"), row.get("type"), row.get("deadline"), row.get("follow_up_after"),
-           row.get("snooze_until"), row.get("last_action"), row.get("notes"), row.get("updated_at"),
-           row.get("closed_at"), brief.get("state"), brief.get("ask"), brief.get("latest"),
-           len(msgs), (msgs[-1].get("received") if msgs else "")]
-    if not row:
-        key.append(str((item or {}).get("title") or ""))
+    """What makes a job's result stale: the item's ref and keep mark, and
+    the row and thread's version (row_version) or, for an item with no row
+    (a card), its title. The quick briefing's day counts are not in it, so
+    a result outlives midnight."""
+    key = [ref, item_kept(item), row_version(row) if row else str((item or {}).get("title") or "")]
     return hashlib.sha256(json.dumps(key, default=str).encode()).hexdigest()[:16]
 
 
@@ -450,13 +461,13 @@ def build_packet(ref: str, item: dict, row: dict | None, *, level: str, now: flo
     n_events, n_msgs, n_sib, n_free = ((6, 6, 4, 8), (4, 4, 3, 5), (2, 2, 2, 3))[min(shed, 2)]
     quick = item.get("brief") if isinstance(item.get("brief"), dict) else {}
     out: dict = {
-        "today": f"{today:%Y-%m-%d %H:%M} ({day_words(today.date())})",
+        "written_on": f"{today:%Y-%m-%d} ({day_words(today.date())})",
         "item": {"ref": ref, "kind": KIND_WORDS.get(str(item.get("kind") or ""), "an item"),
                  "title": _one(item.get("title"), 200)},
         "steps_you_may_choose": list(allowed),
     }
     q = {k: (_one(v, 200) if isinstance(v, str) else [_one(x, 160) for x in v][:4])
-         for k, v in quick.items() if k in ("what", "asked", "due", "standing", "next") and v}
+         for k, v in quick.items() if k in ("what", "asked", "due", "next") and v}
     if q:
         out["item"]["quick_briefing"] = q
     if not row:
@@ -476,9 +487,6 @@ def build_packet(ref: str, item: dict, row: dict | None, *, level: str, now: flo
         facts["from"] = _one(row.get("from_name") or row.get("from_email"), 80)
     out["row"] = facts
     brief = _brief(row)
-    waited = _waited(row, brief, now)
-    if waited is not None:
-        out["days_since_they_wrote"] = waited
     said = row.get("owner_said") or _meta(row).get("owner_said")
     if said:
         try:
@@ -543,7 +551,7 @@ def fit_packet(build: Callable[[int], dict]) -> dict:
 
 # ── the prompt and the answer's shape ────────────────────────────────
 
-PROMPT = """You brief the owner of an assistant on one item from the assistant's Home screen. He tapped it to see more. The records below are the assistant's own: summaries of mail, never the mail itself.
+PROMPT = """You brief the owner of an assistant on one item of his. He reads it when he opens the item on the assistant's Home screen, maybe days from now. The records below are the assistant's own: summaries of mail, never the mail itself.
 
 Write three short lists:
 - history: what happened so far, oldest first, 2 to 4 short sentences.
@@ -554,15 +562,17 @@ Then choose 2 or 3 next steps. Each step has a `kind` from `steps_you_may_choose
 - draft_reply: `say`, what the reply says, in one short line. Never answer a choice that is his to make (yes or no, accept or decline, join or not).
 - ask_sender: `question`, one short question to the sender.
 - propose_times: no fields; the assistant offers two or three times from his calendar.
-- wait_until: `date` (YYYY-MM-DD), when to look at it again, after today.
+- wait_until: `date` (YYYY-MM-DD), when to look at it again, after `written_on`.
 - mark_done: no fields; only when the records show it is finished or needs nothing from him.
 - work_on_it: `ask`, what the assistant should start on, in one short line.
-- hold_slot: `date` (YYYY-MM-DD) and `minutes` (15 to 240), time on his calendar to do the work.
+- hold_slot: `date` (YYYY-MM-DD) and `minutes` (15 to 240), time on his calendar to do the work, before it is due. Only when the work needs a block of time; size it to the work, and pick the free slot that suits it, not always the first.
 `why` is a few words on why the step fits.
 
 Rules:
 - Use only the records. Never invent a fact, a name, a date or a number.
 - His own words (`owner_said`, `closed_by_owner`) outrank the assistant's notes.
+- Write no relative time: never today, tomorrow, yesterday, this week, next week, ago, or a count of days. Write dates as the records write them. When he opens it, the card adds how long it has waited and his free time.
+- Do not describe his calendar in the lists; use it only to pick a date for a step.
 - Short plain sentences of 20 words or fewer. No dash between clauses. No markdown, no links.
 - Leave a field you do not use as "" (0 for minutes).
 
@@ -621,6 +631,12 @@ _ALWAYS = frozenset({"I", "Tacitus", "OK", "Outlook", "Home", "Action", "Request
                      "Dr", "Prof", "Mr", "Ms", "Mrs"})
 _WORD = re.compile(r"[A-Za-z][A-Za-z'\-]*")
 _BAD = re.compile(r"https?:|www\.|@|[<>`*#\[\]{}]")
+# Words that tie a sentence to the moment it was written: a stored
+# briefing never says them (the card adds them in code when it is opened).
+_RELATIVE = re.compile(r"\b(?:today|tonight|tomorrow|yesterday|this (?:morning|afternoon|evening|week|month)|"
+                       r"next (?:week|month)|last (?:week|month)|ago|\d+ (?:more )?days?|"
+                       r"(?:one|two|three|four|five|six|seven|eight|nine|ten) (?:more )?days?|"
+                       r"overdue by|days? (?:left|late|overdue))\b", re.I)
 
 
 class Known:
@@ -645,10 +661,11 @@ def checked(sentence: str, known: Known) -> bool:
     """True when every number, day, month and name in `sentence` is in the
     records: a digit the packet does not hold, a number word above one, a
     weekday or month it never names, a capitalized word that does not open
-    a sentence (or an acronym anywhere) it does not hold, or a link or an
-    address, fails it."""
+    a sentence (or an acronym anywhere) it does not hold, a link or an
+    address, or a word that ties it to the moment it was written (today,
+    ago, 3 days: a stored briefing outlives its day) fails it."""
     s = " ".join(str(sentence or "").split())
-    if not s or _BAD.search(s):
+    if not s or _BAD.search(s) or _RELATIVE.search(s):
         return False
     for n in re.findall(r"\d+", s):
         if not known.number(n):
@@ -855,26 +872,16 @@ def hosted_name() -> str:
 
 
 def route(level: str, *, cfg: dict | None = None) -> list[str]:
-    """The models to try, in order: ["local"], ["local", "hosted"],
-    ["hosted", "local"], ["hosted"] or [] (kept, with no local model).
-    Kept below Summary: the owner's own model alone. Else the routing
-    table's `briefing` task: local first where the briefing runs on the
-    owner's own model."""
+    """The models a write at ingest or at a tap tries, in order: the owner's
+    own model first, the hosted model when it does not answer; [] for a
+    kept item with no local model. Kept below Summary (or a level not
+    known): the owner's own model alone. The hosted rewrite of the day's
+    list is hosted_pass, at briefing time."""
     cfg = cfg if cfg is not None else _remote_cfg()
     ready = local_ready(cfg)
     if kept(level) or level not in ("summary", "full"):
         return ["local"] if ready else []
-    first_local = False
-    if ready:
-        try:
-            # The briefing lane's own decision (remote_briefing): the table's
-            # `briefing`, else its `briefings` switch.
-            first_local = bool(_mod("remote_llm").local_for(TASK, cfg.get("briefings") == "remote", cfg))
-        except Exception:
-            first_local = False
-    if first_local:
-        return ["local", "hosted"]
-    return ["hosted", "local"] if ready else ["hosted"]
+    return ["local", "hosted"] if ready else ["hosted"]
 
 
 def _ask_local(prompt: str) -> dict:
@@ -961,6 +968,519 @@ def run_model(prompt: str, order: list[str]) -> dict:
     note = (NOTE_LIMIT.format(hosted=hosted) if limit else NOTE_LOCAL_FAILED if only_local else NOTE_FAILED)
     return {"ok": False, "text": "", "via": "", "usage": {}, "model": "", "note": note, "calls": calls,
             "tries": tries}
+
+
+# ── the stored briefings ─────────────────────────────────────────────
+# One briefing per open ledger row, written ahead of the tap: by the
+# owner's own model when the row or its thread changes (refresh, from the
+# mail tick), by the hosted model for the day's list at briefing time
+# (hosted_pass). Each carries the version of the row and thread it was
+# written from (row_version); a tap shows it at once, and asks for a new
+# one only when it is missing or older than the thread.
+#
+# Where: an owner-private SQLite file beside the local model's records
+# (<private_dir>/remote-llm/home-briefings.sqlite, 0600), never the
+# ledger. The ledger is the resident's: hosted turns read it with
+# `ledger.py get`, and a kept thread's briefing, written by the owner's
+# own model from its records, must not sit where a hosted turn reads more
+# than its level lets it.
+
+STORE_FILE = "home-briefings.sqlite"
+# Writes per mail tick, and per day, by the owner's own model.
+INGEST_PER_TICK = 4
+INGEST_DAILY = 200
+# The hosted rewrite at briefing time: items at most, and the prompt's
+# size per call (more items go in another call).
+HOSTED_ITEMS = 20
+HOSTED_PROMPT_MAX = 80_000
+HOSTED_TASK = "review"
+VERSION_ROW = ("status", "type", "deadline", "follow_up_after", "snooze_until", "description",
+               "last_action", "notes")
+VERSION_THREAD = ("latest", "message_count", "state", "ask", "needs_reply", "deadline",
+                  "user_replied_after_latest", "scheduling")
+
+
+def row_version(row: dict | None) -> str:
+    """The version of a row and its thread a briefing is written from:
+    Home's own (home_items.row_version: the row's fields, its thread's
+    record, the reply queue's record and a close proposal, never anything
+    that moves with the clock), so a stored briefing and the item agree on
+    when it is stale. The rows are in the ledger's merged shape
+    (ledger.get_open_entries, read_row). Without home_items, the same
+    reading in this module."""
+    try:
+        return _mod("home_items").row_version(row)
+    except (ImportError, AttributeError):
+        return _own_version(row)
+
+
+def _own_version(row: dict | None) -> str:
+    row = row or {}
+    brief = _brief(row)
+    key = {"row": {k: row.get(k) for k in VERSION_ROW}, "thread": {k: brief.get(k) for k in VERSION_THREAD}}
+    return hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+# ── rows written from chat ───────────────────────────────────────────
+# ledger.py's row-written hook is home_briefing_queue, a small module of its
+# own (the resident loads it on every ledger write): it notes the row's id
+# in the resident's state, and refresh writes the noted rows first.
+
+def queued_ids(*, now: float | None = None) -> list[str]:
+    """The ids the resident noted (home_briefing_queue), newest first, read
+    with the resident's access (resident_io); [] when there are none."""
+    try:
+        q = _mod("home_briefing_queue")
+        return q.ids(_mod("resident_io").read_text(q.path()) or "", now=now)
+    except Exception:
+        return []
+
+
+def _store_path() -> Path:
+    return _mod("remote_llm").store_dir() / STORE_FILE
+
+
+class Store:
+    """The stored briefings (module comment above). Owner processes only:
+    the mail tick and the briefing write, the bot reads."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = Path(path) if path is not None else _store_path()
+
+    def _conn(self):
+        import os
+        import sqlite3
+        if not self.path.exists():
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            os.close(fd)
+        conn = sqlite3.connect(str(self.path), timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE IF NOT EXISTS briefings (lid TEXT PRIMARY KEY, version TEXT, by TEXT, "
+                     "at REAL, level TEXT, text TEXT, steps TEXT, model TEXT, note TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS days (day TEXT, what TEXT, n INTEGER, "
+                     "PRIMARY KEY (day, what))")
+        return conn
+
+    def get(self, lid: str) -> dict | None:
+        if not lid or not self.path.exists():
+            return None
+        conn = self._conn()
+        try:
+            r = conn.execute("SELECT * FROM briefings WHERE lid = ?", (lid,)).fetchone()
+        finally:
+            conn.close()
+        if not r:
+            return None
+        out = dict(r)
+        try:
+            out["steps"] = json.loads(out.get("steps") or "[]")
+        except ValueError:
+            out["steps"] = []
+        return out
+
+    def versions(self) -> dict[str, tuple[str, str]]:
+        """{ledger id: (version, by)} of every stored briefing."""
+        if not self.path.exists():
+            return {}
+        conn = self._conn()
+        try:
+            return {r["lid"]: (r["version"], r["by"]) for r in conn.execute("SELECT lid, version, by FROM briefings")}
+        finally:
+            conn.close()
+
+    def put(self, lid: str, rec: dict) -> None:
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute("INSERT OR REPLACE INTO briefings (lid, version, by, at, level, text, steps, model, "
+                             "note) VALUES (?,?,?,?,?,?,?,?,?)",
+                             (lid, rec.get("version") or "", rec.get("by") or "local", float(rec.get("at") or 0),
+                              rec.get("level") or "", rec.get("text") or "", json.dumps(rec.get("steps") or []),
+                              rec.get("model") or "", rec.get("note") or ""))
+        finally:
+            conn.close()
+
+    def count(self, day: str, what: str, add: int = 0) -> int:
+        conn = self._conn()
+        try:
+            with conn:
+                if add:
+                    conn.execute("INSERT INTO days (day, what, n) VALUES (?,?,?) ON CONFLICT(day, what) "
+                                 "DO UPDATE SET n = n + excluded.n", (day, what, int(add)))
+                r = conn.execute("SELECT n FROM days WHERE day = ? AND what = ?", (day, what)).fetchone()
+                conn.execute("DELETE FROM days WHERE day < ?", ((date.fromisoformat(day) - timedelta(days=30))
+                                                               .isoformat(),))
+            return int(r["n"]) if r else 0
+        finally:
+            conn.close()
+
+    def drop_closed(self, open_ids: set) -> int:
+        """Forget the briefings of rows no longer open."""
+        if not self.path.exists():
+            return 0
+        conn = self._conn()
+        try:
+            with conn:
+                gone = [r["lid"] for r in conn.execute("SELECT lid FROM briefings") if r["lid"] not in open_ids]
+                conn.executemany("DELETE FROM briefings WHERE lid = ?", [(g,) for g in gone])
+            return len(gone)
+        finally:
+            conn.close()
+
+
+def _today_key(now: float | None = None) -> str:
+    return datetime.fromtimestamp(now if now is not None else time.time(), _zone()).date().isoformat()
+
+
+def _kind_of(row: dict) -> str:
+    """How Home names a row's item when no item is at hand: a reply when a
+    send in its thread finishes it and it is no deliverable (the ledger's
+    traits), else something on the list."""
+    try:
+        lg = _mod("ledger")
+        replies = lg.types_with("closes_on_reply") - lg.types_with("deliverable")
+        return "reply" if lg.canonical_type(row.get("type")) in replies else "item"
+    except Exception:
+        return "item"
+
+
+def write_one(row: dict, *, now: float, level: str | None = None, order: list[str] | None = None,
+              store: Store | None = None, kind: str = "", title: str = "", item: dict | None = None,
+              prepared: dict | None = None) -> dict:
+    """Write one row's briefing on the models of `order` (route(level) when
+    not given) and store it with the row's version. {"ok", "via", "model",
+    "seconds", "usage", "unchecked", "rejected", "note", "calls"}."""
+    t0 = time.monotonic()
+    zone = _zone()
+    item = item or {"ref": f"item:{row.get('id')}", "kind": kind or _kind_of(row),
+                    "title": title or row.get("description") or ""}
+    prep = prepared or prepare(item["ref"], item, row, now=now, zone=zone, level=level)
+    level = prep["level"]
+    order = route(level) if order is None else order
+    if not order:
+        return {"ok": False, "via": "", "calls": 0, "note": NOTE_KEPT_NO_LOCAL, "level": level,
+                "seconds": 0.0, "usage": {}, "unchecked": 0, "rejected": []}
+    res = run_model(prep["prompt"], order)
+    out = {"ok": False, "via": res["via"], "model": res["model"], "usage": res["usage"], "calls": res["calls"],
+           "note": res["note"], "level": level, "unchecked": 0, "rejected": [], "tries": res["tries"],
+           "prompt_chars": len(prep["prompt"])}
+    if res["ok"]:
+        obj = parse_answer(res["text"])
+        today = datetime.fromtimestamp(now, zone).date()
+        got = check_answer(obj, prep["packet"], allowed=prep["allowed"], today=today, due=prep["due"],
+                           cand=prep["cand"]) if obj else None
+        if got and got["ok"]:
+            (store or Store()).put(str(row.get("id")), {
+                "version": row_version(row), "by": res["via"], "at": time.time(), "level": level,
+                "text": got["text"], "steps": got["steps"], "model": res["model"], "note": res["note"]})
+            out.update(ok=True, unchecked=got["unchecked"], rejected=got["rejected"],
+                       text=got["text"], steps=got["steps"])
+        else:
+            out.update(note=NOTE_UNCHECKED, unchecked=(got or {}).get("unchecked", 0))
+    out["seconds"] = round(time.monotonic() - t0, 1)
+    return out
+
+
+def _open_rows() -> list[dict]:
+    """The open rows as Home reads them (ledger.get_open_entries, with the
+    owner's word on each thread), read-only."""
+    lg = _mod("ledger")
+    return lg.with_owner_decisions(lg.get_open_entries())
+
+
+def stale_rows(rows: list[dict], versions: dict, *, prefer=()) -> list[dict]:
+    """The rows whose stored briefing is missing or older than the row and
+    its thread: the ids in `prefer` first (Home's list), then the newest."""
+    stale = [r for r in rows if r.get("id") and (versions.get(r["id"]) or ("",))[0] != row_version(r)]
+    first = {lid: i for i, lid in enumerate(prefer or ())}
+    stale.sort(key=lambda r: (first.get(r["id"], len(first)), str(r.get("updated_at") or "")), reverse=False)
+    head = [r for r in stale if r["id"] in first]
+    rest = sorted([r for r in stale if r["id"] not in first], key=lambda r: str(r.get("updated_at") or ""),
+                  reverse=True)
+    return head + rest
+
+
+def refresh(*, limit: int = INGEST_PER_TICK, prefer=(), rows: list[dict] | None = None,
+            store: Store | None = None, dry_run: bool = False, daily: int | None = INGEST_DAILY) -> dict:
+    """Write the briefings that are missing or stale, on the owner's own
+    model, at most `limit` now and `daily` a day: the mail tick's step
+    after the thread briefs (a new message makes its row's briefing stale),
+    a row written from chat, and the backfill. Kept rows run on the owner's
+    own model alone, others fall back to the hosted model only when it
+    does not answer. Nothing without a local model. {"stale", "written",
+    "failed", "seconds", ...}; `dry_run` counts and writes nothing."""
+    t0 = time.monotonic()
+    out = {"stale": 0, "written": 0, "failed": 0, "skipped": "", "seconds": 0.0, "tokens_in": 0,
+           "tokens_out": 0, "calls": 0}
+    if not local_ready():
+        out["skipped"] = "no local model"
+        return out
+    store = store or Store()
+    rows = rows if rows is not None else _open_rows()
+    prefer = list(prefer or ()) + [lid for lid in queued_ids() if lid not in (prefer or ())]
+    try:
+        store.drop_closed({r.get("id") for r in rows if r.get("id")}) if not dry_run else None
+    except Exception:
+        pass
+    todo = stale_rows(rows, store.versions(), prefer=prefer)
+    out["stale"] = len(todo)
+    if dry_run or not todo:
+        out["seconds"] = round(time.monotonic() - t0, 1)
+        return out
+    day = _today_key()
+    left = limit
+    if daily is not None:
+        left = min(left, max(0, daily - store.count(day, "ingest")))
+        if not left:
+            out["skipped"] = "the day's writes are spent"
+    for row in todo[:left]:
+        level = _level({}, row)
+        got = write_one(row, now=time.time(), level=level, order=["local"] if kept(level) else None, store=store)
+        out["calls"] += got.get("calls") or 0
+        out["written" if got["ok"] else "failed"] += 1
+        u = got.get("usage") or {}
+        out["tokens_in"] += int(u.get("in") or 0)
+        out["tokens_out"] += int(u.get("out") or 0)
+        store.count(day, "ingest", got.get("calls") or 0)
+        _log({"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "kind": "ingest",
+              "ref": hashlib.sha256(str(row.get("id")).encode()).hexdigest()[:12], "level": level,
+              "ok": got["ok"], "via": got.get("via"), "seconds": got.get("seconds"), "usage": u,
+              "unchecked": got.get("unchecked"), "rejected": got.get("rejected")})
+    out["seconds"] = round(time.monotonic() - t0, 1)
+    return out
+
+
+# ── the hosted rewrite of the day's list ─────────────────────────────
+
+HOSTED_PROMPT = """You rewrite the assistant's briefings for the items on the owner's list today. For each item below, write the briefing as the instructions say, from that item's own records alone; never carry a fact from one item to another.
+
+{instructions}
+Answer with one JSON object and nothing else:
+{{"items": [{{"ref": "<the item's ref>", "history": [], "stakes": [], "unknown": [], "steps": [{{"kind": "", "say": "", "question": "", "date": "", "minutes": 0, "ask": "", "why": ""}}]}}]}}
+
+The items:
+"""
+
+
+def _instructions() -> str:
+    head, _, rest = PROMPT.partition("Write three short lists:")
+    body = rest.split("Answer with one JSON object", 1)[0]
+    return "Write three short lists:" + body
+
+
+def hosted_prompt(packets: list[dict]) -> str:
+    return HOSTED_PROMPT.format(instructions=_instructions()) + json.dumps(packets, ensure_ascii=False)
+
+
+def _batches(packets: list[dict], cap: int) -> list[list[dict]]:
+    out, cur = [], []
+    for p in packets:
+        if cur and len(hosted_prompt(cur + [p])) > cap:
+            out.append(cur)
+            cur = []
+        cur.append(p)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def hosted_pass(items: list[dict], *, briefing: dict | None = None, rows: list[dict] | None = None,
+                now: float | None = None, store: Store | None = None, call=None,
+                dry_run: bool = False, record: dict | None = None) -> dict:
+    """The hosted model rewrites the briefings of the items on Home's list
+    (the post's items after its review, `items` as remote_briefing.home_view
+    lists them, and the replies owed a day or more), at most HOSTED_ITEMS,
+    in as few tool-less calls as fit HOSTED_PROMPT_MAX. Kept items are left
+    out: theirs stays the owner's own model's. Each answer is checked as
+    every briefing is, against its own packet, and stored `by: hosted`;
+    when the call fails the briefing the owner's own model wrote stands.
+    The run record's part: {"items", "kept", "calls", "stored", "seconds",
+    "tokens_in", "tokens_out", "cost_usd", "ok", "reason"}."""
+    t0 = time.monotonic()
+    now = now if now is not None else time.time()
+    out = {"items": 0, "kept": 0, "calls": 0, "stored": 0, "refused": 0, "seconds": 0.0, "tokens_in": 0,
+           "tokens_out": 0, "cost_usd": 0.0, "ok": False, "reason": ""}
+    try:
+        rows = rows if rows is not None else _open_rows()
+    except Exception as e:
+        out["reason"] = f"the ledger could not be read: {str(e)[:80]}"
+        return out
+    by_id = {r.get("id"): r for r in rows if r.get("id")}
+    want: list[str] = []
+    for it in items or []:
+        lid = str((it or {}).get("ledger_id") or "")
+        if it.get("kept"):
+            out["kept"] += 1
+            continue
+        if lid and lid in by_id and lid not in want:
+            want.append(lid)
+    for e in (briefing or {}).get("reply_backlog") or []:
+        lid = str((e or {}).get("id") or "")
+        if lid in by_id and lid not in want and int(e.get("age_days") or 0) >= 1 and not e.get("kept"):
+            want.append(lid)
+    want = want[:HOSTED_ITEMS]
+    try:
+        levels = _mod("keep_gate").levels([by_id[lid] for lid in want])
+    except Exception:
+        levels = {lid: "local" for lid in want}
+    zone = _zone()
+    preps: dict[str, dict] = {}
+    for lid in want:
+        level = levels.get(lid, "local")
+        if level not in ("summary", "full"):
+            out["kept"] += 1
+            continue
+        row = by_id[lid]
+        item = {"ref": f"item:{lid}", "title": row.get("description") or "", "kind": _kind_of(row)}
+        preps[lid] = prepare(item["ref"], item, row, now=now, zone=zone, level=level, briefing=briefing)
+        preps[lid]["packet"] = fit_packet(lambda shed, _i=item, _r=row, _l=level: build_packet(
+            _i["ref"], _i, _r, level=_l, now=now, zone=zone, briefing=briefing,
+            allowed=preps[lid]["allowed"], rules=preps[lid]["rules"], ledger=preps[lid]["ledger"],
+            project=preps[lid]["project"], shed=max(1, shed)))
+    out["items"] = len(preps)
+    if not preps:
+        out.update(ok=True, reason="nothing to rewrite")
+        return out
+    if dry_run:
+        out.update(ok=True, reason="dry run", batches=len(_batches([p["packet"] for p in preps.values()],
+                                                                    HOSTED_PROMPT_MAX)))
+        return out
+    store = store or Store()
+    answered: dict[str, dict] = {}
+    for batch in _batches([preps[lid]["packet"] for lid in preps], HOSTED_PROMPT_MAX):
+        r = (call or HOSTED_BATCH)(hosted_prompt(batch))
+        out["calls"] += 0 if r.get("reason") == "limit" and not r.get("usage") else 1
+        u = r.get("usage") or {}
+        out["tokens_in"] += int(u.get("in") or 0)
+        out["tokens_out"] += int(u.get("out") or 0)
+        out["cost_usd"] += float(u.get("cost_usd") or 0)
+        if not r.get("ok"):
+            out["reason"] = r.get("reason") or "error"
+            continue
+        obj = parse_answer(r.get("text") or "")
+        for a in obj.get("items") or [] if isinstance(obj.get("items"), list) else []:
+            if isinstance(a, dict) and str(a.get("ref") or "").startswith("item:"):
+                answered.setdefault(str(a["ref"])[5:], dict(a, model=r.get("model") or ""))
+    today = datetime.fromtimestamp(now, zone).date()
+    for lid, a in answered.items():
+        prep = preps.get(lid)
+        if prep is None:
+            continue
+        got = check_answer(a, prep["packet"], allowed=prep["allowed"], today=today, due=prep["due"],
+                           cand=prep["cand"])
+        if not got["ok"]:
+            out["refused"] += 1
+            continue
+        store.put(lid, {"version": row_version(by_id[lid]), "by": "hosted", "at": time.time(),
+                        "level": prep["level"], "text": got["text"], "steps": got["steps"],
+                        "model": _model_name(a.get("model") or "") , "note": ""})
+        out["stored"] += 1
+    out["ok"] = out["stored"] > 0
+    out["seconds"] = round(time.monotonic() - t0, 1)
+    out["cost_usd"] = round(out["cost_usd"], 4)
+    _log({"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "kind": "hosted-pass",
+          **(record or {}), **out})
+    return out
+
+
+def spawn_hosted_pass(agent: str, run_id: str, briefing_path: str, *, popen=None) -> dict:
+    """Start the hosted rewrite of a briefing run's list in a process of its
+    own (`home_deeper.py hosted-pass`), detached, so the run's post never
+    waits for the hosted call; its record is a line in home-deeper.jsonl
+    with the run id. {"started": bool}. Never when the pre-send review is
+    off: that switch keeps hosted calls out of the briefing."""
+    import subprocess
+    try:
+        if not _mod("briefing_review").enabled():
+            return {"started": False, "why": "the pre-send review is off"}
+    except Exception:
+        pass
+    cmd = [sys.executable, str(Path(__file__).resolve()), "hosted-pass", "--agent", str(agent),
+           "--run-id", str(run_id), "--briefing", str(briefing_path)]
+    (popen or subprocess.Popen)(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    return {"started": True}
+
+
+def hosted_pass_for_run(agent: str, run_id: str, briefing_path: str) -> dict:
+    """The CLI's hosted-pass: the list the run kept for Home
+    (remote_briefing.home_handoff) and the briefing's data, then
+    hosted_pass, its record one line with the run id."""
+    rb = _mod("remote_briefing")
+    view = rb.home_handoff(agent, run_id)
+    if not view:
+        return {"ok": False, "reason": "no list for Home from this run"}
+    try:
+        briefing = rb._load(briefing_path)
+    except Exception:
+        briefing = {}
+    return hosted_pass(view.get("items") or [], briefing=briefing if isinstance(briefing, dict) else {},
+                       record={"agent": agent, "run_id": run_id})
+
+
+def _ask_hosted_batch(prompt: str) -> dict:
+    """One tool-less hosted call for the day's list (hosted_text, the
+    `review` task, as the pre-send review)."""
+    br = _mod("briefing_review")
+    try:
+        ht = _mod("hosted_text")
+        who = ht.model_for(HOSTED_TASK)
+        if ht.is_base(who) and _plan_full():
+            return {"ok": False, "text": "", "usage": {}, "reason": "limit", "model": who}
+        model = _mod("ea_config").get_models().get("home_deeper") or HOSTED_MODEL
+        r = ht.run(HOSTED_TASK, prompt, model, timeout=br.TIMEOUT_S)
+    except Exception as e:
+        return {"ok": False, "text": "", "usage": {}, "reason": br._why_failed(str(e)), "model": ""}
+    u = r.get("usage") or {}
+    usage = {"in": u.get("input_tokens"), "out": u.get("output_tokens"), "cost_usd": r.get("cost_usd")}
+    if r.get("rc") or not r.get("text"):
+        return {"ok": False, "text": "", "usage": usage, "model": r.get("model_used") or "",
+                "reason": br._why_failed(f"{r.get('stderr') or ''} {r.get('text') or ''}")}
+    return {"ok": True, "text": str(r["text"]), "usage": usage, "reason": "", "model": r.get("model_used") or ""}
+
+
+HOSTED_BATCH: Callable[[str], dict] = _ask_hosted_batch
+
+
+def now_lines(row: dict | None, *, now: float, zone: ZoneInfo, briefing: dict | None = None) -> list[str]:
+    """The lines that depend on the moment, added in code when the card is
+    read and never stored: how long the other side has waited for him, and
+    his next free time before the item is due (the briefing's free slots)."""
+    row = row or {}
+    brief = _brief(row)
+    out = []
+    since = _date(brief.get("last_inbound"))
+    if since and brief.get("needs_reply", True) and not brief.get("user_replied_after_latest"):
+        days = (datetime.fromtimestamp(now, zone).date() - since).days
+        if days >= 1:
+            out.append(f"They wrote {days} day{'s' if days != 1 else ''} ago and wait for your answer.")
+    due = _date(row.get("deadline")) or _date(brief.get("deadline"))
+    today = datetime.fromtimestamp(now, zone).date()
+    if due and due >= today:
+        free = _calendar(briefing or {}, now=now, zone=zone, until=due)["free_slots"]
+        if free:
+            out.append(f"Your next free time before it is due: {free[0]}.")
+        out.append(f"It is due {'today' if due == today else day_words(due)}.")
+    return out
+
+
+_BRIEFING_CACHE: dict = {"mtime": None, "data": {}}
+
+
+def _briefing_now() -> dict:
+    """The briefing's data, read again only when its file changes."""
+    try:
+        H = _mod("home_screen")
+        path = H._ea_dir() / "state" / "briefing-latest.json"
+        mtime = path.stat().st_mtime
+        if mtime != _BRIEFING_CACHE["mtime"]:
+            text = _mod("resident_io").read_text(path)
+            data = json.loads(text) if text else {}
+            _BRIEFING_CACHE.update(mtime=mtime, data=data if isinstance(data, dict) else {})
+    except Exception:
+        pass
+    return _BRIEFING_CACHE["data"]
 
 
 # ── the jobs ─────────────────────────────────────────────────────────
@@ -1110,18 +1630,69 @@ def _view(job: dict, item: dict | None) -> dict:
 
 # ── the hook: state, start, step, prewarm ────────────────────────────
 
+def _stored(row: dict | None) -> dict | None:
+    lid = str((row or {}).get("id") or "")
+    if not lid:
+        return None
+    try:
+        return Store().get(lid)
+    except Exception as e:
+        log.warning("home deeper: the stored briefings could not be read: %s", e)
+        return None
+
+
+def _current(step: dict, today: date) -> bool:
+    """A stored step's date still makes sense today."""
+    d = _date((step.get("params") or {}).get("date"))
+    if not d:
+        return True
+    return d > today if step.get("kind") == "wait_until" else d >= today
+
+
+def stored_view(rec: dict, item: dict | None, row: dict | None, *, now: float | None = None) -> dict:
+    """A stored briefing as the card shows it: the moment's lines first
+    (now_lines, code's, never stored), then the stored text; the steps the
+    item offers now whose dates still make sense, and Continue; who wrote
+    it (`by`: local or hosted) and when."""
+    now = now if now is not None else time.time()
+    zone = _zone()
+    today = datetime.fromtimestamp(now, zone).date()
+    lines = now_lines(row, now=now, zone=zone, briefing=_briefing_now())
+    text = rec.get("text") or ""
+    if lines:
+        text = "Now\n" + "\n".join(f"- {x}" for x in lines) + ("\n\n" + text if text else "")
+    steps = [s for s in offered(rec.get("steps") or [], item) if _current(s, today)]
+    out = {"state": "ready", "text": text, "steps": [_public_step(s) for s in steps],
+           "by": rec.get("by") or "local", "at": rec.get("at"), "model": rec.get("model") or ""}
+    if not kept(rec.get("level")) and not item_kept(item):
+        out["steps"].append({"id": CONTINUE, "label": CONTINUE_LABEL})
+    if rec.get("note"):
+        out["note"] = rec["note"]
+    return out
+
+
 def state(fe, ref: str, item: dict | None = None, *, row: dict | None = None) -> dict:
     """The item's `deeper` (the contract's shape) for GET /api/home/item: a
-    pure read, never a model call. A result for an older version of the
-    row or thread reads `none`; a job this process lost reads `failed`."""
+    pure read, never a model call. A stored briefing shows at once, with
+    `stale: true` when the row or its thread changed since it was written
+    (the app then asks for a new one); with none stored, the tap's job:
+    `working`, `failed` (a job this process lost reads failed) or `none`."""
     try:
         j = jobs_for(fe)
-        job = j.job(ref)
         row = row if row is not None else read_row(ref)
+        rec = _stored(row)
+        if rec:
+            out = stored_view(rec, item, row, now=j.clock())
+            if rec.get("version") != row_version(row):
+                out["stale"] = True
+                if ref in j.running:
+                    out["state"] = "working"
+            return out
+        job = j.job(ref)
         sig = signature(ref, item, row)
         if item_kept(item) and not local_ready():
             return {"state": "unavailable", "note": NOTE_KEPT_NO_LOCAL}
-        if job and job.get("sig") == sig:
+        if job and job.get("sig") == sig and job.get("state") != "stored":
             if job.get("state") == "working" and ref not in j.running:
                 return {"state": "failed", "note": NOTE_STOPPED}
             return _view(job, item)
@@ -1135,18 +1706,23 @@ def state(fe, ref: str, item: dict | None = None, *, row: dict | None = None) ->
 
 def start(fe, ref: str, item: dict | None = None, *, row: dict | None = None,
           prewarm: bool = False) -> dict:
-    """POST /api/home/deeper: {ok, state, note?}. A result for the item as
-    it is now is served as it is; a job at work is left to finish; else one
-    job starts, within the bounds."""
+    """POST /api/home/deeper, the refresh the app asks for when the stored
+    briefing is missing or stale: {ok, state, note?}. A stored briefing for
+    the row and thread as they are now is served as it is; a job at work is
+    left to finish; else one job starts on the owner's own model (route),
+    within the bounds, and stores what it writes."""
     try:
         j = jobs_for(fe)
         row = row if row is not None else read_row(ref)
         sig = signature(ref, item, row)
+        rec = _stored(row)
+        if rec and rec.get("version") == row_version(row):
+            return {"ok": True, "state": "ready"}
         if item_kept(item) and not local_ready():
             return {"ok": True, "state": "unavailable", "note": NOTE_KEPT_NO_LOCAL}
         with j.lock:
             job = j.job(ref)
-            if job.get("sig") == sig and job.get("state") == "ready":
+            if job.get("sig") == sig and job.get("state") == "ready" and not row:
                 return {"ok": True, "state": "ready"}
             if prewarm and job.get("sig") == sig:
                 return {"ok": True, "state": job.get("state") or "none"}  # one try per version
@@ -1181,8 +1757,8 @@ def start(fe, ref: str, item: dict | None = None, *, row: dict | None = None,
             return {"ok": True, "state": "working"}
         work()
         got = j.job(ref)
-        return {"ok": True, "state": got.get("state") or "failed", **({"note": got["note"]}
-                                                                    if got.get("note") else {})}
+        st = "ready" if got.get("state") == "stored" else (got.get("state") or "failed")
+        return {"ok": True, "state": st, **({"note": got["note"]} if got.get("note") else {})}
     except Exception as e:
         log.warning("home deeper: the job for %s did not start: %s", ref, e)
         return {"ok": False, "state": "failed", "note": NOTE_FAILED}
@@ -1233,10 +1809,14 @@ def prepare(ref: str, item: dict, row: dict | None, *, now: float, zone: ZoneInf
         project=project, rules=rules or "", allowed=allowed, shed=shed))
     due = _date((row or {}).get("deadline")) or _date(_brief(row or {}).get("deadline"))
     return {"level": level, "allowed": allowed, "packet": packet, "prompt": prompt_text(packet),
-            "due": due, "cand": candidate(row, item)}
+            "due": due, "cand": candidate(row, item), "rules": rules or "", "ledger": ledger,
+            "project": project}
 
 
 def _work(j: Jobs, ref: str, item: dict, row: dict | None, sig: str, *, prewarm: bool) -> None:
+    if row and row.get("id"):
+        _work_row(j, ref, item, row, sig, prewarm=prewarm)
+        return
     t0 = time.monotonic()
     now = j.clock()
     zone = _zone()
@@ -1284,6 +1864,33 @@ def _work(j: Jobs, ref: str, item: dict, row: dict | None, sig: str, *, prewarm:
     _log(dict(rec, ok=True))
 
 
+def _work_row(j: Jobs, ref: str, item: dict, row: dict, sig: str, *, prewarm: bool) -> None:
+    """A tap's (or a prewarm's) job for an item with a row: write its
+    briefing (write_one) into the store, where the next read finds it."""
+    now = j.clock()
+    zone = _zone()
+    prep = prepare(ref, item, row, now=now, zone=zone)
+    order = route(prep["level"])
+    if prewarm and (not order or order[0] != "local"):
+        j._put(ref, {"ref": ref, "sig": sig, "state": "none", "at": now})  # a prewarm never spends a hosted plan
+        return
+    got = write_one(row, now=now, item=item, prepared=prep, order=["local"] if prewarm else order)
+    if got.get("calls"):
+        j._count(calls=got["calls"], **{got.get("via") or "failed": 1}, **({"prewarm": 1} if prewarm else {}))
+    _log({"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "kind": "prewarm" if prewarm else "tap",
+          "ref": hashlib.sha256(ref.encode()).hexdigest()[:12], "level": got.get("level"), "route": order,
+          "ok": got["ok"], "via": got.get("via"), "model": got.get("model"), "seconds": got.get("seconds"),
+          "usage": got.get("usage"), "unchecked": got.get("unchecked"), "rejected": got.get("rejected"),
+          "prompt_chars": got.get("prompt_chars"), "tries": got.get("tries")})
+    if got["ok"]:
+        j._put(ref, {"ref": ref, "sig": sig, "state": "stored", "at": j.clock()})
+    elif not got.get("calls") and got.get("note") == NOTE_KEPT_NO_LOCAL:
+        j._put(ref, {"ref": ref, "sig": sig, "state": "unavailable", "note": NOTE_KEPT_NO_LOCAL, "at": now})
+    else:
+        j._put(ref, {"ref": ref, "sig": sig, "state": "failed", "note": got.get("note") or NOTE_FAILED,
+                     "at": j.clock()})
+
+
 def _log(rec: dict) -> None:
     try:
         _mod("remote_llm").append(LOG_NAME, rec)
@@ -1298,9 +1905,18 @@ def step(fe, ref: str, step_id: str, item: dict | None = None, *, row: dict | No
     finished {ok, said, goto?} for a step this module runs."""
     try:
         j = jobs_for(fe)
-        job = j.job(ref)
         row = row if row is not None else read_row(ref)
-        if not job or job.get("state") != "ready" or job.get("sig") != signature(ref, item, row):
+        rec = _stored(row)
+        if rec:
+            if rec.get("version") != row_version(row):
+                return {"ok": False, "said": NOTE_STALE_STEP}
+            job = {"state": "ready", "text": rec.get("text") or "", "level": rec.get("level") or "",
+                   "lid": str(row.get("id") or ""), "title": (item or {}).get("title") or row.get("description"),
+                   "steps": [s for s in rec.get("steps") or []
+                             if _current(s, datetime.fromtimestamp(j.clock(), _zone()).date())]}
+        else:
+            job = j.job(ref)
+        if not job or job.get("state") != "ready" or (not rec and job.get("sig") != signature(ref, item, row)):
             return {"ok": False, "said": NOTE_STALE_STEP}
         if step_id == CONTINUE:
             if kept(job.get("level")):
@@ -1360,20 +1976,25 @@ def prewarm(fe, left: list[dict] | None) -> int:
 # ── a conversation from the briefing ─────────────────────────────────
 
 def conversation_place(fe, row: dict | None) -> str:
-    """Where the conversation opens: the item's project room as Home's own
-    Start it with Tacitus picks it (home_items._room), else the project
-    room the row is linked to (briefing_rooms.rooms: bound, not archived,
-    in the owner's record), else the EA channel."""
+    """Where the conversation opens: where Home's own Start it with Tacitus
+    opens one (home_items._room: the project room of the item's row when
+    rooms are on and it has one, else Ask Tacitus). Its answer is final, so
+    Continue and Start never part ways (with rooms off, never a room). Only
+    without home_items: the project room the row is linked to
+    (briefing_rooms.rooms), else the EA channel."""
     lid = str((row or {}).get("id") or "")
     main = str(getattr(fe, "main_channel", "") or "main")
     try:
         hi = _mod("home_items")
-        conv = str((row or {}).get("conversation_id") or _brief(row or {}).get("conversation_id") or "")
-        room = str(hi._room(fe, hi.Found(item={}, lid=lid, conv=conv)))
-        if room and room != main:  # _room answers the EA channel when it finds no room
-            return room
-    except Exception:
-        pass
+    except ImportError:
+        hi = None
+    if hi is not None:
+        try:
+            conv = str((row or {}).get("conversation_id") or _brief(row or {}).get("conversation_id") or "")
+            return str(hi._room(fe, hi.Found(item={}, lid=lid, conv=conv)) or main)
+        except Exception as e:
+            log.warning("home deeper: Home's room rule failed, so Ask Tacitus: %s", e)
+            return main
     proj = _project(lid) if lid else None
     if proj:
         try:
@@ -1466,9 +2087,24 @@ def main(argv=None) -> int:
     p = sub.add_parser("packet", help="the packet for one item, read-only")
     p.add_argument("--ref", required=True)
     p.add_argument("--kind", default="")
+    h = sub.add_parser("hosted-pass", help="the hosted rewrite of a briefing run's list (the run starts it)")
+    h.add_argument("--agent", required=True)
+    h.add_argument("--run-id", required=True)
+    h.add_argument("--briefing", required=True)
+    b = sub.add_parser("backfill", help="write the missing or stale briefings of the open rows")
+    b.add_argument("--limit", type=int, default=20, help="rows this run writes at most (default 20)")
+    b.add_argument("--dry-run", action="store_true", help="count the rows that need one; write nothing")
     a = ap.parse_args(argv)
     if a.cmd == "usage":
         print(json.dumps(usage(a.days), indent=1))
+        return 0
+    if a.cmd == "hosted-pass":
+        print(json.dumps(hosted_pass_for_run(a.agent, a.run_id, a.briefing)))
+        return 0
+    if a.cmd == "backfill":
+        got = refresh(limit=max(0, a.limit), dry_run=a.dry_run, daily=None)
+        got["left"] = max(0, got["stale"] - got["written"])
+        print(json.dumps(got, indent=1))
         return 0
     row = read_row(a.ref)
     kind = a.kind or ("reply" if a.ref.startswith("reply:") else "item")

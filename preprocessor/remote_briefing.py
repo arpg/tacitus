@@ -2168,6 +2168,15 @@ def main(argv=None) -> int:
             write_home(a.agent, a.run_id, view)
         except Exception as e:
             print(f"remote_briefing: the list for Home was not kept: {str(e)[:160]}", file=sys.stderr)
+        if view:
+            # Home's stored briefings for the items on that list, rewritten by
+            # the hosted model in a process of its own after this one ends, so
+            # the post never waits for it (home_deeper.hosted-pass).
+            try:
+                import home_deeper
+                home_deeper.spawn_hosted_pass(a.agent, a.run_id, a.briefing)
+            except Exception as e:
+                print(f"remote_briefing: Home's briefings were not handed on: {str(e)[:160]}", file=sys.stderr)
     if a.dry_run:
         if a.preview:
             rec["preview_posted"] = _preview(text)
