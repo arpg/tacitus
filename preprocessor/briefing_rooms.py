@@ -69,6 +69,7 @@ SECTIONS = {
     "due": ":alarm_clock: Due",
     "since": ":new: Since this morning",
     "pending": ":hourglass: Pending",
+    "letters": ":memo: Letter",
 }
 
 def _card_place() -> str:
@@ -140,6 +141,12 @@ def placement(item: dict, idx: dict, conn, *, matcher=None) -> dict:
     lid = item.get("ledger_id") or ""
     if lid and idx["rows"].get(lid):
         return {"projects": idx["rows"][lid][:MAX_PROJECTS], "by": "link", "hits": []}
+    if item.get("kind") == "letter":
+        # A letter case (letter_surface) goes where its destinations' rows
+        # are linked, and nowhere on words: a person's name is no project.
+        linked = [p for i in item.get("letter_rows") or [] for p in idx["rows"].get(i) or []]
+        return {"projects": list(dict.fromkeys(linked))[:MAX_PROJECTS],
+                "by": "link" if linked else "none", "hits": []}
     if lid and lid in (idx.get("loose") or ()):
         return {"projects": [], "by": "loose", "hits": []}
     conv = item.get("conversation_id") or ""
@@ -215,7 +222,8 @@ def also_open(pid: str, open_rows: list[dict], shown: set[str], conn, *,
     items left out, at most ALSO_OPEN; their ids go into `ids`."""
     idx = idx if idx is not None else index(conn)
     out = []
-    for o in open_rows:
+    import letter_surface
+    for o in letter_surface.collapse_rows(open_rows):
         lid = o.get("id") or ""
         if not lid or lid in shown:
             continue
@@ -328,6 +336,7 @@ def plan_posts(entries: list[dict], *, heading: str, open_rows: list[dict], conn
     posts = []
     for pid, items in slices(entries, targets, conn, matcher=matcher, idx=idx).items():
         shown = {e["ledger_id"] for e in items if e.get("ledger_id")} | \
+            {i for e in items for i in e.get("letter_rows") or ()} | \
             set((skip or {}).get(pid) or ()) | set((skip or {}).get("*") or ())
         ids: list[str] = []
         others = also_open(pid, open_rows, shown, conn, matcher=matcher, idx=idx, ids=ids)

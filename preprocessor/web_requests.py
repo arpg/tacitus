@@ -11,7 +11,9 @@ For each card the front end names, read-only:
   (`project_messages`): its name is the request's `project`;
 - for an event card, the start of the staged event its button carries
   (`payload_of`, the bot's own read of the staged payload, which leaves it
-  in place): the request's `starts`.
+  in place): the request's `starts`;
+- for a letter case's card (a `case` in a value, letter_surface), the
+  nearest due date of the case's open destinations, beside its rows'.
 
 A store that cannot be read gives nothing; the blocks then show no
 project and no deadline.
@@ -97,6 +99,35 @@ def _projects(ids: list[str], convs: list[str], db_path: Path | None) -> tuple[d
     return by_row, by_conv
 
 
+def _case_ids(card: Any) -> list[str]:
+    return list(dict.fromkeys(str(v["case"]) for v in _values(card) if v.get("case")))
+
+
+def _case_dues(keyed: dict) -> dict[str, str]:
+    """{case id: the nearest due date of its open destinations} for the
+    letter cases the cards name; {} when none does or the store is out of
+    reach."""
+    want = {c for card, _i, _v in keyed.values() for c in _case_ids(card)}
+    if not want:
+        return {}
+    try:
+        try:
+            import letter_surface as _ls
+        except ModuleNotFoundError:
+            from preprocessor import letter_surface as _ls
+        out = {}
+        for case in _ls.load_cases():
+            cid = str(case.get("id") or "")
+            if cid in want:
+                due = next((str(d.get("due"))[:10] for d in _ls.open_dests(case) if d.get("due")), "")
+                if due:
+                    out[cid] = due
+        return out
+    except Exception as e:
+        log.warning("requests: the letter cases could not be read: %s", e)
+        return {}
+
+
 def context(items: list[dict], *, payload_of: Callable[[dict], Any] | None = None,
             db_path: Path | None = None) -> dict[str, dict]:
     """{item id: {"project", "due", "starts"}} for the items the front end
@@ -112,10 +143,12 @@ def context(items: list[dict], *, payload_of: Callable[[dict], Any] | None = Non
         by_row, by_conv = _projects(all_ids, all_convs, db_path)
     except Exception as e:
         log.warning("requests: the ledger could not be read: %s", e)
+    cases = _case_dues(keyed)
     out: dict[str, dict] = {}
     for mid, (card, ids, convs) in keyed.items():
         mine = [r for r in rows if r["id"] in ids or (r["conversation_id"] and r["conversation_id"] in convs)]
-        due = sorted(r["deadline"][:19] for r in mine if r["status"] in OPEN and r["deadline"])
+        due = sorted([r["deadline"][:19] for r in mine if r["status"] in OPEN and r["deadline"]]
+                     + [cases[c] for c in _case_ids(card) if cases.get(c)])
         project = next((by_row[r["id"]] for r in mine if r["id"] in by_row), "") or \
             next((by_conv[c] for c in convs if c in by_conv), "")
         starts = ""

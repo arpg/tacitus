@@ -670,6 +670,7 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 | Part | Source |
 |---|---|
 | Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. An item kept from hosted models is its fixed words alone (Kept mail, below). A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
+| Letters | one item per letter case, kind `letter` (`letter_surface.home_left`, the one hook in `left`): a new case ("Letter request", its decision card in Action requests as its `href`), a case overdue, due within 14 days or with no date; its destinations' rows, threads and cards are not listed on their own. A case further out stays on the briefing's Letters list. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's three answers, else Draft the letter (a line of words), Submitted per destination (the three nearest), Set the due date (a line) and Open it in Action requests; no Done, Not needed or Later, and no deeper briefing (its dates and states are all its records hold). A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
 | So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or, while the owner is in a meeting, after the busy stretch (meetings less than 10 minutes apart are one: "You are busy until 1:30. Then you have 50 minutes before your 2:20."), and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
@@ -1197,6 +1198,30 @@ and what the place does changed.
   of the card's own actions on its own route with its own value; Skip and
   Not needed stay below as quiet buttons. Slack keeps its path and words:
   the thread takes typed answers there.
+- **A letter case.** A new letter request is one card, kind `letter_ask`
+  ("Letter request" folded): Will you write it? Yes, Yes and ask for
+  materials, No; with the destinations, their dates and what the request
+  already included (what the person sent; a count for kept mail). No
+  reaction answers it. A new mail whose person may be an open case's
+  person asks that first, on its own card ("Is this the same person?":
+  Same person, Someone else; the store remembers the answer), and the
+  decision follows the answer. After a yes the case has one live card, kind `letter`
+  ("Letter to write"): each open destination with its date, state and how
+  it is submitted, what is missing, a link line per portal, and Draft the
+  letter (Change the letter once drafted), Submitted per destination (a
+  menu for more than three), Set the due date and Decline. A case whose
+  next date is more than two weeks out gets its card when the date comes
+  that close (it is on the briefing's Letters list until then). A loud rung of
+  the date ladder (the day before a date, the day itself, the day after)
+  posts the card again, the old one retired, so it tops the list and
+  pushes. Each value names the case and its open rows as `rows`, never
+  `ledger_id`: the block's project and urgency edge come from them (and
+  the case's own nearest date, `web_requests`), and Mark done never
+  closes a destination. A press runs `letter_surface.answer`
+  (`letters_work.answer` decides what each answer does); a turn it asks
+  for runs in the card's thread (`_post_letter_cards`, `handle_letter`).
+  The web app draws both with `renderCard`: their answers are buttons,
+  not the question control, which gathers `reply_choice_*` answers only.
 - **A reply's turn shows its real outcome, never a guess.** On the web
   chat (`ChatFrontend.dm_takes_text` false) a press records the row's turn
   in the owner-private `reply-turns.json` (`_reply_begin`: the row, its

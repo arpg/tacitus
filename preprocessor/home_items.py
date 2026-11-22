@@ -204,10 +204,14 @@ class Hooks:
         the Replies card's Not needed, with `note` as the closing note.
     outlook(conversation id) -> link or ""
         the Outlook link of the thread's newest message.
+    letter(case id, answer, destination id, words) -> {"ok", "said", "channel"?, "id"?}
+        a letter case's answer, as a press on its card in Action requests
+        runs it (letter_surface.answer, its turn on a new line there).
     """
     draft: Callable[[str, str, str], dict] | None = None
     not_needed: Callable[[str, str], dict] | None = None
     outlook: Callable[[str], str] | None = None
+    letter: Callable[[str, str, str, str], dict] | None = None
 
 
 # ── finding the item ────────────────────────────────────────────────
@@ -749,12 +753,25 @@ def pending_rows() -> dict[str, str]:
             if isinstance(v, dict) and v.get("lid") and v.get("op") in DEFERRED}
 
 
+def _letter(f: Found):
+    """(letter_surface, the case a `letter` item stands for) or (module, None)."""
+    if __package__:
+        from . import letter_surface as ls
+    else:
+        import letter_surface as ls
+    cid = str(f.item.get("_case") or "")
+    return ls, (ls.find(ls.load_cases(), cid) if cid else None)
+
+
 def brief(f: Found, src) -> dict:
     """The quick briefing: {"what", "asked", "due", "standing", "next"}, each
     "" (or []) where nothing is known. A kept item has none of it."""
     out = {"what": "", "asked": "", "due": "", "standing": [], "next": ""}
     if f.keep:
         return out
+    if f.item.get("kind") == "letter":
+        ls, case = _letter(f)
+        return ls.home_brief(case, _today(src)) if case else out
     hs = _hs()
     kind = f.item.get("kind")
     today = _today(src)
@@ -841,6 +858,11 @@ def choices(f: Found, src) -> list[dict]:
         return [dict(OPEN)] if f.item.get("href") else []
     if kind == "closed":
         return [dict(REOPEN)] if f.lid and not f.keep else []
+    if kind == "letter":
+        # a letter case's own answers (letter_surface.home_choices): no mail
+        # text in them, so a kept case has them too, in fixed words
+        ls, case = _letter(f)
+        return ls.home_choices(case, today, f.keep or "full") if case else []
     acts = _open_row(f)
     if f.keep:  # keep_gate's line alone: open it in Outlook, or settle it here
         return ([dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []) + \
@@ -927,8 +949,15 @@ def _deeper_mod():
     return mod
 
 
+# A letter case's quick briefing is all its records hold (its destinations'
+# dates and states): no deeper briefing runs for it.
+LETTER_DEEPER = {"state": "unavailable", "note": "Everything Tacitus knows about this letter is above."}
+
+
 def deeper_state(fe, f: Found, it: dict) -> dict:
     """The item's `deeper` block (home_deeper.state), read at once."""
+    if it.get("kind") == "letter":
+        return dict(LETTER_DEEPER)
     mod = _deeper_mod()
     if mod is None:
         return {"state": "unavailable"}
@@ -942,6 +971,8 @@ def deeper_state(fe, f: Found, it: dict) -> dict:
 
 def deeper_start(fe, f: Found, it: dict) -> dict:
     """POST /api/home/deeper (home_deeper.start): {"ok", "state", "note"?}."""
+    if it.get("kind") == "letter":
+        return {"ok": False, **LETTER_DEEPER}
     mod = _deeper_mod()
     if mod is None:
         return {"ok": False, "state": "unavailable"}
@@ -1145,6 +1176,23 @@ class Acts:
             return {"ok": ok, "said": "Opened again. It is back on your list." if ok
                     else "Tacitus could not open it again. Try again in a minute."}, None
         words = one_line(arg)
+        if choice.startswith("letter:"):
+            ls, case = _letter(f)
+            answer, dest = ls.home_choice(choice)
+            if case is None or not answer:
+                return {"ok": False, "said": GONE}, None
+            if answer == "date" and not words:
+                return {"ok": False, "said": "Write the date first."}, None
+            if hooks.letter is None:
+                return {"ok": False, "said": "Tacitus cannot do that from here."}, None
+            got = hooks.letter(str(case.get("id")), answer, dest, words) or {}
+            out = {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or "Nothing was done."}
+            route = _route(fe, str(got.get("channel") or ""), str(got.get("id") or "")) \
+                if got.get("channel") else ""
+            if route:
+                out["goto"] = route
+            home.changed()
+            return out, None
         if choice in ("draft", "say") or (choice.startswith("answer") and _decision(f)):
             answer = ""
             if choice == "say" and not words:

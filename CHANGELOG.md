@@ -54,6 +54,18 @@ repository that preceded it.
   choice that is yours, and never sends anything. Continue in a
   conversation opens one named after the item, with the briefing as its
   first message.
+- **A letter someone asked you to write is one item, with its dates.**
+  The briefings, Home, project rooms and the weekly audit show one line
+  per person ("Letter for ...: 3 of 9 submitted. Next due Tue Dec 1: 2
+  destinations."), never one line per portal email and never as a reply
+  owed. A new request asks once in Action requests: Will you write it?
+  Yes, Yes and ask for materials, or No. After that the case has one
+  block there with each destination's date and state, and buttons to
+  draft the letter, say one was submitted, set a date or decline.
+  Reminders come 7 and 3 days before each date, and louder the day
+  before, on the day and the day after, until that destination is
+  submitted. The pre-send review cannot drop a letter as done after a
+  reply.
 - **An emailed request can require work instead of an email reply.**
   Recommendation letters, submissions, reports and forms stay out of the
   reply suggestions while their work and deadlines remain open. Old mail
