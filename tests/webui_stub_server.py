@@ -97,6 +97,28 @@ Settings page `home` reads `home_settings` and records each change in
 `home_posts`. `set_home` changes Home and sends a `home` event, as the
 bot's tick does.
 
+Home's items open in place (docs/webchat.md, Home): with `home_src` (a
+function of the device's zone that gives home_screen.Sources, as
+tests/home_fixtures.py makes them) the bot's own code answers, a
+home_screen.Home over those sources on a stand-in front end: Home itself
+(home_screen.build, less the choices that wait for their Undo), GET
+/api/home/item (home_items.item, or `items[ref]` where a test set one;
+recorded in `item_gets`, after `item_delay` seconds), POST /api/home/act
+(Acts.act; `act_answers[choice]` where a test set one; each body in
+`acts`; the answer `act_delay` seconds after the work, so a `home` event
+can come first), POST /api/home/undo (`undos`) and POST /api/home/deeper
+(`deeper_posts`). The ledger's command lines it would run are recorded in
+`ledger_runs`, never run; a draft posts a status line in Action requests,
+a conversation is the stub's own post. home_deeper's part is a stand-in
+with no model (Stub._Deeper): an item's briefing is home_deeper.render's
+text with its steps through home_deeper.offered, written ahead of the tap
+unless `deeper_stored` is False, with the moment's lines first and
+`stale` where `deeper_stale` is set; a start sets it working (a stale
+one's text kept) and,
+`deeper_delay` seconds later (never while it is None), `deeper_result`
+(by default that briefing) with a `home-item` event; a kept item's reads
+home_deeper's line for no local model.
+
 The owner's own actions: GET /api/search finds the messages that hold
 every word of `q` (any case, anywhere in the text), newest first, with
 the bot's row shape; POST /api/messages/<ch>/<id>/react toggles one of the
@@ -159,8 +181,9 @@ from email.parser import BytesParser
 from email.policy import HTTP
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 WEBUI = Path(__file__).resolve().parent.parent / "botcore" / "botcore" / "chat" / "webui"
 
@@ -173,6 +196,21 @@ def details_at(text: str) -> int | None:
         sys.path.insert(0, str(WEBUI.parents[2]))
     from botcore.chat.web_frontend import details_at as at
     return at(text)
+
+
+def _bot_path() -> None:
+    """The bot's preprocessor/ and botcore/ on the import path."""
+    import sys
+    for d in (WEBUI.parents[3] / "preprocessor", WEBUI.parents[2]):
+        if str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+
+
+def D():
+    """home_deeper, whose lines, step filter and labels the stand-in uses."""
+    _bot_path()
+    import home_deeper
+    return home_deeper
 
 
 # The bot's room colors (web_frontend.ROOM_COLORS).
@@ -247,6 +285,14 @@ ROUTING = {
     ],
 }
 STUB_NAMES = {"claude": "Claude", "codex": "Codex"}
+# A deeper briefing as home_deeper keeps one (its text from home_deeper.render, its steps in the model's
+# own form): what the stand-in for home_deeper serves (Stub._Deeper).
+DEEPER_STEPS = [{"id": "s1", "kind": "draft_reply", "params": {"say": "Thursday at 2:00 works for me. The room is held."}},
+                {"id": "s2", "kind": "wait_until", "params": {"date": ""}},
+                {"id": "s3", "kind": "mark_done", "params": {}}]
+DEEPER_SECTIONS = {"history": ["The thread has three messages.", "The last one asks for a date before Friday."],
+                   "stakes": ["The seminar room is held for you until Friday noon."],
+                   "unknown": ["Whether the others can come on Thursday."]}
 
 
 def simple(routing: dict, ready: dict | None = None) -> dict:
@@ -284,7 +330,7 @@ class Stub:
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
                  subscriptions: list | None = None, public_url: str | None = None,
                  rooms: bool | None = None, debug: bool | None = None, status: dict | None = None,
-                 home: dict | None = None, details: bool | None = None):
+                 home: dict | None = None, details: bool | None = None, home_src=None):
         self.cond = threading.Condition()
         self.status = status
         self.home = home
@@ -292,6 +338,24 @@ class Stub:
         self.votes: list[dict] = []
         self.home_settings = {"tone": "breezy", "briefing": "home"}
         self.home_posts: list[dict] = []
+        self.items: dict[str, dict] = {}
+        self.item_gets: list[str] = []
+        self.item_delay = 0.0
+        self.acts: list[dict] = []
+        self.act_answers: dict[str, dict] = {}
+        self.act_delay = 0.0
+        self.undos: list[dict] = []
+        self.ledger_runs: list[tuple] = []
+        self.deeper_posts: list[str] = []
+        self.deeper_delay: float | None = 0.3
+        self.deeper_stored = True  # an item's deeper briefing written ahead of the tap; False: none yet
+        self.deeper_stale = False  # True: the stored one is older than its thread (the app asks for a new one)
+        self.deepers: dict[str, dict] = {}  # each item's, as home_deeper keeps its job
+        self.home_meta: dict[str, dict] = {}  # Home's own store (WebStore.home_get / home_set)
+        self.real = self._real_home(home_src) if home_src else None
+        self.home_src = home_src
+        if self.real is not None and home is None:
+            self.home = home = self.real_payload()
         self.status_details: dict[str, dict] = {}
         self.status_details_ok = True
         self.status_reads: list[str] = []
@@ -526,6 +590,165 @@ class Stub:
             self.events.append((self.eseq, "home", {"at": time.time()}))
             self.cond.notify_all()
 
+    class _FE:
+        """The web front end as home_screen.Home and home_items read it: the
+        stub's messages, Home's store, and a conversation the stub posts."""
+        owner_id, main_channel = "owner", MAIN
+
+        def __init__(self, stub):
+            self.stub, self.cfg, self.store = stub, {}, self
+
+        def home_get(self, name):
+            return json.loads(json.dumps(self.stub.home_meta.get(name) or {}))
+
+        def home_set(self, name, value):
+            self.stub.home_meta[name] = json.loads(json.dumps(value))
+
+        def message(self, channel, mid):
+            return self.stub.find(channel, mid)
+
+        def channel(self, cid):
+            return self.stub.channels.get(cid)
+
+        def dm_channel(self, user):
+            return DM
+
+        def rooms_on(self):
+            return False  # no project room: the ledger is never read for one
+
+        def home_changed(self):
+            self.stub.set_home(self.stub.real_payload())
+
+        def home_item_emit(self, ref):
+            self.stub.emit_item(ref)
+
+        def web_message(self, channel, text, thread_key, nonce=None):
+            m = self.stub.post(channel, text, thread_key)
+            return {"channel": m["channel"], "id": m["id"], "thread_key": m["thread_key"]}, None
+
+    class _Deeper:
+        """home_deeper as home_items calls it (state, start, step), with no
+        model: home_deeper's own steps filter, labels and lines."""
+
+        def __init__(self, stub):
+            self.stub = stub
+
+        def job(self, ref, item):
+            s = self.stub
+            if ref not in s.deepers:
+                s.deepers[ref] = {"state": "unavailable", "note": D().NOTE_KEPT_NO_LOCAL} if (item or {}).get("kept") \
+                    else {**s.deeper_result, "at": time.time() - 3600, **({"stale": True} if s.deeper_stale else {})} \
+                    if s.deeper_stored else {"state": "none"}
+            return s.deepers[ref]
+
+        def state(self, fe, ref, item=None, *, row=None):
+            """As home_deeper.stored_view: the moment's lines first ("Now",
+            from home_deeper.now_lines, never stored), the stored text, the
+            steps the item offers and Continue, who wrote it and when."""
+            job, d = self.job(ref, item), D()
+            if job.get("state") not in ("ready", "working") or not job.get("text"):
+                return {k: v for k, v in job.items() if k != "steps"}
+            lines = d.now_lines(row, now=time.time(), zone=self.stub.home_src("").zone, briefing={})
+            text = ("Now\n" + "\n".join(f"- {x}" for x in lines) + "\n\n" if lines else "") + job["text"]
+            steps = [d._public_step(x) for x in d.offered(job.get("steps") or [], item)]
+            return {**job, "text": text, "steps": steps + ([] if (item or {}).get("kept") else
+                                                           [{"id": d.CONTINUE, "label": d.CONTINUE_LABEL}])}
+
+        def start(self, fe, ref, item=None, *, row=None):
+            s, job = self.stub, self.job(ref, item)
+            s.deeper_posts.append(ref)
+            if job["state"] in ("working", "unavailable") or (job["state"] == "ready" and not job.get("stale")):
+                return {"ok": True, "state": job["state"], **({"note": job["note"]} if job.get("note") else {})}
+            text = job.get("text") if job.get("stale") else None  # a stale one shows while the new one is written
+            job.clear()
+            job.update(state="working", **({"text": text, "stale": True} if text else {}))
+
+            def done():
+                job.clear()
+                job.update(s.deeper_result, at=time.time())
+                s.emit_item(ref)
+            if s.deeper_delay is not None:
+                threading.Timer(s.deeper_delay, done).start()
+            return {"ok": True, "state": "working"}
+
+        def step(self, fe, ref, step_id, item=None, *, row=None, arg=None):
+            d, job = D(), self.job(ref, item)
+            if step_id == d.CONTINUE:
+                row, _after = fe.web_message(MAIN, f"Let's go on with this: {(item or {}).get('title')}", None)
+                return {"ok": True, "said": "Opened a conversation about it, with the briefing.",
+                        "goto": f"#/{quote(MAIN, safe='')}/{quote(row['thread_key'], safe='')}"}
+            st = next((x for x in d.offered(job.get("steps") or [], item) if x["id"] == step_id), None)
+            if st is None:
+                return {"ok": False, "said": d.NOTE_STEP_GONE}
+            return {"choice": st["choice"], "arg": st["params"].get("say") or st["params"].get("date") or None}
+
+    @property
+    def deeper_result(self) -> dict:
+        """A ready briefing, as home_deeper keeps one; a test may set its own."""
+        if self._deeper_result is None:
+            day = (datetime.now(timezone.utc).date() + timedelta(days=5)).isoformat()
+            steps = json.loads(json.dumps(DEEPER_STEPS))
+            steps[1]["params"]["date"] = day
+            return {"state": "ready", "text": D().render(DEEPER_SECTIONS), "steps": steps, "by": "local", "model": ""}
+        return self._deeper_result
+
+    @deeper_result.setter
+    def deeper_result(self, value: dict) -> None:
+        self._deeper_result = value
+
+    def _real_home(self, src):
+        """home_screen.Home over `src` on the stand-in front end, its hooks
+        the stub's, home_deeper's part the stand-in's and the ledger's runs
+        recorded, put back when the stub closes."""
+        _bot_path()
+        import home_items as I
+        import home_screen as H
+        import web_thread_state as wts
+        self._deeper_result = None
+        self._put_back = [(I, "_deeper_mod", I._deeper_mod), (wts, "RUN", wts.RUN)]
+        deeper = Stub._Deeper(self)
+        I._deeper_mod = lambda: deeper
+        wts.RUN = lambda script, *args: self.ledger_runs.append((script, *args)) or {"ok": True, "_exit": 0}
+        self.clock_offset = 0.0  # the bot's clock against this one's, in seconds
+        home = H.Home(Stub._FE(self), clock=lambda: time.time() + self.clock_offset, sources=src, background=False)
+        home.hooks.draft, home.hooks.not_needed, home.hooks.outlook = self._draft, lambda rid, note: {"ok": True}, \
+            (lambda conv: f"https://outlook.example.com/mail/{conv}")
+        return home
+
+    def real_payload(self) -> dict:
+        """Home as the bot builds it now, less the choices that wait for an Undo."""
+        import home_screen as H
+        src = self.home_src("")
+        src.hidden = self.real._hidden()
+        return H.build(src)
+
+    def _draft(self, rid: str, words: str, answer: str) -> dict:
+        """The Replies card's draft turn, as the bot starts it: a line in
+        Action requests that says the reply is being written."""
+        said = (words or answer).strip().rstrip(".")
+        m = self.add(DM, ":hourglass_flowing_sand: Writing the reply" + (f": {said}." if said else "."),
+                     kind="status", event="status")
+        return {"ok": True, "channel": DM, "id": m["id"],
+                "said": "Tacitus is writing the reply. Its Send card comes to Action requests."}
+
+    def home_act(self, body: dict):
+        """POST /api/home/act: (the answer, a call to run once it is sent)."""
+        self.acts.append(body)
+        if body.get("choice") in self.act_answers:
+            out, after = self.act_answers[body["choice"]], None
+        else:
+            out, after = self.real.act(body.get("ref", ""), body.get("choice", ""), body.get("arg", ""),
+                                       body.get("version", ""))
+        time.sleep(self.act_delay)
+        return out, after
+
+    def emit_item(self, ref: str) -> None:
+        """A `home-item` event: the item changed (its deeper briefing came)."""
+        with self.cond:
+            self.eseq += 1
+            self.events.append((self.eseq, "home-item", {"ref": ref}))
+            self.cond.notify_all()
+
     def emit_bot(self, channel: str = DM, text: str = "A new message from the stub.",
                  thread_key: str | None = None) -> dict:
         return self.add(channel, text, thread_key=thread_key, event="message")
@@ -721,6 +944,8 @@ class Stub:
             self.cond.notify_all()
 
     def close(self) -> None:
+        for mod, name, was in getattr(self, "_put_back", []):
+            setattr(mod, name, was)
         with self.cond:
             self.closed = True
             self.cond.notify_all()
@@ -989,6 +1214,12 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["home"] and s.home is not None:
             s.home_gets.append({"tz": q.get("tz", [""])[0], "checkin": q.get("checkin", [""])[0] == "1"})
             return self._json(200, s.home)
+        if parts == ["home", "item"] and s.real is not None:
+            ref = q.get("ref", [""])[0]
+            s.item_gets.append(ref)
+            time.sleep(s.item_delay)
+            item = s.items.get(ref) or s.real.item(ref)
+            return self._json(200, item) if item else self._json(404, {"ok": False, "said": "This is not on your list any more."})
         if parts and parts[0] == "status" and s.status is not None:
             if len(parts) == 1:
                 s.status_gets += 1
@@ -1117,6 +1348,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(*s.set_debug(json.loads(self._body() or b"{}")))
         if parts == ["settings", "details"] and "details" in s.settings:
             return self._json(*s.set_details(json.loads(self._body() or b"{}")))
+        if parts in (["home", "act"], ["home", "undo"], ["home", "deeper"]) and s.real is not None:
+            body, after = json.loads(self._body() or b"{}"), None
+            if parts[1] == "act":
+                out, after = s.home_act(body)
+            elif parts[1] == "undo":
+                s.undos.append(body)
+                out = s.real.undo(body.get("token", ""))
+            else:
+                out = s.real.deeper(body.get("ref", ""))
+            self._json(200, out) if out else self._json(404, {"ok": False, "said": "This is not on your list any more."})
+            return after() if after else None
         if parts == ["home", "vote"] and s.home is not None:
             body = json.loads(self._body() or b"{}")
             if body.get("vote") not in ("up", "down") or not body.get("text"):

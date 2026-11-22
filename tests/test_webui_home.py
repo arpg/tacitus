@@ -1,7 +1,7 @@
 """Home in the web app, as a person sees it (docs/webchat.md, Home): the app
 opens on it, the greeting and its thumbs, the day's split, the next gap,
-what is left and where each item leads (a request's block, or a new
-conversation with its words ready), what changed and what got done, the
+what is left (each item opens in place: tests/test_webui_home_cards.py),
+what changed and what got done, the
 briefing that used to be a post, the done state, a red light, travel and
 vacation, the `home` event, the check-in, the way back, the Settings page,
 and the phone widths. The bot's side is in tests/test_home_screen.py; the
@@ -32,8 +32,11 @@ def home(state="normal"):
 
 
 def home_app(app, state="normal", **kw):
+    """The app on Home as the bot builds it; its items, as the bot's own code
+    answers them (tests/webui_stub_server.py, `home_src`)."""
+    import webui_stub_server as W
     kw.setdefault("context", CLOCK)
-    return app(home=home(state), **kw)
+    return app(home=home(state), home_src=lambda tz: F.sources(state, dm=W.DM, main=W.MAIN), **kw)
 
 
 def test_the_app_opens_on_home_with_the_greeting_the_split_and_what_is_left(app):
@@ -46,13 +49,13 @@ def test_the_app_opens_on_home_with_the_greeting_the_split_and_what_is_left(app)
     expect(page.locator(".h-day")).to_have_text(p["day"])
     t = p["tally"]
     assert t == {"done": 6, "left": 6}
-    expect(page.locator(".h-tally")).to_have_attribute("aria-label", "6 done today, 6 left for you")
+    expect(page.locator(".h-tally")).to_have_attribute("aria-label", "6 done today, 6 left for you. Open the first one.")
     expect(page.locator(".h-next")).to_contain_text("You have 50 minutes before your 2:00.")
     items = page.locator(".h-main .h-items > li")
     expect(items).to_have_count(6)
     expect(items.nth(0)).to_contain_text("Send email")
     expect(items.nth(0)).to_contain_text("Soon")
-    expect(items.nth(1)).to_contain_text("Ask about this")
+    expect(items.nth(1).locator(".h-item")).to_have_attribute("aria-expanded", "false")  # it opens in place
     # Home has no Send of its own: the buttons stay in the request's block
     assert page.locator(".h-page").get_by_role("button", name="Send", exact=True).count() == 0
     expect(page.locator("#home-link")).to_have_class("chan home-link active")
@@ -71,7 +74,10 @@ def test_a_bot_without_home_opens_on_ask_tacitus(app):
     assert not errors, errors
 
 
-def test_a_request_opens_its_block_and_an_item_opens_a_new_conversation_with_its_words(app):
+def test_a_request_opens_its_block_there_and_an_item_asks_about_itself_in_a_new_conversation(app):
+    """Opened in place, a request's card leads to its block in Action
+    requests (Send stays there); any other item's Ask about this starts a
+    new conversation with its words ready, and nothing is sent."""
     from playwright.sync_api import expect
     import webui_stub_server as W
     page, stub, errors = home_app(app)
@@ -80,12 +86,17 @@ def test_a_request_opens_its_block_and_an_item_opens_a_new_conversation_with_its
     href = f"#/{W.DM}/{card['thread_key']}/{card['id']}"
     p["left"][0]["href"] = href
     stub.set_home(p)
-    page.locator(f".h-item[href='{href}']").click()
+    stub.items["request:w41"] = {**stub.real.item("request:w41"), "goto": href}  # the card the stub holds
+    first = page.locator(".h-main .h-block").first
+    first.locator(".h-item").click()
+    first.get_by_role("link", name="Open it in Action requests").click()
     expect(page.locator("#channel-name")).to_have_text("Action requests")
     expect(page.locator(f".req[data-id='{card['id']}'] .req-body")).to_be_visible()
     page.click("#home-link")
     expect(page.locator(".h-greet")).to_be_visible()
-    page.locator(".h-main .h-items > li").nth(1).click()
+    second = page.locator(".h-main .h-items > li").nth(1)
+    second.locator(".h-item").click()
+    second.get_by_role("button", name="Ask about this").click()
     expect(page.locator("#text")).to_have_value('About the reply to "Data access form": ')
     expect(page.locator("#text")).to_be_focused()
     expect(page.locator("#thread-title")).to_have_text("New conversation")
@@ -93,11 +104,14 @@ def test_a_request_opens_its_block_and_an_item_opens_a_new_conversation_with_its
     assert not errors, errors
 
 
-def test_the_next_gap_opens_the_first_thing(app):
+def test_the_next_gap_opens_the_first_things_card(app):
     from playwright.sync_api import expect
     page, stub, errors = home_app(app)
     page.click(".h-next .btn")
-    expect(page.locator("#channel-name")).to_have_text("Action requests")
+    first = page.locator(".h-main .h-block").first
+    expect(first.locator(".h-item")).to_have_attribute("aria-expanded", "true")
+    expect(first.locator(".h-item")).to_be_focused()
+    expect(page.locator("#channel-name")).to_have_text("Home")
     assert not errors, errors
 
 
@@ -157,22 +171,23 @@ def test_the_posts_own_list_and_its_not_checked_line_show_on_home(app):
 
 def test_kept_mail_shows_its_fixed_words_its_outlook_link_and_no_way_to_ask(app):
     """An item kept from hosted models is keep_gate's fixed line: at local
-    its date, at facts its sender and subject; the post's link opens
-    Outlook; nothing starts a conversation about it."""
+    its date, at facts its sender and subject; opened, the post's link
+    opens Outlook and nothing starts a conversation about it."""
     from playwright.sync_api import expect
     page, stub, errors = home_app(app, "kept")
-    linked = page.locator("a.h-item[target='_blank']")
-    expect(linked).to_have_attribute("href", "https://outlook.example.com/mail/k1")
-    expect(linked).to_have_attribute("rel", "noopener noreferrer")
-    local = page.locator("div.h-item", has_text="Seminar date")
-    expect(local).to_have_count(0)  # a local reply names no subject
+    linked = page.locator(".h-block[data-ref='item:row-k1']")  # the post's own line, with its link
+    linked.locator(".h-item").click()
+    outlook = linked.get_by_role("link", name="Open in Outlook")
+    expect(outlook).to_have_attribute("href", "https://outlook.example.com/mail/k1")
+    expect(outlook).to_have_attribute("rel", "noopener noreferrer")
+    expect(linked.locator(".h-choices .btn")).to_have_text(["Open in Outlook"])  # no words of its own
+    assert linked.locator(".h-brief *, .h-links *").count() == 0
+    expect(page.locator(".h-item", has_text="Seminar date")).to_have_count(0)  # a local reply names no subject
     expect(page.locator(".h-item", has_text="A kept message from Alex Kim on")).to_contain_text("Data access form")
-    expect(page.locator("div.h-item", has_text="needs you. Open it in Outlook.").first).to_be_visible()
-    kept_req = next(x for x in stub.home["left"] if x["kind"] == "request" and x.get("kept"))
-    expect(page.locator(".h-item", has_text="A reply to the kept message is ready.")).to_have_attribute(
-        "href", kept_req["href"])  # its block in Action requests, as any request
-    for item in page.locator(".h-item:has-text('kept')").all():
-        assert "Ask about this" not in item.inner_text()
+    for block in page.locator(".h-block:has-text('kept')").all():  # So far today's rows too
+        block.locator("> button").click()
+        expect(block.locator(".h-body")).to_be_visible()
+        assert "Ask about this" not in block.inner_text()
     expect(page.locator(".h-main")).not_to_contain_text("Seminar date")
     expect(page.locator(".h-main")).not_to_contain_text("Pat Example")
     assert not errors, errors

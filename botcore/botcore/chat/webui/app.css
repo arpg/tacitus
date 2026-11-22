@@ -1074,16 +1074,23 @@ details.h-card[open] > summary::before { transform: rotate(90deg); }
 .h-big { font-size: 18px; font-weight: 700; }
 .h-next .btn { margin-top: 12px; min-height: 44px; }
 .h-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.h-item { display: grid; gap: 2px; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border);
-  border-left: 6px solid var(--u-calm); border-radius: var(--r-m); background: var(--panel); color: inherit; font: inherit;
-  text-align: left; text-decoration: none; cursor: pointer; }
-.h-item.u-soon { border-left-color: var(--u-soon); }
-.h-item.u-overdue { border-left-color: var(--u-overdue); } div.h-item { cursor: default; }
+/* An item is a request's block (.req); opened, its card's parts follow its head, the deeper briefing last. */
+.h-body > * { margin-top: 10px; } .h-body > :empty { display: none; } .h-body > div > .card-actions:first-child { margin-top: 0; }
+.h-brief { display: grid; gap: 4px; } .h-brief ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+.h-then, .h-said { font-weight: 600; } .h-quiet { color: var(--muted); font-size: 14px; } .h-quiet .btn { margin-left: 8px; }
+.h-links, .h-undo { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; }
+.h-deeper:not(:empty) { padding-top: 10px; border-top: 1px solid var(--border); } .h-deeper .text > * + * { margin-top: 8px; }
+.h-deeper .text > p { font-weight: 600; } /* a section's name, its lines under it */
+.h-deeper + .h-choices { padding-top: 10px; border-top: 1px solid var(--border); } /* its steps, then the item's own choices */
+.h-fold { max-height: 9em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+button.h-tally, button.h-row { width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+button.h-row { min-height: 44px; border: 0; background: none; } .h-done .h-body { padding-inline: 0; }
+.h-body a.btn { display: inline-flex; align-items: center; justify-content: center; color: var(--text); text-decoration: none; }
+.h-body a.btn.primary { color: var(--accent-text); } .h-body .btn .h-detail { display: block; font-weight: 400; }
 .h-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
 .h-label { color: var(--muted); font-size: 13px; font-weight: 700; }
 .h-title { overflow-wrap: anywhere; }
 .h-detail { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.h-ask { color: var(--accent); font-size: 13px; font-weight: 600; }
 .h-peek > .h-items { margin-top: 4px; }
 .h-question .btn { margin-top: 12px; min-height: 44px; }
 .h-since ul, .h-done ul, .h-cal ul { list-style: none; margin: 0; padding: 0; }
@@ -1103,9 +1110,9 @@ a.h-row .h-title { text-decoration: underline; text-underline-offset: 2px; }
 .h-report .text { font-size: 14px; }
 .h-report .btn { margin-top: 12px; }
 @media (hover: hover) {
-  .h-item:hover { border-color: var(--border-strong); box-shadow: var(--shadow); }
-  .h-item.u-soon:hover { border-left-color: var(--u-soon); }
-  .h-item.u-overdue:hover { border-left-color: var(--u-overdue); }
+  .h-block:not(.open):hover, button.h-tally:hover { border-color: var(--border-strong); box-shadow: var(--shadow); }
+  .h-block.u-soon:hover { border-left-color: var(--u-soon); }
+  .h-block.u-overdue:hover { border-left-color: var(--u-overdue); }
 }
 @media (pointer: coarse) { a.h-row { min-height: 44px; padding-block: 11px; } .h-done .btn, .h-report .btn { min-height: 44px; } }
 
