@@ -451,6 +451,10 @@ LIGHT_DETAILS_REFUSED = "Details show only in Tacitus on your own network."
 HOME_KEY_PREFIX = "home:"
 HOME_TICK_KEY = "home_tick"
 HOME_TICK_S = 60.0
+# The longest ref of a Home item (`request:<id>`, `reply:<ledger id>`,
+# `item:<conversation id>`).
+HOME_REF_MAX = 400
+HOME_ACT_FAILED = "Tacitus could not do that. Try again in a minute."
 LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 # Host names a loopback client (the relay client, a test) puts in Host and
 # Origin, with this server's port.
@@ -5446,8 +5450,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._status(method, segs[1:], relayed)
             return None
         if segs and segs[0] == "home":
-            self._home(method, segs[1:], query)
-            return None
+            return self._home(method, segs[1:], query)
         if n == 2 and segs[0] == "settings":
             self._settings(method, segs[1])
             return None
@@ -5623,12 +5626,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         raise _HttpError(404, "not found")
 
-    def _home(self, method: str, rest: list[str], query: dict) -> None:
+    def _home(self, method: str, rest: list[str], query: dict) -> Callable[[], None] | None:
         """`/api/home`: Home as the app draws it (docs/webchat.md, Home), for
         the device's time zone (`tz`, an IANA name; another is ignored);
         `checkin=1` says the owner opened it. Read like Action requests, by
         any device that reads. `POST /api/home/vote` is the owner's thumbs on
-        the greeting, a chat action like a reaction."""
+        the greeting, a chat action like a reaction.
+
+        An item opened in place (docs/webchat.md, Home items): `GET
+        /api/home/item?ref=` is read like Home, by any device that reads;
+        `POST /api/home/deeper` starts its deeper briefing, a read too. `POST
+        /api/home/act` (a choice) and `POST /api/home/undo` follow the rule
+        of Action requests' buttons: never from a device paired on the
+        relay's origin below "all". A choice sends no mail and creates no
+        event; it carries no confirmation token."""
         home = self.fe.home
         if home is None:
             raise _HttpError(404, "no Home")
@@ -5636,7 +5647,59 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             tz = (query.get("tz") or [""])[0][:64]
             checkin = (query.get("checkin") or [""])[0] == "1"
             self._json(200, home.payload(tz, checkin))
-            return
+            return None
+        if method == "GET" and rest == ["item"]:
+            ref = (query.get("ref") or [""])[0]
+            if not ref or len(ref) > HOME_REF_MAX:
+                raise _HttpError(400, "ref names an item on Home")
+            got = home.item(ref, (query.get("tz") or [""])[0][:64])
+            if got is None:
+                self._json(404, {"ok": False, "said": "This is not on your list any more."})
+                return None
+            self._json(200, got)
+            return None
+        if method == "POST" and rest == ["act"]:
+            self._refuse_relay_deny("act on a card")
+            body = self._read_json()
+            ref, choice = body.get("ref"), body.get("choice")
+            arg, seen = body.get("arg", ""), body.get("version", "")
+            if not isinstance(ref, str) or not ref or len(ref) > HOME_REF_MAX:
+                raise _HttpError(400, "ref names an item on Home")
+            if not isinstance(choice, str) or not choice or len(choice) > 120:
+                raise _HttpError(400, "choice is one of the item's choices")
+            if not isinstance(arg, str) or len(arg) > MAX_TEXT_CHARS:
+                raise _HttpError(400, "arg is a short text")
+            if not isinstance(seen, str) or len(seen) > 64:
+                raise _HttpError(400, "version is the item's version")
+            try:
+                out, after = home.act(ref, choice, arg, seen)
+            except Exception:
+                log.exception("web chat: a choice on a Home item failed")
+                out, after = {"ok": False, "said": HOME_ACT_FAILED}, None
+            self._json(200, out)
+            return after
+        if method == "POST" and rest == ["undo"]:
+            self._refuse_relay_deny("act on a card")
+            token = self._read_json().get("token")
+            if not isinstance(token, str) or not token or len(token) > 64:
+                raise _HttpError(400, "token is the one the choice gave")
+            try:
+                out = home.undo(token)
+            except Exception:
+                log.exception("web chat: an undo on Home failed")
+                out = {"ok": False, "said": HOME_ACT_FAILED}
+            self._json(200, out)
+            return None
+        if method == "POST" and rest == ["deeper"]:
+            ref = self._read_json().get("ref")
+            if not isinstance(ref, str) or not ref or len(ref) > HOME_REF_MAX:
+                raise _HttpError(400, "ref names an item on Home")
+            got = home.deeper(ref)
+            if got is None:
+                self._json(404, {"ok": False, "said": "This is not on your list any more."})
+                return None
+            self._json(200, got)
+            return None
         if method == "POST" and rest == ["vote"]:
             body = self._read_json()
             vote, text = body.get("vote"), body.get("text")
@@ -5647,7 +5710,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 log.warning("web chat: the vote on Home's greeting was not kept: %s", e)
                 raise _HttpError(409, "Tacitus could not keep that. Try again later.") from None
-            return
+            return None
         raise _HttpError(404, "not found")
 
     def _settings(self, method: str, name: str) -> None:

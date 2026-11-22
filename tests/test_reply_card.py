@@ -1207,3 +1207,83 @@ def test_the_turn_s_own_end_the_send_card_and_the_tick_are_wired():
     assert "_reply_watch_tick()" in BOT_SRC[BOT_SRC.index("def resident_router_loop("):]
     assert "REPLY_DONE_WAIT_S" not in BOT_SRC and "time.sleep(3)" not in BOT_SRC[
         BOT_SRC.index("# The web chat (a DM that takes button presses only)"):BOT_SRC.index('@app.action("reply_draft")')]
+
+
+# ── Home's choices on a reply (preprocessor/home_items.py) ───────────
+
+def _home_bot(queue, **kw):
+    import threading as _threading
+    ns, calls = _bot(queue, **kw)
+    ns.update(OWNER_SLACK_USER_ID="U1", _DRAINING=False, _dispatch_lock=_threading.Lock(),
+              _active_dispatches={})
+    return ns, calls
+
+
+def test_home_draft_starts_the_replies_draft_turn_on_a_new_line_in_action_requests():
+    ns, calls = _home_bot([_q("ana", 1)])
+    got = ns["_home_draft"]("response-ana")
+    assert got == {"ok": True, "channel": "dm", "id": "p1",
+                   "said": "Tacitus is writing the reply. Its Send card comes to this DM."}
+    assert calls["posts"][0][:2] == ("dm", None)                 # a new line, its own thread
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    (turn,) = calls["turns"]
+    assert turn[:3] == ("dm", "p1", "p1") and turn[4] == "U1"
+    assert "--ledger-id response-ana" in turn[3] and calls["sessions"][0].endswith("reply-response-ana")
+    assert calls["cli"][0] == ("reply-queue", "--min-age", "0")  # the queue read again at the press
+
+
+def test_home_draft_passes_the_owners_line_and_answer_as_the_card_does():
+    ns, calls = _home_bot([_q("lee", 2, queued=ASKED)])
+    assert ns["_home_draft"]("response-lee")["said"] == "Choose an answer first."
+    assert ns["_home_draft"]("response-lee", "", "Renew for ten years")["said"] == \
+        "That answer is not offered any more. Nothing was done."
+    assert calls["turns"] == []
+    assert ns["_home_draft"]("response-lee", "", "Renew for three years")["ok"]
+    assert 'The owner picked this answer on the card: "Renew for three years".' in calls["turns"][0][3]
+    ns, calls = _home_bot([_q("pat", 2)])
+    ns["_home_draft"]("response-pat", "Yes, Thursday works.")
+    assert 'The owner wrote this line on the card: "Yes, Thursday works."' in calls["turns"][0][3]
+
+
+def test_home_draft_starts_nothing_where_the_reply_is_handled_or_already_being_written():
+    ns, calls = _home_bot([])
+    assert ns["_home_draft"]("response-ana") == {
+        "ok": False, "said": "This no longer waits for a reply. Nothing was done."}
+    confirms = {"d-live": {"status": "live"}}
+    ns, calls = _home_bot([_q("ana", 3, queued={"outcome": "drafted", "draft_id": "d-live"})], confirms=confirms)
+    assert ns["_home_draft"]("response-ana") == {"ok": False, "said": "Its Send card is already in this DM."}
+    ns, calls = _home_bot([_q("ben", 3)])
+    assert ns["_home_draft"]("response-ben")["ok"]
+    assert ns["_home_draft"]("response-ben") == {"ok": False, "said": "This reply is being written already."}
+    assert len(calls["turns"]) == 1
+    ns, calls = _home_bot(None)
+    assert ns["_home_draft"]("response-ben")["said"].startswith("Tacitus could not read the list")
+
+
+def test_home_draft_of_a_reply_whose_send_card_closed_brings_a_new_send_card():
+    confirms = {"d-old": {"status": "retired"}}
+    ns, calls = _home_bot([_q("kim", 3, queued={"outcome": "drafted", "draft_id": "d-old"})], confirms=confirms)
+    got = ns["_home_draft"]("response-kim")
+    assert got == {"ok": True, "said": "Its draft was ready. The new Send card is in this DM."}
+    assert calls["send_cards"] == [("dm", None, "d-old", "outlook")] and calls["turns"] == []
+
+
+def test_home_not_needed_is_the_replies_cards_not_needed_with_homes_note():
+    row = _q("pat", 2, queued={"outcome": "drafted", "draft_id": "d-old"}, conversation_id="conv-pat")
+    ns, calls = _home_bot([row], confirms={"d-old": {"status": "retired"}})
+    got = ns["_home_not_needed"]("response-pat", "No reply needed: the owner's tap on Home")
+    assert got["ok"] and _plain(got["said"]).startswith(":white_check_mark: Closed. No reply goes out. Draft deleted.")
+    assert calls["deleted"] == ["d-old"]
+    assert ("close", "--id", "response-pat", "--signal", "user_handled",
+            "--note", "No reply needed: the owner's tap on Home") in calls["cli"]
+    assert not calls["status"]                                   # no card to change
+    ns, calls = _home_bot([])
+    assert ns["_home_not_needed"]("response-pat", "x") == {
+        "ok": False, "said": "This no longer waits for a reply. Nothing was done."}
+
+
+def test_homes_hooks_are_set_on_each_web_home():
+    hook = BOT_SRC[BOT_SRC.index("_HOME_TURNS: dict = {}"):BOT_SRC.index("def _toggle_quoted(")]
+    for name in ("draft", "not_needed", "outlook"):
+        assert f"_home_of.hooks.{name} = _home_{name}" in hook
+    assert "home_screen.Home(_web)" in BOT_SRC[:BOT_SRC.index("_HOME_TURNS: dict = {}")]
