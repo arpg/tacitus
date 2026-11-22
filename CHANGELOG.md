@@ -6,6 +6,21 @@ repository that preceded it.
 
 ## Unreleased
 
+- **A tap on a Home item opens it right there.** The card shows what it
+  is, what they asked for, where it stands and what Tacitus would do
+  next, then the fuller briefing with its next steps first, then the
+  item's own buttons: Draft a reply, Tell Tacitus what to say, Not
+  needed, Later (tomorrow, Monday or a date), Start it with Tacitus,
+  Done, Waiting on someone, or the answers to a question. A long briefing
+  folds to a few lines with Show more. A briefing that comes after you
+  open the card goes at the bottom, so no button moves under your thumb.
+  A draft keeps you on Home, with a link to where its Send card comes in
+  Action requests. Done, Not needed, Waiting and Later say what they did
+  and offer Undo for 30 seconds, with the seconds counting down; the item
+  leaves the list after that. A line of "So far today" that Tacitus
+  closed offers Not done yet. Nothing on Home sends: Send stays in Action
+  requests. A list that draws again while you type keeps your words, your
+  choice and your place, on Home and in Action requests.
 - **A Home item you open explains itself.** Opening an item on Home now
   shows a fuller briefing at once: what happened so far, what is at stake
   and what Tacitus does not know, with two or three next steps as buttons
