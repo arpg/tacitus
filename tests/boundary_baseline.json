@@ -42,6 +42,24 @@
         "import doc_review",
         "from preprocessor import doc_review"
       ]
+    },
+    {
+      "file": "preprocessor/home_briefing_queue.py",
+      "rule": "py-write",
+      "reason": "Only the resident writes this note, in its own state (resident() returns first in an owner process); the owner only reads it as a hint. Stdlib only: loaded on every ledger write.",
+      "lines": [
+        "fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | getattr(os, \"O_CLOEXEC\", 0),",
+        "tmp.write_text(\"\\n\".join(keep) + \"\\n\")",
+        "os.replace(tmp, p)"
+      ]
+    },
+    {
+      "file": "preprocessor/home_briefing_queue.py",
+      "rule": "py-rmw-read",
+      "reason": "The resident trims its own note in its own state; an owner process never writes it (resident() returns first) and only reads it as a hint.",
+      "lines": [
+        "keep = p.read_text(errors=\"replace\").splitlines()[-QUEUE_KEEP:]"
+      ]
     }
   ]
 }

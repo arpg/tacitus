@@ -832,34 +832,87 @@ def test_a_briefing_run_hands_the_hosted_pass_to_a_process_of_its_own(env, monke
 # ── rows written from chat ───────────────────────────────────────────
 
 def test_a_row_written_in_the_residents_turn_is_noted_and_written_first(env, tmp_path, monkeypatch):
-    import owner_trust
+    import home_briefing_queue as Q
     state = tmp_path / "ea" / "state"
     state.mkdir(parents=True)
-    monkeypatch.setattr(owner_trust, "ea_dir", lambda: tmp_path / "ea")
-    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "ea"))
+    monkeypatch.setattr(Q, "resident", lambda: True)
     import resident_io
     monkeypatch.setattr(resident_io, "read_text", lambda path: Path(path).read_text() if Path(path).exists() else None)
-    D.row_written("r3", created=True)
-    D.row_written("r1")
+    Q.row_written("r3", created=True)
+    Q.row_written("r1")
     assert D.queued_ids()[:2] == ["r1", "r3"]
     rows = [make_row(id=f"r{i}", updated_at=f"2026-11-2{i}T08:00:00") for i in range(5)]
     D.refresh(rows=rows, limit=2)
     assert set(env["store"].versions()) == {"r1", "r3"}  # the noted rows first, not the newest
     # an owner process notes nothing: refresh finds the row by its version
-    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)
-    before = (state / D.QUEUE_FILE).read_text()
-    D.row_written("r4")
-    assert (state / D.QUEUE_FILE).read_text() == before
-    # the note stays small
-    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)
-    monkeypatch.setattr(D, "QUEUE_MAX_BYTES", 2000)
-    monkeypatch.setattr(D, "QUEUE_KEEP", 20)
+    monkeypatch.setattr(Q, "resident", lambda: False)
+    before = (state / Q.QUEUE_FILE).read_text()
+    Q.row_written("r4")
+    assert (state / Q.QUEUE_FILE).read_text() == before
+    # the note stays small, and an old note is no hint
+    monkeypatch.setattr(Q, "resident", lambda: True)
+    monkeypatch.setattr(Q, "QUEUE_MAX_BYTES", 2000)
+    monkeypatch.setattr(Q, "QUEUE_KEEP", 20)
     for i in range(100):
-        D.row_written(f"x{i}")
-    assert (state / D.QUEUE_FILE).stat().st_size < 2000 + 200
+        Q.row_written(f"x{i}")
+    assert (state / Q.QUEUE_FILE).stat().st_size < 2000 + 200
     assert D.queued_ids()[0] == "x99"
+    assert D.queued_ids(now=time.time() + 3 * 86400) == []
 
 
-def test_the_ledger_hook_reaches_row_written():
+def test_the_resident_is_the_process_that_hosts_the_tree_in_its_own_home(tmp_path, monkeypatch):
+    import home_briefing_queue as Q
+    monkeypatch.setenv("HOME", str(tmp_path / "bot"))
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "bot" / ".ea"))
+    assert Q.resident() is True
+    monkeypatch.setenv("HOME", str(tmp_path / "owner"))
+    assert Q.resident() is False  # the owner's ~/.ea leads into the resident's home
+
+
+def test_the_note_module_loads_with_the_standard_library_alone():
+    import ast
+    src = (REPO / "preprocessor" / "home_briefing_queue.py").read_text()
+    tops = {(n.module or "").split(".")[0] for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ImportFrom)} | \
+        {a.name.split(".")[0] for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Import) for a in n.names}
+    assert tops <= {"__future__", "json", "os", "time", "pathlib", "sys"}, tops
+
+
+def test_the_ledger_hook_reaches_row_written(tmp_path, monkeypatch):
+    import home_briefing_queue as Q
     import ledger
-    assert "home_deeper" in ledger.ROW_WRITTEN_HOOKS and callable(D.row_written)
+    assert ledger.ROW_WRITTEN_HOOKS == ("home_briefing_queue",)
+    (tmp_path / "ea" / "state").mkdir(parents=True)
+    monkeypatch.setenv("EA_DIR", str(tmp_path / "ea"))
+    monkeypatch.setattr(Q, "resident", lambda: True)
+    ledger._row_written("task-z1", created=True)
+    assert Q.ids((tmp_path / "ea" / "state" / Q.QUEUE_FILE).read_text()) == ["task-z1"]
+    assert not hasattr(D, "row_written")  # the big module never loads on a ledger write
+
+
+def test_without_home_items_the_row_s_linked_room_is_the_place(env, monkeypatch):
+    fe = env["fe"]
+    real = D._mod
+
+    def no_items(name):
+        if name == "home_items":
+            raise ImportError("no home_items")
+        return real(name)
+    monkeypatch.setattr(D, "_mod", no_items)
+    monkeypatch.setattr(D, "_project", lambda lid, conn=None: {"id": "rovers", "name": "Rovers"})
+    import briefing_rooms
+    monkeypatch.setattr(briefing_rooms, "rooms", lambda **kw: {"rovers": {"channel": "r7", "room": "ea-rovers"}})
+    assert D.conversation_place(fe, make_row()) == "r7"
+
+
+def test_a_conversation_never_opens_in_a_room_when_rooms_are_off(env):
+    """Continue goes where Home's own Start goes (home_items._room): with
+    rooms off that is Ask Tacitus, even for a row linked to a project
+    whose room is still registered."""
+    fe = env["fe"]
+    fe.rooms_on = lambda: False
+    env["mp"].setattr(D, "_project", lambda lid, conn=None: {"id": "rovers", "name": "Rovers"})
+    import briefing_rooms
+    env["mp"].setattr(briefing_rooms, "rooms", lambda **kw: {"rovers": {"channel": "r7", "room": "ea-rovers"}})
+    D.start(fe, ITEM["ref"], ITEM, row=make_row())
+    assert D.step(fe, ITEM["ref"], "continue", ITEM, row=make_row())["goto"] == "#/main/t1"

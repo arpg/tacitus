@@ -756,12 +756,17 @@ Tacitus does not know, and two or three next steps.
   own (`home_items.row_version`, which the item carries as `row_version`;
   never anything that moves with the clock), so the card and the store
   agree on when it is stale. A row that closes loses its briefing.
-- *Rows written from chat.* `ledger.py add` and `update` tell this module
-  of the row (`ledger.ROW_WRITTEN_HOOKS`, `row_written`). In the
-  resident's chat turn, which cannot reach the owner's store, it notes the
-  row's id in the resident's own state (`home-briefing-queue.jsonl`, kept
-  small). The next refresh writes the noted rows first, and only when
-  their stored briefing is missing or stale by the ledger's own record.
+- *Rows written from chat.* `ledger.py add` and `update` tell
+  `preprocessor/home_briefing_queue.py` of the row
+  (`ledger.ROW_WRITTEN_HOOKS`, `row_written`). It is a small module with
+  standard-library imports only, about 1 ms per write in the resident,
+  which cannot cache bytecode. In the resident's chat turn, which cannot
+  reach the owner's store, it notes the row's id in the resident's own
+  state (`home-briefing-queue.jsonl`, at most 64 KB). The next refresh
+  writes the noted rows first, and only when their stored briefing is
+  missing or stale by the ledger's own record. Continue in a conversation
+  opens where Home's own Start does (`home_items._room`), and that answer
+  is final: with rooms off, never a room.
 - *What the card shows.* `GET /api/home/item` gives the stored briefing at
   once (`deeper.state: "ready"`, with `by`: `local` or `hosted`, and `at`),
   with `stale: true` when the row or its thread changed since it was
@@ -990,7 +995,7 @@ that tap. A briefing stored ahead of the tap is kept against the item's
 `row_version` (`home_items.row_version`: the row's own fields, its thread
 record, the reply queue's record and a close proposal, never the clock),
 which the writer computes from the row alone. `ledger.py add` and `update`
-tell it of each open row they write (`ledger._row_written`, the modules in
+tell `home_briefing_queue` of each open row they write (`ledger._row_written`, the modules in
 `ledger.ROW_WRITTEN_HOOKS`, each loaded only when its source defines
 `row_written`, since the resident's process cannot cache bytecode in the
 install tree); a hook that is missing or fails never fails the write.

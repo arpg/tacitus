@@ -65,7 +65,7 @@ model, the time, the tokens, what code refused); `usage` prints the day.
 
 The hook (docs/webchat.md, Home): home_items calls state(), start() and
 step(); Home.tick calls prewarm(); mail_privacy.tick calls refresh();
-ledger.py calls row_written() for a row it adds or changes;
+ledger.py notes a row it adds or changes (home_briefing_queue);
 remote_briefing's run starts the hosted pass (spawn_hosted_pass). A tap's
 job state is kept in the web chat's own store (record `deeper`), and the
 `home-item` event tells an app that shows the item open to read it again.
@@ -1022,66 +1022,18 @@ def _own_version(row: dict | None) -> str:
 
 
 # ── rows written from chat ───────────────────────────────────────────
-# ledger.py tells this module of each open row it adds or changes
-# (ledger.ROW_WRITTEN_HOOKS). The writer is often the resident's chat
-# turn, which cannot reach the owner's store: it notes the row's id in its
-# own state, and the owner's next refresh writes that row's briefing first.
-# The note is a hint for the order alone: refresh writes a row only when its
-# stored briefing is missing or older than the row, by the ledger's own
-# record. In an owner process no note is needed.
-
-QUEUE_FILE = "home-briefing-queue.jsonl"
-QUEUE_MAX_BYTES = 64_000
-QUEUE_KEEP = 300
-QUEUE_DAYS = 2
-
-
-def _queue_path() -> Path:
-    return _mod("owner_trust").ea_dir() / "state" / QUEUE_FILE
-
-
-def row_written(entry_id: str, *, created: bool = False) -> None:
-    """ledger.py's hook: the open row `entry_id` was added or changed. In
-    the resident's process, one line in its own state (QUEUE_FILE), cut to
-    the last QUEUE_KEEP lines when it grows; nothing in an owner process.
-    Never raises, and never calls a model."""
-    import os
-    try:
-        if _mod("owner_trust").is_owner_process():
-            return
-        path = _queue_path()
-        line = json.dumps({"id": str(entry_id)[:200], "at": round(time.time(), 1), "created": bool(created)})
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-                     0o640)
-        with os.fdopen(fd, "a") as f:
-            f.write(line + "\n")
-        if path.stat().st_size > QUEUE_MAX_BYTES:
-            keep = path.read_text(errors="replace").splitlines()[-QUEUE_KEEP:]
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text("\n".join(keep) + "\n")
-            os.replace(tmp, path)
-    except Exception as e:
-        print(f"home_deeper: the row was not noted for its briefing: {str(e)[:120]}", file=sys.stderr)
-
+# ledger.py's row-written hook is home_briefing_queue, a small module of its
+# own (the resident loads it on every ledger write): it notes the row's id
+# in the resident's state, and refresh writes the noted rows first.
 
 def queued_ids(*, now: float | None = None) -> list[str]:
-    """The ids the resident noted in the last QUEUE_DAYS days, newest first,
-    read with the resident's access (resident_io); [] when there are none."""
+    """The ids the resident noted (home_briefing_queue), newest first, read
+    with the resident's access (resident_io); [] when there are none."""
     try:
-        text = _mod("resident_io").read_text(_queue_path()) or ""
+        q = _mod("home_briefing_queue")
+        return q.ids(_mod("resident_io").read_text(q.path()) or "", now=now)
     except Exception:
         return []
-    cut = (now if now is not None else time.time()) - QUEUE_DAYS * 86400
-    out: list[str] = []
-    for line in reversed(text.splitlines()[-QUEUE_KEEP:]):
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue
-        lid = str((rec or {}).get("id") or "") if isinstance(rec, dict) else ""
-        if lid and float(rec.get("at") or 0) >= cut and lid not in out:
-            out.append(lid)
-    return out
 
 
 def _store_path() -> Path:
@@ -2024,20 +1976,25 @@ def prewarm(fe, left: list[dict] | None) -> int:
 # ── a conversation from the briefing ─────────────────────────────────
 
 def conversation_place(fe, row: dict | None) -> str:
-    """Where the conversation opens: the item's project room as Home's own
-    Start it with Tacitus picks it (home_items._room), else the project
-    room the row is linked to (briefing_rooms.rooms: bound, not archived,
-    in the owner's record), else the EA channel."""
+    """Where the conversation opens: where Home's own Start it with Tacitus
+    opens one (home_items._room: the project room of the item's row when
+    rooms are on and it has one, else Ask Tacitus). Its answer is final, so
+    Continue and Start never part ways (with rooms off, never a room). Only
+    without home_items: the project room the row is linked to
+    (briefing_rooms.rooms), else the EA channel."""
     lid = str((row or {}).get("id") or "")
     main = str(getattr(fe, "main_channel", "") or "main")
     try:
         hi = _mod("home_items")
-        conv = str((row or {}).get("conversation_id") or _brief(row or {}).get("conversation_id") or "")
-        room = str(hi._room(fe, hi.Found(item={}, lid=lid, conv=conv)))
-        if room and room != main:  # _room answers the EA channel when it finds no room
-            return room
-    except Exception:
-        pass
+    except ImportError:
+        hi = None
+    if hi is not None:
+        try:
+            conv = str((row or {}).get("conversation_id") or _brief(row or {}).get("conversation_id") or "")
+            return str(hi._room(fe, hi.Found(item={}, lid=lid, conv=conv)) or main)
+        except Exception as e:
+            log.warning("home deeper: Home's room rule failed, so Ask Tacitus: %s", e)
+            return main
     proj = _project(lid) if lid else None
     if proj:
         try:

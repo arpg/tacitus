@@ -813,11 +813,12 @@ def _place(db, entry_id: str, *, created: bool, project: str | None = None) -> d
 
 # The modules told when `add` or `update` writes an open main-EA row (each
 # in preprocessor/, with row_written(entry_id, created=bool)): the Home
-# item briefing's writer (home_deeper) queues the row for a briefing. A
+# item briefing's note (home_briefing_queue, a small module of its own so
+# the write stays cheap) queues the row for a briefing. A
 # module that is not there is skipped; a hook that fails never fails the
 # command. The hook runs in the writer's process (often the resident's
 # chat turn), so it records the row and returns; the work happens elsewhere.
-ROW_WRITTEN_HOOKS = ("home_deeper",)
+ROW_WRITTEN_HOOKS = ("home_briefing_queue",)
 
 
 def _row_written(entry_id: str, *, created: bool) -> None:
