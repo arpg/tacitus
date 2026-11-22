@@ -682,6 +682,10 @@ def test_the_tick_posts_the_decision_once_and_the_block_after_yes(monkeypatch):
     assert kinds == ["letter_ask", "letter"]
     assert store["cards"]["case-jp"]["kind"] == "ask" and store["cards"]["case-rc"]["live"]
     assert ns["_post_letter_cards"](force=True) == 0          # nothing new
+    # A field's value is plain text: the frontends render it inert, and a
+    # wrapped one would show its delimiters in the folded block.
+    values = [f.value for c in calls["cards"] for f in c.fields]
+    assert values and all("\ue000" not in v and "\ue001" not in v for v in values)
     assert any(a.pattern.startswith("^letter_") for a in calls["actions"] if hasattr(a, "pattern"))
 
 

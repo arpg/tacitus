@@ -28,6 +28,25 @@ from webui_browser import (  # noqa: E402,F401  (the fixtures and helpers)
 REQS = "#thread-list .reqs:not(.done) > .req"
 
 
+def test_a_letter_card_shows_names_without_internal_unicode_delimiters(app):
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    subject = "Recommendation letter for Avery Quinn"
+    _request(stub, ":memo: *" + subject + "*", kind="letter", fields=[
+        {"label": "From", "value": "\ue000Avery Quinn\ue001"},
+        {"label": "Subject", "value": "\ue000" + subject + "\ue001"},
+        {"label": "When", "value": "\ue000Next due Dec 1\ue001"}])
+    page.evaluate("location.hash = '#/stream%3A7'")
+    block = page.locator(REQS).filter(has=page.locator(".req-what", has_text=subject))
+    expect(block.locator(".req-what")).to_have_text(subject)
+    expect(block.locator(".req-who")).to_have_text("From Avery Quinn · Next due Dec 1")
+    block.locator(".req-head").click()
+    expect(block.locator(".card-fields dd")).to_have_text(["Avery Quinn", subject, "Next due Dec 1"])
+    assert "[U+E000]" not in block.inner_text() and "[U+E001]" not in block.inner_text()
+    assert not errors, errors
+
+
 def _requests(stub):
     """Four waiting requests with made-up data: an overdue reply (its
     deadline yesterday), a meeting that starts within a day, a calm reply,
