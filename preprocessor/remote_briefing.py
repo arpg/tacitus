@@ -313,7 +313,7 @@ def candidates(b: dict, *, today: date) -> dict[str, dict]:
             due = ""
         conv = str(o.get("conversation_id") or (brief or {}).get("conversation_id") or "")
         add("L", {"kind": "ledger", "title": o.get("description") or lid,
-                  "closes_on": o.get("closes_on") or "",
+                  "closes_on": o.get("closes_on") or "", "letter": o.get("letter"),
                   "who": o.get("from_name") or o.get("from_email") or "",
                   "from": o.get("from_email") or "", "ledger_id": lid,
                   "brief": brief,
@@ -747,7 +747,7 @@ def gate(cand: dict, reply_must_say: str, *, wrote_before=_wrote_to_before) -> d
     part in a program or committee, a reply-all to many. A line never carries an answer the
     model wrote for him, but for the rails' own lines."""
     found = draft_gate.check(cand, reply_must_say, own=_own_addresses())
-    if found and found["rule"] in ("no_reply", "kept", "non_email"):
+    if found and found["rule"] in ("no_reply", "kept", "non_email", "letter"):
         return found
     why = rail(cand, reply_must_say, wrote_before=wrote_before)
     if why:
@@ -765,7 +765,7 @@ def _refused(cand: dict, why: str) -> dict:
     question = found.get("line") or (f"They ask: {_clean(cand.get('ask'), 140)}" if cand.get("ask")
                                      else f"Your answer on {_clean(cand.get('title'), 90)}")
     return {"rule": "refused", "why": why, "choices": found.get("choices") or [],
-            "line": question if found.get("rule") in ("no_reply", "kept")
+            "line": question if found.get("rule") in ("no_reply", "kept", "letter")
             else f"Reply needs you ({_clean(why, 80)}): {question}"}
 
 

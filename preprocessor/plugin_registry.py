@@ -898,7 +898,8 @@ def ledger_types(lock=None) -> dict:
 def mail_rules(lock=None) -> dict:
     """The enabled plugins' mail rules, merged and sorted."""
     out = {"closure_confirm_senders": set(), "closure_exclude_senders": set(),
-           "keep_from_frontier_domains": set()}
+           "keep_from_frontier_domains": set(), "letter_request_senders": set(),
+           "letter_confirm_senders": set()}
     for lp in managed_plugins(lock=lock):
         rules = lp.manifest["capabilities"]["mail_rules"]
         for key in out:

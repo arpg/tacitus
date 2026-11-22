@@ -114,6 +114,13 @@ TONES = ("distress", "escalation", "withdrawal", "urgent", "complaint")
 STATES = ("needs-reply", "todo", "decide", "scheduling", "awaiting-reply", "fyi")
 DOMAINS = ("research", "service", "teaching", "professional", "personal")
 ACTION_STATES = {"needs-reply", "todo", "decide", "scheduling"}
+# A letter the user is asked to write about a person (letters.py).
+LETTER_ROLES = ("none", "request", "reminder", "confirmation")
+LETTER_KINDS = ("recommendation", "reference", "nomination", "support", "character",
+                "evaluation", "other")
+LETTER_METHODS = ("portal", "email", "upload", "unknown")
+NO_LETTER = {"role": "none", "person": "", "kind": "other", "destination": "", "due": "",
+             "method": "unknown", "destinations": []}
 
 SCHEMA = {
     "type": "object",
@@ -136,10 +143,22 @@ SCHEMA = {
         "state": {"type": "string", "enum": list(STATES)},
         "domain": {"type": "string", "enum": list(DOMAINS)},
         "summary": {"type": "string"},
+        "letter": {"type": "object", "additionalProperties": False, "properties": {
+            "role": {"type": "string", "enum": list(LETTER_ROLES)},
+            "person": {"type": "string"},
+            "kind": {"type": "string", "enum": list(LETTER_KINDS)},
+            "destination": {"type": "string"},
+            "due": {"type": "string"},
+            "method": {"type": "string", "enum": list(LETTER_METHODS)},
+            "destinations": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"name": {"type": "string"}, "due": {"type": "string"}},
+                "required": ["name", "due"]}}},
+            "required": ["role", "person", "kind", "destination", "due", "method", "destinations"]},
     },
     "required": ["sensitivity", "confidential_kind", "needs_reply", "response_mode", "ask", "deadline",
                  "deadline_text", "scheduling", "offered_times", "people", "tone",
-                 "state", "domain", "summary"],
+                 "state", "domain", "summary", "letter"],
 }
 
 PROMPT = """You read one email for a professor's assistant and fill a JSON record. Answer with JSON only, in the given schema.
@@ -159,7 +178,8 @@ Fields:
 - tone: the flags that apply; [] when none.
 - state: needs-reply, todo (the user must do something other than reply), decide, scheduling, awaiting-reply (the user is waiting on the sender), or fyi (nothing is owed by the user: a notification, a confirmation, a thank-you, a group discussion with no ask to him). A reminder that the user owes something by a date (a recommendation, a report, a form) is todo with that deadline, even when it asks for no reply.
 - domain: research, service, teaching, professional or personal.
-- summary: what the message says, at most two sentences of plain fact."""
+- summary: what the message says, at most two sentences of plain fact.
+- letter: a letter the user is asked to write about a person (a recommendation, a reference, a nomination, a letter of support or a character letter, for a student, an employee, a colleague, a tenant or a client). role: request (the person, or a program, an employer, a portal or a committee on the person's behalf, asks him to write or submit one), reminder (a letter he was asked for is still due), confirmation (a letter he wrote was received or submitted), none (anything else, including a call for nominations that names no person and a message about someone else's letter). person: the full name of the person the letter is about, "" when none. kind: what letter. destination: where it goes (the program, employer, award or portal), "" when not stated. due: YYYY-MM-DD, "" when none. method: portal (a link or an online form), email (sent to an address), upload, unknown. destinations: each place and date the message lists, at most 12. For role none, fill "" and [] and kind other."""
 
 _ADDR = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
@@ -322,6 +342,7 @@ def validate(obj: dict) -> dict:
             rec[key] = [str(v)[:QUOTE_CHARS] for v in vals if isinstance(v, str) and v.strip()][:cap]
     if isinstance(obj.get("attachments"), list):
         rec["attachments"] = [a for a in obj["attachments"] if isinstance(a, dict)][:ATTACH_CAP]
+    rec["letter"] = _letter_field(obj.get("letter"))
     if rec["sensitivity"] == "normal":
         rec["confidential_kind"] = "none"
     elif rec["confidential_kind"] == "none":
@@ -335,9 +356,47 @@ def validate(obj: dict) -> dict:
     return _completion_record(rec)
 
 
+def _day_or_blank(v) -> str:
+    v = str(v or "").strip()[:10]
+    try:
+        date.fromisoformat(v)
+    except ValueError:
+        return ""
+    return v
+
+
+def letter_of(res: dict) -> dict | None:
+    """The record's letter field when it says something (request, reminder,
+    confirmation); None for none, so most records carry no extra key."""
+    letter = res.get("letter") if isinstance(res, dict) else None
+    if isinstance(letter, dict) and letter.get("role") in LETTER_ROLES[1:]:
+        return letter
+    return None
+
+
+def _letter_field(obj) -> dict:
+    """The record's `letter` field in its schema; NO_LETTER when absent."""
+    if not isinstance(obj, dict) or obj.get("role") not in LETTER_ROLES[1:]:
+        return dict(NO_LETTER)
+    dests = [{"name": str(d.get("name") or "").strip()[:120], "due": _day_or_blank(d.get("due"))}
+             for d in obj.get("destinations") or []
+             if isinstance(d, dict) and str(d.get("name") or "").strip()][:12]
+    return {"role": obj["role"], "person": str(obj.get("person") or "").strip()[:80],
+            "kind": obj.get("kind") if obj.get("kind") in LETTER_KINDS else "other",
+            "destination": str(obj.get("destination") or "").strip()[:120],
+            "due": _day_or_blank(obj.get("due")),
+            "method": obj.get("method") if obj.get("method") in LETTER_METHODS else "unknown",
+            "destinations": dests}
+
+
 def _completion_record(rec: dict) -> dict:
-    """Normalize new and cached records without rewriting the mail store."""
+    """Normalize new and cached records without rewriting the mail store.
+    A letter request or reminder (the `letter` field) is work with a date,
+    never an email reply owed: the letter is submitted (letters.py)."""
     import mail_completion
+    letter = rec.get("letter") if isinstance(rec.get("letter"), dict) else {}
+    if letter.get("role") in ("request", "reminder"):
+        rec = dict(rec, response_mode="submission")
     mode = mail_completion.response_mode(rec)
     out = dict(rec, response_mode=mode)
     if mode in mail_completion.WORK_MODES:
@@ -1740,6 +1799,8 @@ def _sealed_fields(rec: dict | None, dec: dict | None = None) -> dict:
                "remote_record": {k: res.get(k) for k in (
                    "state", "needs_reply", "response_mode", "ask", "deadline", "scheduling",
                    "offered_times", "people", "tone", "domain", "sensitivity")}}
+        if letter_of(res):
+            out["remote_record"]["letter"] = letter_of(res)
         for k in ("links", "quotes", "attachments"):
             if res.get(k) and (k != "quotes" or level == "full"):
                 out["remote_record"][k] = res[k]
@@ -1968,6 +2029,10 @@ def thread_brief(conv_id: str, index: dict | None = None, *, user: set[str] | No
                       "offered_times": list(res.get("offered_times") or []),
                       "scheduling": res.get("scheduling") or "none",
                       "domain": res.get("domain") or ""})
+        letter = letter_of(res)
+        if letter:
+            # At facts the role alone: the person and the place are text.
+            brief["letter"] = letter if level != "facts" else {"role": letter["role"]}
     if strictest != "full":
         # The thread's strictest level, in plain words for whoever reads
         # the row, and its code for the lanes.

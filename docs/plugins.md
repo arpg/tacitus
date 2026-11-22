@@ -167,7 +167,8 @@ and `extra_schedules`.
     "denied_tools": ["Bash(python3 *tool.py send *)"],
     "cards": [],
     "mail_rules": {"closure_confirm_senders": [], "closure_exclude_senders": [],
-                   "keep_from_frontier_domains": []},
+                   "keep_from_frontier_domains": [], "letter_request_senders": [],
+                   "letter_confirm_senders": []},
     "mail_triggers": [{"id": "alerts", "from": ["alerts@notes.example.org"]}],
     "network": {"domains": ["api.example.org"], "local": []},
     "secrets": ["EXAMPLE_TOKEN"],
@@ -301,6 +302,10 @@ can close a ledger row (as `CONFIRMATION_SENDER_SUBSTRINGS` in
 core substring matches; `keep_from_frontier_domains` join the keep list
 (`remote_llm.py`), whose mail no hosted model reads (a manifest that names
 them `keep_from_anthropic_domains`, the old name, is read the same way).
+`letter_request_senders` and `letter_confirm_senders` name a recommendation
+or reference service whose mail asks for a letter about a person, or
+confirms one was received (`letters.py`); core reads the common shape of
+such mail on its own, and these patterns cover a service it misses.
 A substring shorter than six
 characters, or with no `@` or `.`, is refused as too broad.
 
