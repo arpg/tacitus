@@ -45,6 +45,14 @@ def ids(it: dict) -> list[str]:
     return [c["id"] for c in it["choices"]]
 
 
+@pytest.fixture(autouse=True)
+def no_deeper_module(monkeypatch):
+    """The deeper briefing's module (preprocessor/home_deeper.py) ships on
+    its own: each test reads as if it were not there, unless it puts a
+    stand-in in its place."""
+    monkeypatch.setattr(I, "_deeper_mod", lambda: None)
+
+
 # ── a stand-in front end, ledger and bot ────────────────────────────
 
 class FakeStore:
@@ -557,6 +565,34 @@ def test_an_item_that_changed_since_it_was_read_is_refused_with_the_item_as_it_i
     assert led.calls == []
 
 
+def test_the_clock_alone_never_moves_a_version():
+    src = F.sources()
+    it = I.item(src, "reply:response-r2")
+    src.replies[1]["age_days"] = 5  # a day later, nothing else
+    later = I.item(src, "reply:response-r2")
+    assert later["brief"]["standing"][0] == "It has waited 5 days for your reply."
+    assert (later["version"], later["row_version"]) == (it["version"], it["row_version"])
+
+
+def test_the_row_version_is_the_rows_own_and_moves_with_its_thread():
+    src = F.sources()
+    row = src.rows["response-r2"]
+    it = I.item(src, "reply:response-r2")
+    assert it["row_version"] == I.row_version(row) and len(it["row_version"]) == 16
+    same = json.loads(json.dumps(row))
+    same["thread_brief"]["updated"] = "2026-11-22T16:00:01Z"  # a refresh with the same facts
+    same["owner_said"] = [{"said": "Later", "at": "2026-11-20"}]  # read from other rows, not this one
+    assert I.row_version(same) == it["row_version"]
+    for change in ({"latest": "2026-11-22T09:00:00Z", "message_count": 4}, {"ask": "Sign it by noon"}):
+        moved = json.loads(json.dumps(row))
+        moved["thread_brief"].update(change)
+        assert I.row_version(moved) != it["row_version"]
+    moved = json.loads(json.dumps(row))
+    moved["reply_queue"] = {"outcome": "drafted", "draft_id": "d1"}
+    assert I.row_version(moved) != it["row_version"]
+    assert I.item(F.sources(), "request:w42")["row_version"] == ""  # no row behind it
+
+
 def test_a_refreshed_record_with_the_same_facts_keeps_the_version():
     src = F.sources()
     v = I.item(src, "reply:response-r2")["version"]
@@ -632,7 +668,6 @@ class Deeper:
 
 
 def test_with_no_deeper_module_the_block_reads_unavailable_and_a_step_is_refused():
-    assert I._deeper_mod() is None  # the deeper briefing ships on its own
     it = I.item(F.sources(), "item:deadline-w1")
     assert it["deeper"] == {"state": "unavailable"}
     _fe, h, _bot, _c = home()
@@ -784,7 +819,7 @@ def test_a_last_step_is_shown_only_when_it_reads_as_one():
         assert I._last_step(raw, src) == want
     for raw in (f"{yesterday}: Pat asks for the table by Friday. (reconcile)",
                 "Auto-resurrected: follow_up_after date reached",
-                f"{yesterday}: draft id AAMkADY1Y2FmZjRhLTA2NjgtNGJiZS04 created",
+                f"{yesterday}: draft id Zx9fakeDraft0000example7 created",
                 f"{yesterday}: shipped (71381df, 0630881).", "INCIDENT: a false close.",
                 f"{yesterday}: nudged again ({yesterday}); the note is newer.",
                 f"{yesterday}: skipped for 3 days on the Replies card", "Wrote to the dean ('Looks good."):
@@ -810,3 +845,59 @@ def test_a_write_a_crash_cut_short_is_written_again_and_finds_the_row_closed(mon
     store.meta["acts"] = {token: dict(rec, writing=0)}
     assert h2.acts.commit_due()[0]["why"] == "gone" and store.meta["acts"] == {}
     assert len([c for c in led.calls if c[1] == "close"]) == 1
+
+
+# ── the ledger tells the briefing's writer of a row it wrote ────────
+
+@pytest.fixture
+def ledger_db(tmp_path, monkeypatch):
+    import sqlite3
+    path = tmp_path / "ledger.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(ledger.SCHEMA)
+    for m in ledger.MIGRATIONS:
+        try:
+            conn.execute(m)
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(ledger, "DB_PATH", path)
+    return path
+
+
+def _verb(monkeypatch, *argv) -> int:
+    monkeypatch.setattr(sys, "argv", ["ledger.py", *argv])
+    return ledger.main()
+
+
+def test_add_and_update_tell_the_briefings_writer_of_an_open_row(ledger_db, monkeypatch, capsys):
+    import types
+    told = []
+    monkeypatch.setitem(sys.modules, "home_deeper",
+                        types.SimpleNamespace(row_written=lambda rid, created: told.append((rid, created))))
+    assert ledger.ROW_WRITTEN_HOOKS == ("home_deeper",)
+    assert _verb(monkeypatch, "add", "--id", "task-z1", "--type", "task", "--description",
+                 "Order the poster tubes", "--deadline", "2026-12-04") == 0
+    assert _verb(monkeypatch, "update", "--id", "task-z1", "--last-action", "asked for a quote") == 0
+    assert told == [("task-z1", True), ("task-z1", False)]
+    assert _verb(monkeypatch, "close", "--id", "task-z1", "--user-said", "done", "--skip-archive") == 0
+    assert _verb(monkeypatch, "update", "--id", "task-z1", "--notes", "a note on a closed row") == 0
+    assert _verb(monkeypatch, "add", "--id", "plug-1", "--type", "review", "--description", "x",
+                 "--set", "source=plugin:reviews") in (0, 1)
+    assert told == [("task-z1", True), ("task-z1", False)]  # no closed row, no plugin row
+
+
+def test_a_hook_that_fails_never_fails_the_write(ledger_db, monkeypatch, capsys):
+    import types
+
+    def broken(rid, created):
+        raise RuntimeError("the queue is full")
+    monkeypatch.setitem(sys.modules, "home_deeper", types.SimpleNamespace(row_written=broken))
+    assert _verb(monkeypatch, "add", "--id", "task-z2", "--type", "task", "--description",
+                 "Book the room", "--deadline", "2026-12-04") == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out.strip().splitlines()[-1])["ok"] is True
+    assert "was not told of task-z2" in out.err
+    monkeypatch.setitem(sys.modules, "home_deeper", types.SimpleNamespace())  # no hook in it
+    assert _verb(monkeypatch, "update", "--id", "task-z2", "--last-action", "booked") == 0

@@ -303,28 +303,48 @@ def _open_row(f: Found) -> bool:
     return f.reply is not None
 
 
+# The row's own fields a briefing of it is written from.
+ROW_VERSION_KEYS = ("type", "status", "deadline", "description", "last_action", "closes_on", "notes")
+_WAITED = re.compile(r"\s*·?\s*Waiting \d+ days?")
+
+
+def _digest(key: dict) -> str:
+    return hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def row_version(row: dict | None) -> str:
+    """A digest of what a briefing of the row is written from: its own fields,
+    its thread's record (what each side wrote and when), the reply queue's
+    record and a close proposal; never anything that moves with the clock.
+    The deeper briefing is stored against it, at ingest from the row as the
+    ledger reads it (ledger.get_entry), and is stale once it differs. A
+    brief refreshed with the same facts keeps it."""
+    row = row or {}
+    thread = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else {}
+    queued = row.get("reply_queue") if isinstance(row.get("reply_queue"), dict) else {}
+    prop = row.get("close_proposal")
+    return _digest({"row": {k: row.get(k) for k in ROW_VERSION_KEYS},
+                    "thread": {k: thread.get(k) for k in THREAD_KEYS}, "queued": queued,
+                    "proposal": prop.get("why") if isinstance(prop, dict) else bool(prop)})
+
+
 def version(f: Found) -> str:
-    """A digest of everything the item's briefing and choices are built from:
-    it changes when the row, its thread's record, the owner's word on it, the
-    reply queue's record or the request changes, and not otherwise (a brief
-    refreshed with the same facts keeps it)."""
-    row, thread = f.row or {}, _thread(f)
-    reply = f.reply or {}
-    req = f.request or {}
-    key = {
-        "item": {k: f.item.get(k) for k in ("kind", "label", "title", "detail", "kept", "due", "href",
-                                             "link", "by", "at")},
-        "row": {k: row.get(k) for k in ROW_KEYS},
-        "proposal": (row.get("close_proposal") or {}).get("why") if isinstance(row.get("close_proposal"), dict)
-        else bool(row.get("close_proposal")),
+    """The item's own digest: its row's (row_version), the list's words for
+    it, the reply-queue entry, the owner's word on the thread and the
+    request. An act on an item whose version moved since the app read it
+    is refused. How long it has waited is left out: the clock alone never
+    changes it."""
+    reply, req = f.reply or {}, f.request or {}
+    item = {k: f.item.get(k) for k in ("kind", "label", "title", "kept", "due", "href", "link", "by", "at")}
+    item["detail"] = _WAITED.sub("", str(f.item.get("detail") or ""))
+    return _digest({
+        "item": item, "row": row_version(f.row), "row_keys": {k: (f.row or {}).get(k) for k in ROW_KEYS},
         "queued": _queued(f), "said": _owner_said(f),
-        "thread": {k: (thread or reply).get(k) for k in THREAD_KEYS},
-        "reply": {k: reply.get(k) for k in ("since", "age_days", "ask", "subject", "from", "from_name")},
+        "thread": {k: reply.get(k) for k in THREAD_KEYS} if not _thread(f) else {},
+        "reply": {k: reply.get(k) for k in ("since", "ask", "subject", "from", "from_name")},
         "request": {k: req.get(k) for k in ("updated_at", "kind", "text", "what", "who", "when", "waiting",
                                             "keep_level")},
-        "keep": f.keep,
-    }
-    return hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()[:16]
+        "keep": f.keep})
 
 
 # ── the quick briefing ──────────────────────────────────────────────
@@ -491,7 +511,6 @@ def _next(f: Found) -> str:
     kind = f.item.get("kind")
     row, thread, queued = f.row or {}, _thread(f), _queued(f)
     reply = f.reply or {}
-    rtype = _ledger().canonical_type(row.get("type") or reply.get("type")) if (row or reply) else ""
     if kind == "request":
         card = (f.request or {}).get("card") if isinstance((f.request or {}).get("card"), dict) else {}
         ck = str(card.get("kind") or "")
@@ -516,12 +535,10 @@ def _next(f: Found) -> str:
     if kind == "item":
         if isinstance(row.get("close_proposal"), dict):
             return "Close it once you say it is done."
-        if rtype == "waiting":
+        if _ledger().is_waiting(row):
             return "Wait for their answer. It stays off your list until then."
-        if rtype == "scheduling":
+        if str(thread.get("scheduling") or "none") not in ("", "none"):
             return "Find times on your calendar once you start it."
-        if rtype == "draft_pending":
-            return "Finish the document with you once you start it."
         return "Nothing on its own. Start it when you are ready."
     return ""
 
@@ -576,7 +593,7 @@ def brief(f: Found, src) -> dict:
     else:
         rtype = _ledger().canonical_type(row.get("type")) if row else ""
         head = TYPE_WORDS.get(rtype, "Something to do")
-        out["what"] = _sentence(f"{head}, from {who}" if who and rtype != "waiting" else head)
+        out["what"] = _sentence(f"{head}, from {who}" if who and not _ledger().is_waiting(row) else head)
     ask = thread.get("ask") or reply.get("ask")
     if not ask and kind == "item" and not thread:
         ask = row.get("notes")
@@ -634,8 +651,8 @@ def choices(f: Found, src) -> list[dict]:
             ([later_choice(today)] if acts else [])
     out = [dict(START)]
     if acts:
-        rtype = _ledger().canonical_type((f.row or {}).get("type"))
-        out += [dict(DONE)] + ([] if rtype == "waiting" else [dict(WAITING)]) + [later_choice(today)]
+        waits = _ledger().is_waiting(f.row or {})
+        out += [dict(DONE)] + ([] if waits else [dict(WAITING)]) + [later_choice(today)]
     return out
 
 
@@ -664,7 +681,8 @@ def shape(f: Found, src, *, fe=None, pending: dict | None = None) -> dict:
     x = f.item
     out = {"ref": x["id"], "kind": x.get("kind"), "label": x.get("label") or "",
            "kept": f.keep, "title": x.get("title") or "", "detail": "" if f.keep else (x.get("detail") or ""),
-           "version": v, "brief": brief(f, src), "choices": choices(f, src)}
+           "version": v, "row_version": row_version(f.row) if f.row is not None else "",
+           "brief": brief(f, src), "choices": choices(f, src)}
     goto = _goto(f)
     if goto:
         out["goto"] = goto
@@ -1069,7 +1087,7 @@ class Acts:
                 res = wts.RUN("ledger.py", "update", "--id", lid, "--status", "waiting", "--follow-up-after",
                               rec["day"], "--last-action",
                               f"{today}: waiting on someone else, per the owner on Home")
-                ok = _ledger().canonical_type((res.get("entry") or {}).get("type")) == "waiting"
+                ok = _ledger().is_waiting(res.get("entry") or {})
             else:
                 return {"op": op, "id": lid, "ok": False, "why": "unknown"}
         except Exception as e:

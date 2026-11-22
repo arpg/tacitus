@@ -812,7 +812,7 @@ a `ref` (its `id`), which these routes take:
 
 | Route | What it does |
 |---|---|
-| `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, brief, choices, deeper, goto?, ask?, pending?}`; 404 `{ok: false, said}` when Home does not list it now |
+| `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, row_version, brief, choices, deeper, goto?, ask?, pending?}`; 404 `{ok: false, said}` when Home does not list it now |
 | `POST /api/home/act` `{ref, choice, arg?, version?}` | one choice: `{ok, said, undo?, undo_until?, goto?, item?}` |
 | `POST /api/home/undo` `{token}` | takes a Done, Not needed, Waiting or Later back while its window runs |
 | `POST /api/home/deeper` `{ref}` | starts the deeper briefing (`home_deeper.start`) |
@@ -858,7 +858,8 @@ new message, a close from elsewhere) is not written, and shows again.
 
 Every choice reads the item again first. The app sends the `version` it
 read (a digest of what the briefing and the choices are built from, which
-a refreshed record with the same facts keeps); an item that changed since,
+a refreshed record with the same facts, or a day passing, keeps); an item
+that changed since,
 or a choice it no longer offers, is refused in plain words with the item
 as it is now. A choice never sends mail, never creates an event and holds
 no confirmation token. The item read follows `/api/home` (any device that
@@ -866,8 +867,16 @@ reads); a choice and an undo follow Action requests' buttons (never from a
 device paired on the relay's origin below "all").
 
 **The deeper briefing** is one hook (`preprocessor/home_deeper.py`:
-`state`, `start`, `step`): its block is `{"state": "unavailable"}` until it
-is built. Its next steps come after the code-built choices, as `step:<id>`.
+`state`, `start`, `step`): its block is `{"state": "unavailable"}` while
+that module is not there. Its next steps come after the code-built
+choices, as `step:<id>`, and a step that names one of the choices runs as
+that tap. A briefing stored ahead of the tap is kept against the item's
+`row_version` (`home_items.row_version`: the row's own fields, its thread
+record, the reply queue's record and a close proposal, never the clock),
+which the writer computes from the row alone. `ledger.py add` and `update`
+tell it of each open row they write (`ledger._row_written`, the modules in
+`ledger.ROW_WRITTEN_HOOKS`); a hook that is missing or fails never fails
+the write.
 
 ## Unread
 
