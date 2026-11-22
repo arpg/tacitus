@@ -431,7 +431,7 @@ ROOM_COLORS = (
 # that lives on Slack in shadow mode takes it too.
 ROOM_NAME_MAX = 60
 EVENT_TYPES = ("message", "update", "reaction", "card", "status", "file", "channel",
-               "thread_state", "release", "read", "light", "home")
+               "thread_state", "release", "read", "light", "home", "home-item")
 # The status light (docs/webchat.md, Status light): the meta keys of the
 # host's record of what it showed and of its tick, the push tag of its
 # notifications (one on a device at a time; a recovery clears it), how
@@ -2086,6 +2086,12 @@ class WebStore:
         """Append a `home` event: Home changed, and each open app reads it
         again."""
         return self._transaction(lambda: self._emit("home", "", "", payload))
+
+    def home_item_emit(self, ref: str) -> int:
+        """Append a `home-item` event: the deeper briefing of one Home item
+        changed (home_deeper), and an app that shows that item open reads
+        it again."""
+        return self._transaction(lambda: self._emit("home-item", "", "", {"ref": str(ref)[:200]}))
 
     def upsert_channel(self, cid: str, name: str, kind: str, archived: bool = False,
                        description: str | None = None, muted: bool | None = None) -> dict:
