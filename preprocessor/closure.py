@@ -60,9 +60,9 @@ try:
 except ModuleNotFoundError:
     from preprocessor import mail_completion
 try:
-    import letters
+    import cases
 except ModuleNotFoundError:
-    from preprocessor import letters
+    from preprocessor import cases
 
 DECISIVE = "decisive"
 PROPOSAL = "proposal"
@@ -158,11 +158,12 @@ def tier(signal: str, entry: dict) -> str:
         # A plugin owns its rows' lifecycle (docs/plugin-architecture.md);
         # its close is recorded, not second-guessed.
         return DECISIVE
-    if letters.is_letter_row(entry):
-        # A letter closes on its submission, the owner's word or click, a
-        # decline, or as a repeat; settle() refuses every other signal
-        # before it gets here (letters.letter_signal_allowed).
-        return DECISIVE if letters.letter_signal_allowed(signal, entry) else PROPOSAL
+    if cases.is_case_row(entry):
+        # A work case (a letter, a review, a form, a report) closes on its
+        # delivery, the owner's word or click, a decline, or as a repeat;
+        # settle() refuses every other signal before it gets here
+        # (cases.signal_allowed).
+        return DECISIVE if cases.signal_allowed(signal, entry) else PROPOSAL
     if signal in USER_SIGNALS or signal in STRUCTURAL_SIGNALS:
         return DECISIVE
     if _ledger.is_waiting(entry):
@@ -338,8 +339,8 @@ def _sweep_siblings(conn, row, *, note: str, actor: str, evidence_ts: str,
     for sib in sibs:
         if not source and not _ledger.is_detector_row(sib["id"]):
             continue
-        if letters.is_letter_row(_ledger._row_to_dict(sib)):
-            continue  # a reply or a word about the thread never finishes a letter
+        if cases.is_case_row(_ledger._row_to_dict(sib)):
+            continue  # a reply or a word about the thread never delivers a case's work
         born = _parse(sib["date_identified"] or sib["created_at"])
         if cutoff is not None and born is not None and born > cutoff + timedelta(minutes=2):
             continue
@@ -378,8 +379,8 @@ def settle(conn: sqlite3.Connection, entry_id: str, *, signal: str, actor: str,
     if row["status"] not in _ledger.OPEN_STATUSES:
         return {"action": "skipped", "why": f"already {row['status']}"}
     entry = _ledger._row_to_dict(row)
-    if not letters.letter_signal_allowed(signal, entry, note=note):
-        return {"action": "skipped", "why": LETTER_REFUSAL}
+    if not cases.signal_allowed(signal, entry, note=note):
+        return {"action": "skipped", "why": cases.refusal(entry)}
     if (signal not in USER_SIGNALS and not is_plugin_row(entry)
             and vetoed(entry, signal, evidence_ts)):
         return {"action": "vetoed", "why": f"the user kept this row open against {signal}"}
@@ -451,7 +452,8 @@ def fold_duplicate(conn: sqlite3.Connection, dup_row, primary_id: str, *, actor:
     return out
 
 
-# Why closure evidence did nothing to a letter row (letters.py).
+# Why closure evidence did nothing to a letter row (cases.refusal says it
+# for every kind of work case).
 LETTER_REFUSAL = ("a letter closes only on its submission, a decline or the owner's word; "
                   "a reply in its thread does not finish it")
 
@@ -470,7 +472,7 @@ def hill_move(signal: str, entry: dict, actor: str, base: str) -> str:
     proposes instead, else "". A plugin row, a resident's request, a row
     that waits on someone else and a row the user kept open are never
     promoted."""
-    if is_plugin_row(entry) or letters.is_letter_row(entry):
+    if is_plugin_row(entry) or cases.is_case_row(entry):
         return ""
     if (mail_completion.non_email_work(entry)
             and signal in REPLY_SIGNALS | ARCHIVE_SIGNALS | LINKED_SIGNALS):
@@ -502,8 +504,8 @@ def propose_or_promote(conn: sqlite3.Connection, entry_id: str, *, signal: str, 
     row = conn.execute("SELECT * FROM ledger WHERE id = ?", (entry_id,)).fetchone()
     if row is not None and row["status"] in _ledger.OPEN_STATUSES:
         entry = _ledger._row_to_dict(row)
-        if not letters.letter_signal_allowed(signal, entry, note=note):
-            return {"action": "skipped", "why": LETTER_REFUSAL}
+        if not cases.signal_allowed(signal, entry, note=note):
+            return {"action": "skipped", "why": cases.refusal(entry)}
         if (not vetoed(entry, signal, evidence_ts)
                 and hill_move(signal, entry, actor, PROPOSAL) == PROMOTED):
             return {"action": "closed", "tier": PROMOTED, "signal": signal,
@@ -527,8 +529,8 @@ def propose(conn: sqlite3.Connection, entry_id: str, *, signal: str, actor: str,
     if row is None or row["status"] not in _ledger.OPEN_STATUSES:
         return {"action": "skipped", "why": "not an open row"}
     entry = _ledger._row_to_dict(row)
-    if not letters.letter_signal_allowed(signal, entry, note=note):
-        return {"action": "skipped", "why": LETTER_REFUSAL}
+    if not cases.signal_allowed(signal, entry, note=note):
+        return {"action": "skipped", "why": cases.refusal(entry)}
     if not is_plugin_row(entry) and vetoed(entry, signal, evidence_ts):
         return {"action": "vetoed", "why": f"the user kept this row open against {signal}"}
     meta = _meta(row)

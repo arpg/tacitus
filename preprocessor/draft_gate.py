@@ -22,10 +22,12 @@ sweep. Whatever a model picked, code holds these rules there:
   5. The thread is kept from hosted models (keep_gate): on the machine,
      no scheduled lane drafts on it; at `facts`, only the local writer's
      body goes (the remote briefing), never a hosted model's.
-  6. The thread is a letter request (letters.py): someone asks the owner
-     to write a letter about a person. The work is the letter, by its
-     date; no scheduled lane drafts an email reply to it. His one
-     decision (will you write it?) is a question with buttons.
+  6. The thread is a letter request (letters.py), or the row is any
+     other work case (cases.py: a review, a form, a report): someone asks
+     the owner for work that ends with a delivery. The work is the
+     delivery, by its date; no scheduled lane drafts an email reply to
+     it. His one decision (will you write it?) is a question with
+     buttons.
 
 A meeting request is the scheduling lane's: rules 2 and 3 never read a
 thread whose record is a meeting request or a scheduling row, so a yes
@@ -56,6 +58,10 @@ try:
     import letters
 except ModuleNotFoundError:
     from preprocessor import letters
+try:
+    import cases
+except ModuleNotFoundError:
+    from preprocessor import cases
 
 # A reply-all that reaches this many people besides the owner is his call.
 MANY_RECIPIENTS = 10
@@ -64,6 +70,11 @@ LETTER_WHY = "a letter request: the work is the letter, not an email reply"
 LETTER_LINE = "A letter request. I do not write a reply to it. The letter is the work."
 LETTER_REFUSAL = ("this is a letter request: no scheduled run drafts an email reply to it. "
                   "The owner decides on the letter; a reply goes out only when he asks for one")
+# Rule 6 for every other kind of work case (cases.py).
+CASE_WHY = "work to deliver: the work is the delivery, not an email reply"
+CASE_LINE = "This is work to deliver. I do not write a reply to it. The delivery is the work."
+CASE_REFUSAL = ("this row is work to deliver: no scheduled run drafts an email reply to it. "
+                "The owner decides on the work; a reply goes out only when he asks for one")
 CRON_PREFIX = "cron-"
 
 # The ask is his choice. The record writes the ask about him in the third
@@ -245,6 +256,8 @@ def check(item: dict, says: str = "", *, own=()) -> dict | None:
     ask = str(item.get("ask") or "")
     if letters.is_letter_request(item):
         return {"rule": "letter", "why": LETTER_WHY, "line": LETTER_LINE, "choices": []}
+    if cases.is_case_request(item):
+        return {"rule": "case", "why": CASE_WHY, "line": CASE_LINE, "choices": []}
     if mail_completion.non_email_work(item):
         return {"rule": "non_email", "why": "the request needs work, not an email reply",
                 "line": ask or "Complete the requested work; keep it open until it is delivered.",
@@ -317,8 +330,13 @@ def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body:
             except Exception:
                 found = {}
             decisions = [d for c in convs for d in found.get(c) or []]
-    if any(letters.is_letter_request(r) for r in rows or ()) or _letter_thread(conversation_id):
+    if any(letters.is_letter_request(r) for r in rows or ()):
         return LETTER_REFUSAL
+    if any(cases.is_case_request(r) for r in rows or ()):
+        return CASE_REFUSAL
+    thread = _case_thread(conversation_id)
+    if thread:
+        return LETTER_REFUSAL if thread == "letter" else CASE_REFUSAL
     if any(mail_completion.non_email_work(r) for r in rows or ()):
         return "this request requires completing and delivering work, not an email reply"
     said = no_reply_said(list(decisions or []) + [d for r in rows or () for d in r.get("owner_said") or []])
@@ -353,21 +371,28 @@ def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body:
     return ""
 
 
-def _letter_thread(conversation_id: str) -> bool:
-    """The conversation holds an open letter row (letters.py). False when
-    the ledger cannot be read: the rows the draft names still decide."""
+def _case_thread(conversation_id: str) -> str:
+    """The kind of the open work case on this conversation (cases.py), or
+    "". "" when the ledger cannot be read: the rows the draft names still
+    decide."""
     if not conversation_id:
-        return False
+        return ""
     try:
-        conn = letters.connect()
+        conn = cases.connect()
     except Exception:
-        return False
+        return ""
     try:
-        return letters.case_for_conversation(conn, conversation_id) is not None
+        c = cases.case_for_conversation(conn, conversation_id)
+        return c["kind"] if c else ""
     except Exception:
-        return False
+        return ""
     finally:
         conn.close()
+
+
+def _letter_thread(conversation_id: str) -> bool:
+    """The conversation holds an open letter row (letters.py)."""
+    return _case_thread(conversation_id) == "letter"
 
 
 NEEDS_OWNER_HINT = ("A scheduled run may not draft this reply. Record the question for the owner "
