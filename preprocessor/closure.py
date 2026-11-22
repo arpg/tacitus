@@ -55,6 +55,10 @@ try:
     import ledger as _ledger
 except ModuleNotFoundError:  # imported as preprocessor.<mod>
     from preprocessor import ledger as _ledger
+try:
+    import mail_completion
+except ModuleNotFoundError:
+    from preprocessor import mail_completion
 
 DECISIVE = "decisive"
 PROPOSAL = "proposal"
@@ -157,7 +161,7 @@ def tier(signal: str, entry: dict) -> str:
         # finishes it, linked or not.
         return PROPOSAL
     if signal in LINKED_SIGNALS:
-        return DECISIVE
+        return PROPOSAL if mail_completion.non_email_work(entry) else DECISIVE
     if kept_open_at(entry) or renewed_at(entry):
         # The user judged this row open after evidence of this kind looked
         # like an answer, or a new message reopened it (an active thread,
@@ -168,7 +172,8 @@ def tier(signal: str, entry: dict) -> str:
     if signal in REPLY_SIGNALS:
         return DECISIVE if _ledger.closes_on_reply(entry) else PROPOSAL
     if signal in ARCHIVE_SIGNALS:
-        return DECISIVE if _ledger.is_detector_row(entry.get("id") or "") else PROPOSAL
+        return DECISIVE if (_ledger.is_detector_row(entry.get("id") or "")
+                            and not mail_completion.non_email_work(entry)) else PROPOSAL
     how = _ledger.closes_on(entry)
     if signal in LAPSE_SIGNALS:
         if not _ledger.lapses(entry):
@@ -449,6 +454,9 @@ def hill_move(signal: str, entry: dict, actor: str, base: str) -> str:
     promoted."""
     if is_plugin_row(entry):
         return ""
+    if (mail_completion.non_email_work(entry)
+            and signal in REPLY_SIGNALS | ARCHIVE_SIGNALS | LINKED_SIGNALS):
+        return ""  # an email or archive cannot prove delivery of the work
     try:
         import closure_policy as _policy
     except ModuleNotFoundError:  # imported as preprocessor.<mod>

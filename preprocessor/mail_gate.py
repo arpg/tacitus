@@ -91,8 +91,9 @@ def remote_text(rec: dict) -> str:
 
 def _record_fields(rec: dict, level: str = "full") -> dict:
     """The record's fields an item carries: no verbatim quote below full."""
-    res = rec.get("result") or {}
-    out = {k: res.get(k) for k in ("state", "needs_reply", "ask", "deadline", "scheduling",
+    import mail_privacy
+    res = mail_privacy._completion_record(rec.get("result") or {})
+    out = {k: res.get(k) for k in ("state", "needs_reply", "response_mode", "ask", "deadline", "scheduling",
                                     "offered_times", "people", "tone", "domain")}
     for k in ("links", "quotes", "attachments"):
         if res.get(k) and (k != "quotes" or level == "full"):

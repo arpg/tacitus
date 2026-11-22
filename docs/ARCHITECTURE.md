@@ -528,6 +528,18 @@ name on that line at three and a place in `today_top` at five. The Claude
 lane's skills do the same and record with `ledger.py note-reply`. The
 preprocessor also sets a snoozed row back to `open` on its day.
 
+Mail records distinguish an email answer from the work requested in an
+email (`response_mode`: email, submission, document, form, other, none,
+unknown). `mail_completion.py` reads that mode, a row's declared
+`closes_on=submission`, or explicit work verbs in an older record's ask.
+Letter requests, uploads, reports and forms remain open work with their
+deadlines; they stay out of the reply queue and scheduled reply drafts.
+An acknowledgement cannot close them or erase an overdue work date.
+Intake declares submission/form work to close on submission and document
+work to close manually. Cached thread briefs are normalized and refreshed
+without another model call. A real question about accepting the work or
+its logistics can still require an email answer.
+
 The bot puts the same queue in front of the owner once a day
 (`_post_reply_queue`, a router tick that runs with or without the
 resident): from 08:00 local and outside quiet hours it reads `ledger.py

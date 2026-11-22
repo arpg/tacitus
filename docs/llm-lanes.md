@@ -314,6 +314,7 @@ the remote model's summary, and `remote_record` carries its fields:
   "remote_record": {
     "state": "needs-reply",
     "needs_reply": true,
+    "response_mode": "unknown",
     "ask": "Send the final slides.",
     "deadline": "2026-10-14",
     "scheduling": "none",
@@ -1124,6 +1125,7 @@ user's reply inline, and the lane receives this:
       "remote_record": {
         "state": "needs-reply",
         "needs_reply": true,
+        "response_mode": "unknown",
         "ask": "Send the final slides.",
         "deadline": "2026-10-14",
         "scheduling": "none",
@@ -1152,6 +1154,7 @@ user's reply inline, and the lane receives this:
       "remote_record": {
         "state": "fyi",
         "needs_reply": false,
+        "response_mode": "unknown",
         "ask": "",
         "deadline": "",
         "scheduling": "none",
@@ -1254,6 +1257,7 @@ The brief for the slides thread, as `ledger.py get` returns it in
   "ask": "Send the final slides.",
   "state": "needs-reply",
   "needs_reply": true,
+  "response_mode": "unknown",
   "deadline": "2026-10-14",
   "offered_times": [],
   "scheduling": "none",
@@ -1360,7 +1364,7 @@ side in 1.9 seconds.
   "seal_s": 1.9,
   "seal_error": "",
   "raw_bytes": 989,
-  "sealed_bytes": 1679
+  "sealed_bytes": 1735
 }
 ```
 

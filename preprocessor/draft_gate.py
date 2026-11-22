@@ -44,6 +44,11 @@ import os
 import re
 from datetime import date
 
+try:
+    import mail_completion
+except ModuleNotFoundError:
+    from preprocessor import mail_completion
+
 # A reply-all that reaches this many people besides the owner is his call.
 MANY_RECIPIENTS = 10
 CRON_PREFIX = "cron-"
@@ -225,6 +230,10 @@ def check(item: dict, says: str = "", *, own=()) -> dict | None:
     the answer a model proposed: the answer is his to give."""
     title = _clip(item.get("title") or "this thread", 90)
     ask = str(item.get("ask") or "")
+    if mail_completion.non_email_work(item):
+        return {"rule": "non_email", "why": "the request needs work, not an email reply",
+                "line": ask or "Complete the requested work; keep it open until it is delivered.",
+                "choices": []}
     brief = item.get("brief") if isinstance(item.get("brief"), dict) else None
     if brief is None and isinstance(item.get("thread"), list):
         # A reply-queue entry: its last messages, each with its state.
@@ -293,6 +302,8 @@ def cron_refusal(*, run_id: str, conversation_id: str = "", ledger_ids=(), body:
             except Exception:
                 found = {}
             decisions = [d for c in convs for d in found.get(c) or []]
+    if any(mail_completion.non_email_work(r) for r in rows or ()):
+        return "this request requires completing and delivering work, not an email reply"
     said = no_reply_said(list(decisions or []) + [d for r in rows or () for d in r.get("owner_said") or []])
     if said:
         when = _day(said.get("at"))
