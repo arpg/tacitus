@@ -59,6 +59,10 @@ try:
     import mail_completion as _mail_completion
 except ModuleNotFoundError:
     from preprocessor import mail_completion as _mail_completion
+try:
+    import letters as _letters
+except ModuleNotFoundError:
+    from preprocessor import letters as _letters
 
 EA_DIR = Path(os.environ.get("EA_DIR", os.path.expanduser("~/.ea")))
 DB_PATH = EA_DIR / "state" / "obligations-ledger.db"
@@ -572,7 +576,7 @@ def closes_on_reply(entry: dict) -> bool:
     is a reply. Any other row is finished by a send only when the draft
     names it (`--ledger-id`); a reply in the same thread about something
     else leaves it open."""
-    if is_waiting(entry) or _mail_completion.non_email_work(entry):
+    if is_waiting(entry) or _mail_completion.non_email_work(entry) or _letters.is_letter_row(entry):
         return False
     how = closes_on(entry)
     if how:
@@ -2048,7 +2052,7 @@ def lapses(entry: dict) -> bool:
     decides, so a later ask in the thread (a nomination to confirm) keeps
     the row. A row declared to close another way never lapses."""
     how = closes_on(entry)
-    if how and how != "lapse":
+    if (how and how != "lapse") or _letters.is_letter_row(entry):
         return False
     if not str(entry.get("id") or "").startswith("deadline-"):
         return how == "lapse"
@@ -2266,7 +2270,8 @@ def date_spent(entry: dict, today=None) -> str:
         return f"the meeting was {due:%b} {due.day}"
     if lapses(entry):
         return "nothing was asked of you"
-    acted = "" if _mail_completion.non_email_work(entry) else acted_since(entry, due)
+    acted = "" if (_mail_completion.non_email_work(entry)
+                   or _letters.is_letter_row(entry)) else acted_since(entry, due)
     if acted:
         at = date.fromisoformat(acted)
         return f"you wrote {at:%b} {at.day}"
@@ -2305,7 +2310,10 @@ def reply_owed(entry: dict) -> bool:
     not written since. The thread brief decides; a row without one (an
     install with no mail records) owes a reply when its type says so and
     it came from a message."""
-    if is_waiting(entry) or _mail_completion.non_email_work(entry):
+    if (is_waiting(entry) or _mail_completion.non_email_work(entry)
+            or _letters.is_letter_row(entry)):
+        # A letter request is work with dates: the letter, not an email
+        # reply (letters.py). Its one decision is a question with buttons.
         return False
     brief = _thread(entry)
     if brief:
