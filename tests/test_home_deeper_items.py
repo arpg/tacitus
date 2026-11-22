@@ -23,6 +23,24 @@ from test_home_items import TODAY, Ledger, home  # noqa: E402
 WAIT = (TODAY + timedelta(days=4)).isoformat()
 
 
+@pytest.fixture(autouse=True)
+def hermetic(monkeypatch, tmp_path):
+    """No live state in any test here: HOME, EA_DIR and the private dir are
+    empty temp folders, and the ledger the code would open (briefing_review,
+    home_items' room rule, read_row) is a file there that does not exist."""
+    home_dir = tmp_path / "home"
+    for d in (home_dir / ".ea" / "state", home_dir / ".ea-private"):
+        d.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("EA_DIR", str(home_dir / ".ea"))
+    monkeypatch.setenv("EA_PRIVATE_DIR", str(home_dir / ".ea-private"))
+    import ledger
+    import owner_trust
+    monkeypatch.setattr(ledger, "DB_PATH", home_dir / ".ea" / "state" / "obligations-ledger.db")
+    # the owner's tree as the passwd home names it: the temp one too
+    monkeypatch.setattr(owner_trust, "install_ea_dir", lambda: home_dir / ".ea")
+
+
 def answer() -> str:
     return json.dumps({
         "history": ["The records show the work is still open."],
