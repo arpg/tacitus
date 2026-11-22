@@ -192,7 +192,8 @@ def test_a_reply_owed_says_who_asked_what_and_how_long_it_waited():
     assert it["brief"]["what"] == "A reply you owe Alex Kim."  # the title names the subject
     assert it["brief"]["asked"] == "Sign the data access form and send it back."
     assert it["brief"]["standing"] == ["It has waited 4 days for your reply.", "You last wrote on it 5 days ago."]
-    assert it["brief"]["next"] == "Draft a short reply for you to check. Nothing goes out without your Send."
+    # signing a form is work, not only a reply (mail_completion, the form the ask names)
+    assert it["brief"]["next"] == "This needs a form filled in, not just a reply. Ask Tacitus to start it."
     assert ids(it) == ["draft", "say", "not_needed", "later"]
     assert next(c for c in it["choices"] if c["id"] == "say")["input"] == "text"
     assert it["ask"] == 'About the reply to "Data access form": '
@@ -313,7 +314,7 @@ def test_a_kept_item_shows_keep_gates_line_alone_and_opens_in_outlook(level):
     it = I.item(kept_sources(level), "reply:response-r2")
     assert it["kept"] == level
     assert it["brief"] == {"what": "", "asked": "", "due": "", "standing": [], "next": ""}
-    assert ids(it) == ["outlook"] and "ask" not in it and it["detail"] == ""
+    assert ids(it) == ["outlook", "done", "later"] and "ask" not in it and it["detail"] == ""
     raw = json.dumps({k: v for k, v in it.items() if k != "title"})
     for secret in ("Wire the funds", "Funds and numbers", "read the numbers", SECRET_WHO, SECRET_SUBJECT):
         assert secret not in raw
@@ -323,15 +324,27 @@ def test_a_kept_item_shows_keep_gates_line_alone_and_opens_in_outlook(level):
         assert SECRET_WHO in it["title"] and "Wire the funds" not in it["title"]
 
 
-def test_a_kept_item_takes_no_other_choice(monkeypatch):
+def test_a_kept_item_takes_done_and_later_and_nothing_that_reads_it(monkeypatch):
     led = Ledger(monkeypatch)
-    _fe, h, bot, _c = home(src=lambda tz: kept_sources("local"))
-    for choice in ("draft", "say", "not_needed", "later", "done"):
+    _fe, h, bot, clock = home(src=lambda tz: kept_sources("local"))
+    for choice in ("draft", "say", "not_needed", "start", "waiting"):
         out, _after = h.act("reply:response-r2", choice, "tomorrow")
         assert out == {"ok": False, "said": I.NO_CHOICE, "item": out["item"]}
     assert bot.drafts == [] and led.calls == []
     out, _after = h.act("reply:response-r2", "outlook")
     assert out["ok"] and out["goto"] == "https://outlook.example.com/mail/conv-r2"
+    out, _after = h.act("reply:response-r2", "done", "", h.item("reply:response-r2")["version"])
+    assert out["said"] == "Done. It is off your list." and out["undo"]
+    raw = json.dumps(out) + json.dumps(h.item("reply:response-r2"))
+    assert SECRET_WHO not in raw and SECRET_SUBJECT not in raw and "Wire the funds" not in raw
+    assert h.undo(out["undo"])["ok"] and led.calls == []  # undone in time: nothing written
+    out, _after = h.act("reply:response-r2", "later", "tomorrow")
+    clock[0] += I.UNDO_S
+    h.acts.commit_due()
+    assert led.calls[0][:2] == ("ledger.py", "update") and "--snooze-until" in led.calls[0]
+    _fe, h, bot, _c = home(src=lambda tz: kept_sources("local"))
+    out, _after = h.act("reply:response-r2", "done", "", "0" * 16)  # read before it changed
+    assert out["ok"] is False and out["said"] == I.CHANGED
 
 
 def test_a_kept_post_item_opens_its_own_link():
@@ -901,3 +914,134 @@ def test_a_hook_that_fails_never_fails_the_write(ledger_db, monkeypatch, capsys)
     assert "was not told of task-z2" in out.err
     monkeypatch.setitem(sys.modules, "home_deeper", types.SimpleNamespace())  # no hook in it
     assert _verb(monkeypatch, "update", "--id", "task-z2", "--last-action", "booked") == 0
+
+
+# ── the owner in the third person ────────────────────────────────────
+
+NAMES = ("Pat Moreno", "Pat")
+
+
+@pytest.mark.parametrize("note,card", [
+    ("Pat confirmed this is waiting on collaborators.", "You confirmed this is waiting on collaborators."),
+    ("Pat asks for the table.", "You ask for the table."),
+    ("Pat is out until Monday.", "You are out until Monday."),
+    ("Pat also wants the slides.", "You also want the slides."),
+    ("Pat Moreno agreed to write the letter.", "You agreed to write the letter."),
+    ("Sam asks Pat to complete the table by Friday.", "Sam asks you to complete the table by Friday."),
+    ("Sam asked Pat to review his paper.", "Sam asked you to review his paper."),
+    ("Pat's draft went out.", "Your draft went out."),
+    ("Lee answered Pat's questions.", "Lee answered your questions."),
+    ("The review is the reviewer's, not Pat's.", "The review is the reviewer's, not yours."),
+    ("Pat made it dormant; Pat has the final say.", "You made it dormant; you have the final say."),
+    ("Patterns from the lab went out.", "Patterns from the lab went out."),
+])
+def test_a_note_about_the_owner_speaks_to_him(note, card):
+    assert I.second_person(note, NAMES) == card
+
+
+@pytest.mark.parametrize("note", ["Pat (chat): the pass takes four hours.", "Pat said he would send it.",
+                                  "Pat purple the thing.", "Pat"])
+def test_a_note_that_cannot_be_rewritten_cleanly_is_not_shown(note):
+    assert I.second_person(note, NAMES) == ""
+
+
+def test_the_card_rewrites_the_note_and_never_the_row(monkeypatch):
+    monkeypatch.setattr(I, "owner_names", lambda: NAMES)
+    src = F.sources()
+    src.rows["task-s2"]["last_action"] = f"{TODAY.isoformat()}: Pat asked the committee for its template."
+    assert I.item(src, "item:task-s2")["brief"]["standing"] == [
+        "Last step today: You asked the committee for its template."]
+    assert src.rows["task-s2"]["last_action"].endswith("Pat asked the committee for its template.")
+    src.rows["task-s2"]["last_action"] = f"{TODAY.isoformat()}: Pat said he would ask."
+    assert I.item(src, "item:task-s2")["brief"]["standing"] == []
+    src.closed[0]["last_action"] = "Pat closed it from the phone."
+    assert I.item(src, "closed:row-c1")["brief"]["standing"] == ["Why: You closed it from the phone."]
+
+
+def test_the_owners_name_comes_from_the_profile(tmp_path, monkeypatch):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "user-profile.json").write_text(json.dumps({"name": "Pat Moreno"}))
+    monkeypatch.setattr(H, "_ea_dir", lambda: tmp_path)
+    monkeypatch.setattr(I, "_PROFILE", {})
+    assert I.owner_names() == ("Pat Moreno", "Pat")
+    monkeypatch.setattr(I, "_PROFILE", {})
+    monkeypatch.setattr(H, "_ea_dir", lambda: tmp_path / "none")
+    assert I.owner_names() == ()
+
+
+# ── a request that needs work, not only a reply ─────────────────────
+
+def test_a_reply_that_asks_for_work_says_what_the_work_is():
+    src = F.sources()
+    src.rows["response-r1"]["thread_brief"].update(scheduling="none", ask="Ask about the seminar room")
+    assert I.item(src, "reply:response-r1")["brief"]["next"] == \
+        "Draft a short reply for you to check. Nothing goes out without your Send."
+    src.rows["response-r1"]["thread_brief"]["ask"] = "Submit the recommendation letter through the portal"
+    assert I.item(src, "reply:response-r1")["brief"]["next"] == \
+        "This needs a submission, not just a reply. Ask Tacitus to start it."
+    src.rows["response-r1"]["thread_brief"]["ask"] = "Ask about the seminar room"
+    src.rows["response-r1"]["type"] = "deadline"  # work the owner delivers, on the reply list
+    assert I.item(src, "reply:response-r1")["brief"]["next"] == \
+        "This needs work, not just a reply. Ask Tacitus to start it."
+    src.rows["deadline-w1"]["thread_brief"]["ask"] = "Fill out the reviewer survey"
+    assert I.item(src, "item:deadline-w1")["brief"]["next"] == "Fill in the form with you once you start it."
+
+
+# ── the briefing's review counts a pending choice as written ────────
+
+def test_the_review_reads_homes_pending_choices_as_written(monkeypatch):
+    import sqlite3
+    import briefing_review as br
+    import owner_trust
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: True)  # the review runs as the owner
+    store = owner_trust.private_dir() / "webchat.sqlite"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(store))
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    acts = {"t1": {"ref": "item:task-s2", "op": "done", "lid": "task-s2", "due": 1},
+            "t2": {"ref": "reply:response-r2", "op": "later", "lid": "response-r2", "due": 1},
+            "t3": {"ref": "x", "op": "draft", "lid": "nope"}}
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('home:acts', ?)", (json.dumps(acts),))
+    conn.commit()
+    conn.close()
+    try:
+        assert I.pending_rows() == {"task-s2": "done", "response-r2": "later"}
+        assert br.home_pending() == {"task-s2": "done", "response-r2": "later"}
+    finally:
+        store.unlink()
+    assert I.pending_rows() == {}
+    monkeypatch.setattr(owner_trust, "is_owner_process", lambda: False)  # another user reads nothing
+    assert I.pending_rows() == {}
+    items = [{"ref": "A", "ledger_id": "task-s2", "section": "top", "line": "Send the slides"},
+             {"ref": "B", "ledger_id": "response-r2", "section": "needs", "line": "Data access form"},
+             {"ref": "C", "ledger_id": "task-s2", "section": "draft", "sections": ["draft"], "line": "x"},
+             {"ref": "D", "ledger_id": "deadline-w1", "section": "top", "line": "Review"}]
+    led = {"rows": {}, "events": {}, "by_conv": {}, "naming": {}}
+    got = br.hard_checks(items, led, today=TODAY, pending={"task-s2": "done", "response-r2": "later"})
+    assert got["A"] == {"action": "drop", "kind": "closed", "by": "code", "why": "you marked it done on Home"}
+    assert got["B"]["kind"] == "snoozed" and got["B"]["why"] == "you set it aside on Home"
+    assert got["C"]["action"] == "hold-draft" and "D" not in got
+    assert br.hard_checks(items, led, today=TODAY) == {}
+
+
+# ── the deeper briefing's own module, merged ────────────────────────
+
+def test_with_the_deeper_module_the_item_reads_its_state_and_its_steps_run_as_choices(monkeypatch):
+    import importlib
+    deeper = importlib.import_module("home_deeper")
+    monkeypatch.setattr(I, "_deeper_mod", lambda: deeper)
+    _fe, h, _bot, _c = home()
+    it = h.item("item:deadline-w1")
+    assert it["deeper"]["state"] in ("none", "unavailable") and ids(it)[:2] == ["start", "done"]
+    assert set(deeper.CHOICE_OF) <= set(deeper.STEP_KINDS)
+    mine = {"draft", "say", "done", "not_needed", "later", "waiting", "start", "answer"}
+    assert {c for v in deeper.CHOICE_OF.values() for c in v} <= mine  # every step names a choice here
+
+
+def test_a_ledger_write_loads_no_hook_module_that_has_no_hook(monkeypatch):
+    for name in ("home_deeper", "preprocessor.home_deeper"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(ledger, "ROW_WRITTEN_HOOKS", ("home_deeper",))
+    src = (REPO / "preprocessor" / "home_deeper.py").read_text()
+    ledger._row_written("task-z9", created=True)
+    assert ("home_deeper" in sys.modules) == ("def row_written(" in src)

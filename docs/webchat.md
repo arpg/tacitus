@@ -895,9 +895,18 @@ four lines: how long it waited, the owner's last message, his earlier
 word, what Tacitus did, a close it proposed, a meeting asked) and `next`,
 what Tacitus would do, picked from the row's type and state ("Draft a
 reply with two or three times from your calendar." only when the thread
-asks to meet). No line says yes for the owner. A kept item (`local`,
-`facts`) has none of it: its title is `keep_gate.kept_line` and its one
-choice is Open in Outlook (a kept request: Open it in Action requests).
+asks to meet). No line says yes for the owner. A request that needs work,
+not only an email (`mail_completion.response_mode`: a submission, a form,
+a document; or a row of a deliverable type on the reply list) says what
+the work is ("This needs a form filled in, not just a reply.") instead of
+offering a short reply. The EA's notes name the owner; on the card a note
+speaks to him: the name from user-profile.json becomes "you" and its
+verb agrees ("Chris asks" reads "You ask", "Chris's" reads "your"), and a
+note that cannot be rewritten cleanly (an unknown verb, a "he" left
+behind) is not shown. The stored note never changes. A kept item
+(`local`, `facts`) has no briefing: its title is `keep_gate.kept_line`,
+and its choices are Open in Outlook, Done and Later (a kept request: Open
+it in Action requests), which read nothing of it.
 
 **The choices**, and what each runs:
 
@@ -923,29 +932,32 @@ These four answer at once and take the item off Home, and the write waits
 since nothing was written, no mail moved and no draft deleted. After it
 Undo says it is too late. The pending choice is kept in Home's store, so
 the tick writes it after a restart. An item that changed in the window (a
-new message, a close from elsewhere) is not written, and shows again.
+new message, a close from elsewhere) is not written, and shows again. A
+briefing whose pre-send review runs inside the window counts the choice as
+written (`briefing_review.hard_checks`, reading Home's store through
+`home_items.pending_rows`): the item leaves the post and its draft is
+held.
 
 Every choice reads the item again first. The app sends the `version` it
 read (a digest of what the briefing and the choices are built from, which
 a refreshed record with the same facts, or a day passing, keeps); an item
-that changed since,
-or a choice it no longer offers, is refused in plain words with the item
-as it is now. A choice never sends mail, never creates an event and holds
+that changed since, or a choice it no longer offers, is refused in plain
+words with the item as it is now. A choice never sends mail, never creates an event and holds
 no confirmation token. The item read follows `/api/home` (any device that
 reads); a choice and an undo follow Action requests' buttons (never from a
 device paired on the relay's origin below "all").
 
 **The deeper briefing** is one hook (`preprocessor/home_deeper.py`:
-`state`, `start`, `step`): its block is `{"state": "unavailable"}` while
-that module is not there. Its next steps come after the code-built
+`state`, `start`, `step`; above). Its next steps come after the code-built
 choices, as `step:<id>`, and a step that names one of the choices runs as
 that tap. A briefing stored ahead of the tap is kept against the item's
 `row_version` (`home_items.row_version`: the row's own fields, its thread
 record, the reply queue's record and a close proposal, never the clock),
 which the writer computes from the row alone. `ledger.py add` and `update`
 tell it of each open row they write (`ledger._row_written`, the modules in
-`ledger.ROW_WRITTEN_HOOKS`); a hook that is missing or fails never fails
-the write.
+`ledger.ROW_WRITTEN_HOOKS`, each loaded only when its source defines
+`row_written`, since the resident's process cannot cache bytecode in the
+install tree); a hook that is missing or fails never fails the write.
 
 ## Unread
 

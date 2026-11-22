@@ -826,6 +826,15 @@ def _row_written(entry_id: str, *, created: bool) -> None:
     for name in ROW_WRITTEN_HOOKS:
         mod = sys.modules.get(name) or sys.modules.get(f"preprocessor.{name}")
         if mod is None:
+            # Loaded only when its source has the hook: the resident's
+            # process cannot cache bytecode in the install tree, so a large
+            # module would compile on every write for nothing.
+            path = Path(__file__).resolve().parent / f"{name}.py"
+            try:
+                if "def row_written(" not in path.read_text(encoding="utf-8"):
+                    continue
+            except OSError:
+                continue
             for full in (name, f"preprocessor.{name}"):
                 try:
                     mod = importlib.import_module(full)

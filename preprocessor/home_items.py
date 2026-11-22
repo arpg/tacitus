@@ -95,6 +95,7 @@ import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
+from pathlib import Path
 from urllib.parse import quote
 
 log = logging.getLogger("chat.web.home.items")
@@ -130,6 +131,8 @@ THREAD_KEYS = ("latest", "last_inbound", "last_from_user", "message_count", "nee
 ROW_KEYS = ("status", "type", "deadline", "snooze_until", "follow_up_after", "description",
             "last_action", "closes_on", "from_name", "from_email", "notes")
 DEFERRED = ("done", "not_needed", "later", "waiting")
+# The web chat's store file (web_frontend.STORE_FILE), read by pending_rows.
+STORE_FILE = "webchat.sqlite"
 
 # The choices, as the app draws them.
 DRAFT = {"id": "draft", "label": "Draft a reply", "style": "primary"}
@@ -502,7 +505,130 @@ def _a_step(raw: str) -> str:
     if not raw or len(raw) > SAID_MAX or _NOT_A_STEP.search(raw) or _SHOUTED.search(raw) \
             or _ISO_DAY.search(raw) or raw.count("(") != raw.count(")") or raw.count("'") % 2:
         return ""
-    return _plain(raw, SAID_MAX)
+    return _plain(second_person(raw, owner_names()), SAID_MAX)
+
+
+# ── the owner in the third person ────────────────────────────────────
+# The EA writes its notes about the owner by name ("Chris confirmed the
+# date."); the card speaks to him: "You confirmed the date." Code rewrites
+# the name (the profile's, at a word boundary) to "you", and a subject's
+# verb to agree with it, for the common verbs; a note it cannot rewrite
+# cleanly is not shown. The stored note is never changed.
+
+_BE_HAVE_DO = {"is": "are", "was": "were", "has": "have", "does": "do", "isn't": "aren't",
+               "wasn't": "weren't", "hasn't": "haven't", "doesn't": "don't"}
+_PRESENT = {w + "s": w for w in (
+    "ask", "want", "need", "say", "plan", "think", "prefer", "agree", "expect", "owe", "know", "write",
+    "send", "approve", "like", "hope", "intend", "lead", "review", "keep", "get", "make", "take", "give",
+    "see", "decline", "confirm", "request", "handle", "own", "attend", "join", "sign", "chair", "serve",
+    "use", "mean", "plan", "read", "hold", "help", "share", "check", "call", "meet", "visit", "travel",
+    "return", "accept", "remember", "recall", "insist", "suggest", "propose", "offer", "promise")}
+_PRESENT.update({"goes": "go", "teaches": "teach", "wishes": "wish", "reaches": "reach",
+                 "watches": "watch", "finishes": "finish", "replies": "reply", "tries": "try",
+                 "applies": "apply", "carries": "carry"})
+_PAST = frozenset("said made sent wrote took gave got went told met put read set left kept thought "
+                  "found chose spoke saw came ran paid heard held built brought bought began forgot "
+                  "knew sat stood won lost meant led drove flew rode understood".split())
+_MODALS = frozenset("will would can could should may might must shall won't can't couldn't wouldn't "
+                    "shouldn't didn't".split())
+_ADVERBS = frozenset("also still then now already just later again first never often".split())
+_THIRD = re.compile(r"\b(?:he|him|his|himself)\b", re.I)
+_PROFILE_TTL_S = 300
+_PROFILE: dict = {}
+
+
+def owner_names() -> tuple[str, ...]:
+    """The owner's full name and first name from user-profile.json (read
+    with the resident's access, as the file is in the resident's space);
+    () when it cannot be read."""
+    import time as _time
+    now = _time.monotonic()
+    if _PROFILE and now - _PROFILE.get("at", 0) < _PROFILE_TTL_S:
+        return _PROFILE["names"]
+    names: tuple[str, ...] = ()
+    try:
+        if __package__:
+            from . import resident_io
+        else:
+            import resident_io
+        text = resident_io.read_text(_hs()._ea_dir() / "config" / "user-profile.json")
+        name = " ".join(str((json.loads(text) if text else {}).get("name") or "").split())
+        first = name.split(" ")[0] if name else ""
+        if len(first) >= 2 and first.isalpha():
+            names = tuple(dict.fromkeys(x for x in (name, first) if x))
+    except Exception as e:
+        log.debug("home: the owner's name could not be read: %s", e)
+    _PROFILE.update(at=now, names=names)
+    return names
+
+
+def _verb(word: str) -> str | None:
+    """`word` as it reads after "You" (its trailing stop kept), or None
+    when it is not a verb this knows."""
+    core = word.rstrip(",;:.")
+    tail, low = word[len(core):], core.lower()
+    if low in _BE_HAVE_DO:
+        return _BE_HAVE_DO[low] + tail
+    if low in _PRESENT:
+        return _PRESENT[low] + tail
+    if low in _PAST or low in _MODALS or (low.endswith("ed") and len(low) > 3):
+        return word
+    return None
+
+
+_NEXT_WORDS = re.compile(r"(\s+)(\S+)(?:(\s+)(\S+))?")
+
+
+def second_person(text: str, names: tuple[str, ...] = ()) -> str:
+    """`text` with the owner's name as "you": "Chris confirmed" -> "You
+    confirmed", "Chris asks" -> "You ask", "asks Chris to" -> "asks you
+    to", "Chris's" -> "your". '' when a use cannot be rewritten cleanly: a
+    subject whose verb is not one this knows, or "he", "him" or "his" left
+    after he was the subject. `text` unchanged when it does not name him."""
+    if not names or not text:
+        return text
+    pat = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")(?:'s|\u2019s|')?(?![\w'])")
+    if not pat.search(text):
+        return text
+    out: list[str] = []
+    pos, subject = 0, False
+    for m in pat.finditer(text):
+        if m.start() < pos:
+            continue
+        out.append(text[pos:m.start()])
+        so_far = "".join(out)
+        cap = not so_far.strip() or bool(re.search(r"[.!?]\s*$", so_far))
+        at_start = cap or bool(re.search(r"[;:]\s*$", so_far))
+        if m.group(0).endswith(("'s", "\u2019s", "'")):
+            alone = not re.match(r"\s*[A-Za-z0-9]", text[m.end():])  # "not Chris's." -> "not yours."
+            out.append(("Your" if cap else "your") + ("s" if alone else ""))
+            pos = m.end()
+            continue
+        if not at_start:
+            out.append("you")
+            pos = m.end()
+            continue
+        nxt = _NEXT_WORDS.match(text, m.end())
+        if not nxt:
+            return ""
+        first = nxt.group(2)
+        if first.lower().rstrip(",;:") in _ADVERBS and nxt.group(4):
+            verb = _verb(nxt.group(4))
+            words = f"{nxt.group(1)}{first}{nxt.group(3)}{verb}" if verb else None
+        else:
+            verb = _verb(first)
+            words = f"{nxt.group(1)}{verb}" if verb else None
+            nxt_end = nxt.start(3) if nxt.group(3) else nxt.end()
+        if words is None:
+            return ""
+        out.append(("You" if cap else "you") + words)
+        pos = nxt.end() if first.lower().rstrip(",;:") in _ADVERBS and nxt.group(4) else nxt_end
+        subject = True
+    out.append(text[pos:])
+    result = "".join(out)
+    if subject and _THIRD.search(result):
+        return ""
+    return result
 
 
 def _next(f: Found) -> str:
@@ -523,7 +649,10 @@ def _next(f: Found) -> str:
         if _decision(f):
             return "Once you answer, Tacitus writes the reply. You check it before it goes."
         return "Once you answer, Tacitus works on it with you."
+    work = _work(f)
     if kind == "reply":
+        if work:
+            return WORK_NEXT[work]
         if queued.get("outcome") == "drafted":
             return "Bring its draft back to Action requests for your Send."
         sched = str(thread.get("scheduling") or reply.get("scheduling") or "none")
@@ -539,8 +668,85 @@ def _next(f: Found) -> str:
             return "Wait for their answer. It stays off your list until then."
         if str(thread.get("scheduling") or "none") not in ("", "none"):
             return "Find times on your calendar once you start it."
+        if work in ITEM_WORK_NEXT:
+            return ITEM_WORK_NEXT[work]
         return "Nothing on its own. Start it when you are ready."
     return ""
+
+
+# What Tacitus would do next for a request that needs work, not only an
+# email (mail_completion.response_mode, #334's signal): on a reply, and on
+# a to-do. "other" is a row whose type is work the owner delivers
+# (ledger.types_with("deliverable"), not a reply type) with no clearer mode.
+WORK_NEXT = {"submission": "This needs a submission, not just a reply. Ask Tacitus to start it.",
+             "form": "This needs a form filled in, not just a reply. Ask Tacitus to start it.",
+             "document": "This needs a document written, not just a reply. Ask Tacitus to start it.",
+             "other": "This needs work, not just a reply. Ask Tacitus to start it."}
+ITEM_WORK_NEXT = {"submission": "Work on the submission with you once you start it.",
+                  "form": "Fill in the form with you once you start it.",
+                  "document": "Write the document with you once you start it."}
+
+
+def _work(f: Found) -> str:
+    """The work the request asks for beyond an email: submission, form,
+    document, other; '' for none."""
+    row = dict(f.row or {})
+    if not row and f.reply:
+        row = {"ask": f.reply.get("ask"), "state": f.reply.get("state"), "type": f.reply.get("type")}
+    if not row:
+        return ""
+    try:
+        if __package__:
+            from . import mail_completion
+        else:
+            import mail_completion
+        mode = mail_completion.response_mode(row)
+    except Exception:
+        mode = "unknown"
+    if mode in ("submission", "form", "document", "other"):
+        return mode
+    led = _ledger()
+    rtype = led.canonical_type(row.get("type"))
+    if rtype in led.types_with("deliverable") and rtype not in led.types_with("closes_on_reply"):
+        return "other"
+    return ""
+
+
+def pending_rows() -> dict[str, str]:
+    """{ledger id: choice} for the Done, Not needed, Waiting and Later on
+    Home that wait for their undo window, read from Home's store by another
+    owner process (the briefing's pre-send review), so it treats them as
+    done: the choice is the owner's, and it is written within seconds. {}
+    when this process is not the owner's or the store cannot be read."""
+    try:
+        if __package__:
+            from . import chat_notify as _cn, owner_trust
+        else:
+            import chat_notify as _cn
+            import owner_trust
+        if not owner_trust.is_owner_process():
+            return {}
+        # the web chat's store as the chat package finds it for the owner
+        # (chat._web_store_path): the block's store_path, else the private dir's
+        try:
+            web = _cn._web_cfg()
+        except Exception:  # no chat settings: the default place
+            web = {}
+        path = Path(str(web["store_path"])) if web.get("store_path") else \
+            owner_trust.private_dir() / STORE_FILE
+        if not path.exists():
+            return {}
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        try:
+            got = conn.execute("SELECT value FROM meta WHERE key = ?", ("home:" + Acts.STORE,)).fetchone()
+        finally:
+            conn.close()
+        acts = json.loads(got[0]) if got and got[0] else {}
+    except Exception as e:
+        log.debug("home: the choices that wait for an undo could not be read: %s", e)
+        return {}
+    return {str(v["lid"]): str(v["op"]) for v in (acts.values() if isinstance(acts, dict) else [])
+            if isinstance(v, dict) and v.get("lid") and v.get("op") in DEFERRED}
 
 
 def brief(f: Found, src) -> dict:
@@ -635,9 +841,10 @@ def choices(f: Found, src) -> list[dict]:
         return [dict(OPEN)] if f.item.get("href") else []
     if kind == "closed":
         return [dict(REOPEN)] if f.lid and not f.keep else []
-    if f.keep:
-        return [dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []
     acts = _open_row(f)
+    if f.keep:  # keep_gate's line alone: open it in Outlook, or settle it here
+        return ([dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []) + \
+            ([dict(DONE), later_choice(today)] if acts else [])
     if kind == "reply":
         return [dict(DRAFT), dict(SAY)] + ([dict(NOT_NEEDED), later_choice(today)] if acts else [])
     if kind == "question":
