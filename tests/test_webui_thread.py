@@ -503,7 +503,10 @@ def test_a_send_the_host_refuses_goes_again_with_the_same_nonce(app):
     assert len(stub.refused_posts) == 2 and len(stub.posts) == 1
     assert stub.post_nonces[0] and stub.post_nonces[0] == stub.refused_posts[0].get("nonce")
     expect(page.locator("#messages .msg.own:has-text('Hold this thought')")).to_be_visible()
-    assert page.input_value("#text") == "" and page.locator("#composer-note").text_content() == ""
+    # The page clears the composer when the host's answer lands, a moment
+    # after the stub has counted the post.
+    expect(page.locator("#text")).to_have_value("")
+    expect(page.locator("#composer-note")).to_have_text("")
     assert not [e for e in errors if "503" not in e], errors
 
 
