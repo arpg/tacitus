@@ -70,7 +70,10 @@ def avery():
            _dest("av8", "Prairie University"), _dest("av9", "Coastal Academy")]
     return {"id": "case-av", "person_name": "Avery Quinn", "person_email": "avery.q@example.org",
             "kind": "recommendation", "opened": "2026-11-18", "materials": [{"kind": "cv", "ref": "cv.pdf"}],
-            "base_letter": "", "notes": "", "destinations": ds}
+            "base_letter": "", "notes": "", "destinations": ds,
+            # His one date for the case: the two places with no date of their
+            # own are due by it; the two that state Nov 24 keep that date.
+            "do_by": "2026-12-01"}
 
 
 def jordan():
@@ -118,7 +121,8 @@ def cases():
 def test_a_case_is_one_line_with_its_counts_and_next_date():
     f = L.facts(avery(), TODAY)
     assert (f["total"], f["submitted"], f["next_due"]) == (9, 3, date(2026, 11, 24))
-    assert [d["id"] for d in f["due_next"]] == ["av4", "av5"] and len(f["undated"]) == 2
+    # The places with no date of their own are due by the case's one date.
+    assert [d["id"] for d in f["due_next"]] == ["av4", "av5"] and f["undated"] == []
     assert L.line(avery(), TODAY) == "Letter for Avery Quinn: 3 of 9 submitted. Next due tomorrow: 2 destinations."
     assert L.line(riley(), TODAY) == "Letter for Rowan Ellery: 0 of 1 submitted. Next due Tue Dec 15: 1 destination."
     new = L.line(jordan(), TODAY)
@@ -128,10 +132,12 @@ def test_a_case_is_one_line_with_its_counts_and_next_date():
 
 
 def test_a_case_with_no_date_asks_for_it_once():
+    # The date card asks for the one date; the line says where, on its
+    # first day only.
     c = riley()
     c["destinations"][0]["due"] = ""
     c["opened"] = "2026-11-22"
-    assert L.line(c, TODAY).endswith("No due date yet. Tell me the due date.")
+    assert L.line(c, TODAY).endswith("No due date yet. Pick its date in Action requests.")
     c["opened"] = "2026-11-10"
     assert L.line(c, TODAY).endswith("No due date yet.")
 
@@ -450,15 +456,17 @@ def test_a_rooms_also_open_list_shows_a_case_once(monkeypatch):
 
 # ── reminders by date ─────────────────────────────────────────────────
 
-def test_the_ladder_rings_seven_three_one_the_day_and_the_day_after():
+def test_the_ladder_rings_the_day_before_the_day_and_the_day_after():
+    # The quiet rungs (7 and 3 days before) posted nothing: the case's lead
+    # time now brings its block back (its stage turns due), and the loud
+    # rungs stay.
     c = riley()
     rungs = {}
     for n in range(-3, 12):
         day = date(2026, 12, 15) - timedelta(days=n)
         got = L.reminders([c], day)
         rungs[n] = [(r["rung"], r["loud"]) for r in got]
-    assert {n: v for n, v in rungs.items() if v} == {7: [(7, False)], 3: [(3, False)], 1: [(1, True)],
-                                                     0: [(0, True)], -1: [(-1, True)]}
+    assert {n: v for n, v in rungs.items() if v} == {1: [(1, True)], 0: [(0, True)], -1: [(-1, True)]}
 
 
 def test_a_rung_fires_once_and_stops_when_submitted():
@@ -473,37 +481,50 @@ def test_a_rung_fires_once_and_stops_when_submitted():
     moved = riley()
     moved["destinations"][0]["due"] = "2026-12-15"
     assert L.reminders([moved], day, sent) == []           # same date, same rung: already sent
-    moved["destinations"][0]["due"] = "2026-12-15"
     moved["destinations"][0]["due"] = "2026-12-21"
-    assert L.reminders([moved], day, sent)[0]["rung"] == 7   # a new date starts its own ladder
+    assert L.reminders([moved], date(2026, 12, 20), sent)[0]["rung"] == 1   # a new date starts again
 
 
 def test_the_card_plan_asks_once_then_keeps_one_block():
+    """One date per case, then quiet until it is time: the decision once,
+    the date card once, nothing while quiet, the block at its lead time,
+    nothing again in the same state, the loud rungs, and a retired card
+    when the case is done."""
     c_new, c_open = jordan(), riley()
-    # Dec 15 is more than two weeks out: no block yet, the briefing lists it
     plan = L.card_plan([c_new, c_open], {}, TODAY)
-    assert sorted((p["case"], p["what"]) for p in plan) == [("case-jp", "ask")]
-    plan = L.card_plan([c_new, c_open], {}, date(2026, 12, 1))
-    assert sorted((p["case"], p["what"]) for p in plan) == [("case-jp", "ask"), ("case-rc", "case")]
-    cards = {"case-jp": {"kind": "ask", "live": False}, "case-rc": {"kind": "case", "live": True}}
-    assert L.card_plan([c_new, c_open], cards, TODAY) == []     # asked once; the block is up
+    # Rowan's case has a yes and no date: its one date card, asked once
+    assert sorted((p["case"], p["what"]) for p in plan) == [("case-jp", "ask"), ("case-rc", "date")]
+    cards = {"case-jp": {"kind": "ask", "live": False},
+             "case-rc": {"kind": "date", "live": True, "asked_date": True}}
+    assert L.card_plan([c_new, c_open], cards, TODAY) == []     # asked once each; never again
+    c_open["do_by"] = "2026-12-15"                               # he picked a date
+    cards["case-rc"]["live"] = False
+    # quiet until its lead time (seven days before): no card, no line
+    assert [p["what"] for p in L.card_plan([c_open], cards, TODAY)] == ["mark"]
+    plan = L.card_plan([c_open], cards, date(2026, 12, 8))
+    assert [p["what"] for p in plan] == ["case"] and plan[0]["sig"]
+    cards["case-rc"] = {"kind": "case", "live": True, "sig": plan[0]["sig"], "do_by": "2026-12-15",
+                        "parts": ["rc1"]}
+    assert L.card_plan([c_open], cards, date(2026, 12, 9)) == []     # the block is up
+    # a press that changed nothing took the card: no new card in the same state
+    cards["case-rc"]["live"] = False
+    assert L.card_plan([c_open], cards, date(2026, 12, 9)) == []
     # the day before its date, the block is posted again
     plan = L.card_plan([c_open], cards, date(2026, 12, 14))
     assert plan[0]["what"] == "remind" and plan[0]["items"][0]["rung"] == 1
-    # three days before: a quiet rung, recorded, nothing posted
-    plan = L.card_plan([c_open], cards, date(2026, 12, 12))
-    assert plan == [{"case": "case-rc", "what": "mark", "keys": ["rc1:3:2026-12-15"]}]
     # a case with nothing left to do: its card is retired
     done = riley()
     done["destinations"][0]["state"] = "submitted"
+    cards["case-rc"]["live"] = True
     assert L.card_plan([done], cards, TODAY) == [{"case": "case-rc", "what": "retire"}]
 
 
 def test_the_loud_reminder_names_the_destinations_due():
+    # One reminder per case, naming the places due that day.
     items = L.reminders([avery()], TODAY)
-    assert {i["dest"] for i in items} == {"av4", "av5"} and all(i["loud"] for i in items)
+    assert len(items) == 1 and items[0]["parts"] == ["av4", "av5"] and items[0]["loud"]
     text = L.reminder_text(avery(), items, TODAY, "full")
-    assert text == "Letter for Avery Quinn: 2 destinations due tomorrow (Northfield Graduate School, Lakeside Institute)."
+    assert text == "Letter for Avery Quinn: 2 places due tomorrow (Northfield Graduate School, Lakeside Institute)."
     assert "Northfield" not in L.reminder_text(avery(), items, TODAY, "facts")
 
 
@@ -525,24 +546,48 @@ def test_the_new_case_card_asks_will_you_write_it():
 
 
 def test_the_case_block_offers_what_fits_its_state():
+    """The block once its time came: "Time to write the letter", the places
+    (a place's own date only when earlier than the case's), what is
+    missing, one field of words (Draft), the date as a picker, Decline and
+    a menu for a place already submitted. No "Set the due date" per place,
+    and no second field of words on the card."""
     spec = L.case_spec(avery(), TODAY)
-    assert spec["kind"] == "letter" and spec["title"].startswith(":memo: *Recommendation letter for Avery Quinn*: 3 of 9")
+    assert spec["kind"] == "letter"
+    assert spec["title"] == ":memo: *Time to write the letter for Avery Quinn*: due tomorrow, 9 places."
     ids = [a[0] for a in spec["actions"]]
-    assert ids == ["letter_draft", "letter_submitted", "letter_submitted", "letter_submitted", "letter_date",
-                   "letter_decline"]
+    assert ids == ["letter_draft", "letter_date_pick", "letter_decline"]
     assert spec["actions"][0][1] == ":pencil2: Change the letter"        # one destination is drafted
-    assert spec["actions"][1][2]["dest"] == "av4"
-    assert [o[1] for o in spec["select"][2]] == ["av7", "av8", "av9"]
-    assert "Missing: the due date for 2 destinations." in spec["lines"]
+    assert spec["actions"][1][6] == {"proposed": "2026-12-01", "min": "2026-11-23", "max": "2027-11-24"}
+    assert [a for a in spec["actions"] if a[5] and len(a) < 7] == [spec["actions"][0]]   # one field of words
+    assert [o[1] for o in spec["select"][2]] == ["av4", "av5", "av6", "av7", "av8", "av9"]
+    assert "1. Northfield Graduate School: due tomorrow, to write, portal link" in spec["lines"]
+    assert "5. Prairie University: to write, portal link" in spec["lines"]     # due by the case's date
+    assert not any("due date" in ln for ln in spec["lines"])
     assert "<https://apply.northfield.example.org/rec/xyz|Open the portal for Northfield Graduate School>" in spec["lines"]
     assert all("ledger_id" not in a[2] for a in spec["actions"])
-    one = L.case_spec(riley(), TODAY)
-    assert [a[0] for a in one["actions"]] == ["letter_draft", "letter_submitted", "letter_decline"]
-    assert one["actions"][0][1] == ":pencil2: Draft the letter" and one["select"] is None
+    undated = L.case_spec(riley(), TODAY)                                # a yes with no date yet
+    assert [a[0] for a in undated["actions"]] == ["letter_draft", "letter_date_pick", "letter_decline"]
+    assert undated["actions"][1][1] == ":calendar: Pick the date" and "Missing: the letter, the date." in undated["lines"]
     kept = L.case_spec(avery(), TODAY, "local")
     assert not any(ln.startswith("<https://") for ln in kept["lines"]) and "Avery" not in json.dumps(kept)
     loud = L.case_spec(riley(), TODAY, reminder="Letter for Rowan Ellery: 1 destination due tomorrow.")
     assert loud["title"].startswith(":alarm_clock: *Letter for Rowan Ellery: 1 destination due tomorrow.*")
+
+
+def test_the_ready_letter_is_one_delivery_list():
+    """Once the letter is ready the block is the delivery list: each place
+    with its link and Submitted, All submitted, Change the letter."""
+    c = avery()
+    for d in c["destinations"][3:]:
+        d["state"] = "ready"
+    spec = L.case_spec(c, TODAY)
+    assert spec["title"] == (":outbox_tray: *The letter for Avery Quinn is ready.* Submit it to 6 places "
+                             "by tomorrow.")
+    assert [a[0] for a in spec["actions"]] == ["letter_submitted"] * 3 + ["letter_all", "letter_draft"]
+    assert spec["actions"][0][1] == ":white_check_mark: Submitted: Northfield Graduate School"
+    assert spec["actions"][3][1] == ":white_check_mark: All submitted"
+    assert [o[1] for o in spec["select"][2]] == ["av7", "av8", "av9"]
+    assert "<https://apply.northfield.example.org/rec/xyz|Open the portal for Northfield Graduate School>" in spec["lines"]
 
 
 def test_an_answer_goes_to_letters_work_when_it_is_there(monkeypatch):
@@ -586,7 +631,7 @@ def test_the_slack_front_end_draws_both_cards():
     from botcore.chat import slack_frontend as sf
     from preprocessor import chat as _chat
     for spec in (L.decision_spec(jordan(), TODAY), L.case_spec(avery(), TODAY)):
-        actions = [_chat.CardAction(a, lbl, v, st, w, ask=ask) for a, lbl, v, st, w, ask in spec["actions"]]
+        actions = [_chat.CardAction(*a[:5], ask=a[5], date=a[6] if len(a) > 6 else {}) for a in spec["actions"]]
         sel = spec.get("select")
         card = _chat.ConfirmationCard(kind=spec["kind"], title=spec["title"], lines=spec["lines"],
                                       actions=actions, block_id=spec["block_id"],
@@ -677,14 +722,20 @@ def _bot(monkeypatch, case_list, store=None):
     return ns, calls, store
 
 
-def test_the_tick_posts_the_decision_once_and_the_block_after_yes(monkeypatch):
+def test_the_tick_posts_the_decision_once_and_the_date_card_once(monkeypatch):
+    # A yes with no date of the case's own gets one card for its date, not
+    # its block: the block comes at its lead time.
     soon = riley()
     soon["destinations"][0]["due"] = "2026-12-01"
     ns, calls, store = _bot(monkeypatch, [jordan(), soon])
     assert ns["_post_letter_cards"](force=True) == 2
     kinds = [c.kind for c in calls["cards"]]
-    assert kinds == ["letter_ask", "letter"]
-    assert store["cards"]["case-jp"]["kind"] == "ask" and store["cards"]["case-rc"]["live"]
+    assert kinds == ["letter_ask", "letter_ask"]
+    assert store["cards"]["case-jp"]["kind"] == "ask" and store["cards"]["case-rc"]["kind"] == "date"
+    assert store["cards"]["case-rc"]["asked_date"] and store["cards"]["case-rc"]["live"]
+    assert [a.id for a in calls["cards"][1].actions] == ["letter_date", "letter_date_pick"]
+    assert calls["cards"][1].actions[1].date == {"proposed": "2026-12-01", "min": "2026-11-23",
+                                                 "max": "2027-11-24"}
     assert ns["_post_letter_cards"](force=True) == 0          # nothing new
     # A field's value is plain text: the frontends render it inert, and a
     # wrapped one would show its delimiters in the folded block.
@@ -710,7 +761,8 @@ def test_a_press_runs_the_answer_and_its_turn_in_the_cards_thread(monkeypatch):
     assert args[3] == "Draft the letter for case-av." and key.endswith("letter-case-av") or "letter-case-av" in key
     from botcore.chat import card_text
     assert card_text.strip_inert(calls["status"][-1][1]).startswith(":white_check_mark: I am writing")
-    assert [c.kind for c in calls["cards"]] == ["letter", "letter"]   # the block posted again
+    # The press changed nothing the block shows: no new card in the same state.
+    assert [c.kind for c in calls["cards"]] == ["letter"]
 
 
 def test_a_press_on_a_gone_destination_does_nothing(monkeypatch):
@@ -758,8 +810,10 @@ def test_home_lists_one_item_per_case_in_place_of_its_rows_and_cards():
                         {"id": "response-x", "conversation_id": "c-x", "age_days": 2, "subject": "Intro"}])
     left = H.left(src)
     letters = [x for x in left if x["kind"] == "letter"]
-    # Rowan's date is three weeks out: on the briefing's Letters list, not Home
-    assert sorted(x["id"] for x in letters) == ["letter:case-av", "letter:case-jp"]
+    # Rowan's case said yes with no date of its own: Home asks for its date
+    assert sorted(x["id"] for x in letters) == ["letter:case-av", "letter:case-jp", "letter:case-rc"]
+    rc = next(x for x in letters if x["id"] == "letter:case-rc")
+    assert rc["title"] == "When will you write the letter for Rowan Ellery?"
     assert not any(x["id"] in ("request:r9", "reply:task-jp1") for x in left)
     assert any(x["id"] == "reply:response-x" for x in left)
     av = next(x for x in letters if x["id"] == "letter:case-av")
@@ -772,8 +826,10 @@ def test_home_lists_one_item_per_case_in_place_of_its_rows_and_cards():
 
 
 def test_home_leaves_a_far_case_to_the_briefing_and_hides_kept_names():
+    # A dated case before its lead time is quiet: not on Home.
     far = riley()
     far["destinations"][0]["due"] = "2027-02-01"
+    far["do_by"] = "2027-02-01"
     items, _taken = L.home_items(_src(rows={}), [far])
     assert items == []
     rows = {d["ledger_id"]: {"id": d["ledger_id"], "keep_level": "local"} for d in avery()["destinations"]}
@@ -783,14 +839,18 @@ def test_home_leaves_a_far_case_to_the_briefing_and_hides_kept_names():
 
 def test_home_quick_briefing_and_choices():
     b = L.home_brief(avery(), TODAY)
+    # The places with no date of their own are due by the case's one date.
     assert b == {"what": "Recommendation letter for Avery Quinn.", "asked": "Write and submit it to 9 destinations.",
-                 "due": "Next due tomorrow.",
-                 "standing": ["3 of 9 destinations submitted.", "2 destinations with no due date."],
+                 "due": "Next due tomorrow.", "standing": ["3 of 9 destinations submitted."],
                  "next": "Tacitus can help you submit it to the next destination."}
-    ids = [c["id"] for c in L.home_choices(avery(), TODAY)]
-    assert ids == ["letter:draft", "letter:submitted:av4", "letter:submitted:av5", "letter:submitted:av6",
-                   "letter:date", "open"]
-    assert [c["id"] for c in L.home_choices(jordan(), TODAY)] == ["letter:yes", "letter:yes_ask", "letter:no"]
+    # Its time came: Draft and the date (a picker); the deliveries wait for the ready letter
+    choices = L.home_choices(avery(), TODAY)
+    assert [c["id"] for c in choices] == ["letter:draft", "letter:date_pick", "open"]
+    assert choices[1]["input"] == "date" and choices[1]["proposed"] == "2026-12-01"
+    new = L.home_choices(jordan(), TODAY)
+    assert [c["id"] for c in new] == ["letter:yes", "letter:yes_ask", "letter:no"]
+    assert new[0]["input"] == "date" and "proposed" not in new[0]        # no date stated: the yes asks
+    assert L.home_choice("letter:date_pick") == ("date", "")
     assert L.home_choice("letter:submitted:av4") == ("submitted", "av4")
     assert L.home_choice("letter:draft") == ("draft", "")
     assert L.home_choice("done") == ("", "") and L.home_choice("letter:close") == ("", "")
@@ -909,6 +969,7 @@ def _live_case(days: int = 1):
         d["due"] = due
     for d in c["destinations"][5:]:
         d["due"] = (datetime.now(F.ZONE).date() + timedelta(days=days + 7)).isoformat()
+    c["do_by"] = (datetime.now(F.ZONE).date() + timedelta(days=days + 7)).isoformat()
     return c
 
 
@@ -932,8 +993,7 @@ def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch, tmp_pa
     assert it["kind"] == "letter" and it["label"] == "Letter"
     assert it["brief"]["what"] == "Recommendation letter for Avery Quinn."
     assert it["brief"]["due"] == "Next due tomorrow."
-    assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:submitted:av4", "letter:submitted:av5",
-                                                "letter:submitted:av6", "open"]
+    assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:date_pick", "open"]
     # its briefing is case_briefing's; with no store to read, the case shows
     # from itself alone and fails closed (no name, no place)
     assert it["deeper"]["state"] == "ready" and "What was asked" in it["deeper"]["text"]
@@ -953,10 +1013,13 @@ def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch, tmp_pa
             return "dm"
     h = H.Home(FE(), clock=lambda: F.at(13, 10), sources=lambda tz: src, background=False)
     h.hooks.letter = lambda cid, answer, dest, words: called.append((cid, answer, dest, words)) or \
-        {"ok": True, "said": "Marked as submitted."}
-    got, _after = h.act("letter:case-av", "letter:submitted:av4")
-    assert got == {"ok": True, "said": "Marked as submitted."}
-    assert ("case-av", "submitted", "av4", "") in called
+        {"ok": True, "said": "The date is Tue Dec 8."}
+    # The date picker's day reaches the hook as the case's one date.
+    picked = case["do_by"]
+    assert h.act("letter:case-av", "letter:date_pick")[0] == {"ok": False, "said": "Pick a date first."}
+    got, _after = h.act("letter:case-av", "letter:date_pick", picked)
+    assert got == {"ok": True, "said": "The date is Tue Dec 8."}
+    assert ("case-av", "date", "", picked) in called
     got, _after = h.act("letter:case-av", "done")
     assert got["ok"] is False                                  # no Done for a letter
     h.hooks.letter = lambda cid, answer, dest, words: {"ok": True, "said": "I am writing the letter's draft.",

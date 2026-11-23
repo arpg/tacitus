@@ -14,6 +14,7 @@ the module is present.
 """
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,8 @@ def ea(tmp_path, monkeypatch):
     for d in ("state", "config", "letters"):
         (tmp_path / d).mkdir()
     monkeypatch.setattr(lw, "EA_DIR", tmp_path)
+    monkeypatch.setenv("EA_DIR", str(tmp_path))
+    monkeypatch.setattr(lw, "_today", lambda: date(2026, 11, 23))
     monkeypatch.setattr(lw, "owner_rules", lambda: [])
     monkeypatch.setattr(lw, "_ledger_row", lambda i: dict(ROWS.get(i, {})))
 
@@ -182,9 +185,13 @@ def test_the_decision_line_names_what_the_request_included(ea):
 # ── the Action requests buttons ───────────────────────────────────────
 
 def test_buttons_yes_and_yes_ask(ea):
+    # The yes carries the case's one date (the earliest a place states) and
+    # says when the case comes back: one tap, no second question.
     st = FakeStore([a_case()])
     out = lw.answer("lc-1", "yes", store=st)
-    assert out["ok"] and "turn" not in out and "No email sent" in out["said"]
+    assert out["ok"] and "turn" not in out
+    assert out["said"] == "You said yes, by Tue Dec 1. I bring it back on Tue Nov 24."
+    assert st.cases["lc-1"]["do_by"] == "2026-12-01"
     st = FakeStore([a_case(materials=[{"kind": "cv", "ref": "x#cv.pdf"},
                                       {"kind": "statement", "ref": "x#sop.pdf"}])])
     out = lw.answer("lc-1", "yes_ask", store=st)

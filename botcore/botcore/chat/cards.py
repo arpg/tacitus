@@ -38,13 +38,23 @@ class CardAction:
     line ("what the reply must say"). A frontend with buttons opens a
     field for it on the click; a frontend with codes takes the words
     after the code. The line is ActionEvent.text. It is never required: a
-    reaction or a click with an empty field selects the action with none."""
+    reaction or a click with an empty field selects the action with none.
+
+    `date` marks an action that takes a day, not words: {"min", "max"
+    (YYYY-MM-DD, both always), "proposed" (the day it starts on, when one
+    is known)}, with `ask` naming the field. A frontend with buttons opens
+    a date picker on the click (the web chat's <input type="date">, a
+    Slack datepicker) and sends the picked day as ActionEvent.text, in
+    YYYY-MM-DD; the web chat refuses any other text for it (web_action). A
+    frontend with codes takes the words after the code, which the bot
+    reads as a day."""
     id: str
     label: str
     value: dict | str
     style: str = ""
     word: str = ""
     ask: str = ""
+    date: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -114,6 +124,12 @@ class ConfirmationCard:
     # "about"}. The block folds to "Not written" and the reason; the card
     # offers Try again and Open in Ask Tacitus, never an answer control.
     problem: dict = field(default_factory=dict)
+    # A press on this card that did nothing, in the bot's plain words (one
+    # line): the card is redrawn in place with it and stays open, instead
+    # of giving way to a status line and coming back as a new card. The web
+    # chat shows it as an alert line above the buttons; Slack as a context
+    # line. Empty on a card no press failed on.
+    failed: str = ""
 
 
 # Reactions the owner can put on a card, by the role of the action they pick.
@@ -311,7 +327,8 @@ class CardRegistry:
             "code": code.upper() if code else None,
             "actions": {a.id: {"value": a.value, "word": a.word,
                                "style": a.style, "label": a.label,
-                               **({"ask": a.ask} if a.ask else {})}
+                               **({"ask": a.ask} if a.ask else {}),
+                               **({"date": dict(a.date)} if a.date else {})}
                         for a in card.actions},
             "thread_ts": card.thread_ts,
             "ea_channel": card.ea_channel,

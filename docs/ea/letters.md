@@ -34,8 +34,10 @@ the letter. Only the email that carries the letter names its row.
 
 A new case gets one decision: "Will you write it? Yes / Yes, ask for
 materials / No", with the dates and what the request already included.
-The web app's Action requests card asks it. Elsewhere, post the
-`decision` line from `status` once. Draft nothing before the answer.
+Its Yes carries the case's one date ("Yes, by Tue Dec 1": the earliest
+date a place states, or "Yes, by another date"). The web app's Action
+requests card asks it. Elsewhere, post the `decision` line from `status`
+once. Draft nothing before the answer.
 
 On the answer (a button or the owner's words), run
 `letters_work.py decide --case <id> --answer yes|materials|no --owner-said "<their words>"`:
@@ -65,8 +67,8 @@ never yours.
   accepted. `letters_work.py extend --case <id> --dest <id>` makes its
   copy of the letter. Tell the owner in one line. It needs no new
   decision.
-- A missing due date: ask the owner. `letters.py add-destination --case
-  <id> --name "<the same name>" --due YYYY-MM-DD` fills an empty date.
+- The case has one date (section 7). Never ask the owner for a date per
+  place.
 - What a place asks for: `letters_work.py require --case <id> --dest
   <id>` with `--length`, `--format`, `--addressee`, `--program`,
   `--organization`, or a form question: `--question "<text>" --options
@@ -134,12 +136,25 @@ A submission the send or the portal's mail did not record:
 `letters.py record-submitted --dest <id> --evidence "<what shows it>"`.
 The case closes when every place is submitted or declined.
 
-#### 7. Dates
+#### 7. One date, then quiet until it is time
 
-Each place carries its date. The briefing shows one line per case. Near
-a date with no draft: ask to draft (ask-first), or draft and tell
-(do-and-tell). Past a date, say so in one line. A date passing never
-closes a letter.
+The owner writes one letter by one date and uploads it to each place.
+The case has that one date (`do_by`): every place goes under it, and a
+place's own later date is kept but not shown. A place that comes with an
+earlier date moves the case's date; the owner is told once.
+
+- The owner gives the date with his yes, or once on the date card. In
+  words: `letters.py set-date --case <id> --date YYYY-MM-DD`.
+- Until 7 days before the date the case is quiet: no card, not on Home,
+  not in the daily briefing (the weekly review lists it). "Start this
+  one now": `letters.py start --case <id>`. "Remind me 3 days before":
+  `letters.py lead --case <id> --days 3`. The owner's setting for every
+  letter: `case_lead_days` in `ea-config.json`.
+- At its time the case's block says "Time to write the letter". Near the
+  date with no draft: ask to draft (ask-first), or draft and tell
+  (do-and-tell). Once approved, the block is the delivery list.
+- A place that asks after the letter is ready shows as one line. A date
+  passing never closes a letter.
 
 #### Autonomy
 

@@ -32,12 +32,16 @@ Code builds every line; no model writes one. With no store (an install
 from before the cases, or one that cannot be read) every function here
 gives nothing and each surface stays as it was.
 
-The reminder ladder, per open part with a due date: the kind's rungs
-(letters and forms 7, 3, 1 days before, the day itself and the day after;
-reviews and reports add 14 days before, for the work they take). The day
-before, the day itself and the day after are loud: the case block is
-posted again in Action requests with a push. A rung fires once; a
-delivered or declined part fires nothing.
+One date per case, then quiet until it is time (case_dates.py): the
+owner's yes carries the case's one date; a case decided without one gets
+one date card. A dated case is quiet until its lead time (letters 7 days,
+forms 3, reviews 10, reports 7): no card, no Home item, no line in the
+daily briefing (the weekly review lists it). Then its block posts once,
+"Time to write the letter", and again only when what it shows changed
+(block_sig), on a loud rung of its nearest date (the day before, the day
+itself, the day after) or for a new message. Once the work is ready the
+block is the delivery list. A rung fires once; a finished case fires
+nothing.
 """
 from __future__ import annotations
 
@@ -142,6 +146,12 @@ class Words:
     loud: frozenset = frozenset({1, 0, -1})
     guide: str = ""
     cli: str = "cases.py"
+    # One date per case (case_dates): what the owner reads about it.
+    place: str = ""                          # a part where the owner sends it ("" = `part`)
+    places: str = ""
+    work: str = "work"                       # what he makes: "the letter is ready"
+    verb: str = "do it"                      # "Time to write the letter"
+    when_q: str = "When will you do it"      # the date card's question
 
 
 _STATES = {"asked": "not answered yet", "accepted": "to do", "drafted": "drafted",
@@ -181,7 +191,9 @@ LETTER = Words(
     join_said=("Recorded: one letter case now.", "Recorded: two people, two letter cases."),
     rule=("One letter the owner writes. It is done only when every destination is submitted. "
           "A reply in its thread is not a submission."),
-    ladder=(7, 3, 1, 0, -1), guide="letters.md", cli="letters.py")
+    ladder=(7, 3, 1, 0, -1), guide="letters.md", cli="letters.py",
+    place="place", places="places", work="letter", verb="write the letter",
+    when_q="When will you write the letter")
 
 REVIEW = Words(
     kind="review", noun="Review", plural="Reviews", kept="A kept review", subject="a review",
@@ -208,7 +220,8 @@ REVIEW = Words(
     rule=("One review the owner does. It is done only when every report is returned. "
           "A reply in its thread is not a return."),
     said={"draft": "I am writing a draft of the report from your points."},
-    ladder=(14, 7, 3, 1, 0, -1), guide="reviews.md")
+    ladder=(14, 7, 3, 1, 0, -1), guide="reviews.md",
+    work="report", verb="do the review", when_q="When will you do the review")
 
 FORM = Words(
     kind="form", noun="Form", plural="Forms", kept="A kept form", subject="a form",
@@ -234,7 +247,8 @@ FORM = Words(
     rule=("One form the owner fills in. It is done only when every form is submitted. "
           "A reply in its thread is not a submission."),
     said={"draft": "I am filling in what I can."},
-    decline_turn=False, ladder=(7, 3, 1, 0, -1), guide="forms.md")
+    decline_turn=False, ladder=(7, 3, 1, 0, -1), guide="forms.md",
+    work="form", verb="fill in the form", when_q="When will you fill it in")
 
 REPORT = Words(
     kind="report", noun="Report", plural="Reports", kept="A kept report", subject="a report",
@@ -261,7 +275,8 @@ REPORT = Words(
     rule=("One report the owner writes. It is done only when every part is delivered. "
           "A reply in its thread is not a delivery."),
     said={"draft": "I am writing the draft."},
-    ladder=(14, 7, 3, 1, 0, -1), guide="reports.md")
+    ladder=(14, 7, 3, 1, 0, -1), guide="reports.md",
+    work="report", verb="write the report", when_q="When will you write the report")
 
 WORDS = {w.kind: w for w in (LETTER, REVIEW, FORM, REPORT)}
 _DECL: dict = {}
@@ -284,6 +299,50 @@ def _cases():
     except Exception:
         _NO_STORE.append(True)
         return None
+
+
+def _dates():
+    """case_dates: the one-date rules every surface shares."""
+    try:
+        import case_dates  # type: ignore
+    except ModuleNotFoundError:  # imported as preprocessor.<mod>
+        from preprocessor import case_dates  # type: ignore
+    return case_dates
+
+
+def stage(case: dict, today: date) -> str:
+    """The case's stage today (case_dates.STAGES): new, undated, quiet,
+    due, ready or closed."""
+    return _dates().stage(_tag(case, kind_of(case)), today)
+
+
+def wake(case: dict) -> date | None:
+    """The day a dated case comes back to the owner's lists."""
+    return _dates().wake(_tag(case, kind_of(case)))
+
+
+def waits(case: dict, today: date) -> bool:
+    """A case off Home and the daily lists today: quiet (dated, before its
+    lead time, not overdue), or a yes with no place named and no date (its
+    one date card asked; the weekly review lists it)."""
+    st = stage(case, today)
+    if st == "quiet":
+        return not facts(case, today)["overdue"]
+    return st == "undated" and not parts(case)
+
+
+def dated_yes(w: "Words") -> bool:
+    """Whether the kind's yes carries the case's one date (its
+    declaration's `Decision.dated`; every core kind's does)."""
+    dec = _get(_decl(w.kind), "decision")
+    texts = _get(dec, "dated")
+    yes = dict(w.choices).get("yes", "Yes")
+    return yes in (texts if texts is not None else ("Yes",))
+
+
+def place_words(w: "Words") -> tuple[str, str]:
+    """What the owner calls a part where the work goes: (one, many)."""
+    return (w.place or w.part, w.places or w.parts)
 
 
 def _ls():
@@ -561,10 +620,12 @@ def parts(case: dict) -> list[dict]:
 
 
 def open_parts(case: dict) -> list[dict]:
-    """The parts still to do, nearest due date first, undated last; the
-    store's own order within one date."""
+    """The parts still to do, nearest due date first (a part's own date,
+    else the case's one date), undated last; the store's own order within
+    one date."""
+    D = _dates()
     out = [d for d in parts(case) if (d.get("state") or "asked") in OPEN_STATES]
-    return sorted(out, key=lambda d: _date(d.get("due")) or date.max)
+    return sorted(out, key=lambda d: D.due_of(d, case) or date.max)
 
 
 def _delivered(d: dict) -> bool:
@@ -582,10 +643,10 @@ def is_new(case: dict) -> bool:
 
 def is_open(case: dict) -> bool:
     """An open case with something to do: a part to finish, or no part yet
-    and no decision (the request alone)."""
-    if (case.get("status") or "open") != "open":
+    (the request alone, or a yes with no places named yet)."""
+    if (case.get("status") or "open") != "open" or case.get("decision") == "declined":
         return False
-    return bool(open_parts(case)) or (not parts(case) and not case.get("decision"))
+    return bool(open_parts(case)) or not parts(case)
 
 
 def questions(case: dict, kind: str = "") -> list[dict]:
@@ -602,11 +663,15 @@ def decision_question(case: dict) -> dict | None:
 
 def facts(case: dict, today: date) -> dict:
     """{total, submitted (the parts delivered), declined, open, next_due,
-    due_next, overdue, undated, new, finished} for one case, in code."""
+    due_next, overdue, undated, new, finished} for one case, in code. A
+    part's date is its own, else the case's one date (case_dates)."""
+    D = _dates()
     ds = parts(case)
     opn = open_parts(case)
-    dated = [(d, _date(d.get("due"))) for d in opn]
+    dated = [(d, D.due_of(d, case)) for d in opn]
     nxt = min((due for _d, due in dated if due), default=None)
+    if nxt is None and not ds:
+        nxt = D.do_by(case)
     done = sum(1 for d in ds if _delivered(d))
     return {"total": len(ds), "submitted": done, "delivered": done,
             "declined": sum(1 for d in ds if d.get("state") == DECLINED),
@@ -795,23 +860,47 @@ def line(case: dict, today: date, *, lv: str = "full", news=None, w: Words | Non
     letters.summary_line's words when the store has them; every other
     case, a kept one, or an install without it, gets code's own words at
     its level. A new case adds where to answer; a case with no date asks
-    for one on its first day only; `news` (news()) ends it with who
-    wrote."""
+    for one on its first day only; a quiet case says its date and the day
+    it comes back; `news` (news()) ends it with who wrote."""
     w = w or words_of(case)
     f = facts(case, today)
-    base = _store_line(case, today, lv) if w.kind == "letter" else ""
-    base = base or _own_line(case, f, today, lv, w)
+    st = stage(case, today)
+    if st == "quiet":
+        base = quiet_line(case, today, lv, w)
+    else:
+        base = _store_line(case, today, lv) if w.kind == "letter" else ""
+        base = base or _own_line(case, f, today, lv, w)
     if not base.endswith("."):
         base += "."
     if f["new"]:
         q = w.question
         base += (" Answer in Action requests." if q.lower().rstrip("?") in base.lower()
                  else f" {q} Answer in Action requests.")
-    elif f["undated"] and _asks_date(case, today):
-        base += " Tell me the due date."
+    elif st == "undated" and _asks_date(case, today):
+        base += " Pick its date in Action requests."
     if news:
         base += " " + news_words(news, lv)
     return base
+
+
+def quiet_line(case: dict, today: date, lv: str = "full", w: Words | None = None) -> str:
+    """A dated case out of sight: "Letter for Dana Reyes: by Tue Dec 1, 4
+    places. Back on your list Tue Nov 24."."""
+    w = w or words_of(case)
+    f = facts(case, today)
+    one, many = place_words(w)
+    n = f["total"] - f["declined"]
+    by = _dates().do_by(case) or f["next_due"]
+    body = f"by {day_words(by, today)}" if by else "no date yet"
+    if n:
+        body += f", {_n(n, one, many)}"
+    if f["submitted"]:
+        body += f", {f['submitted']} {w.delivered_word}"
+    back = wake(case)
+    out = f"{head(case, lv, w)}: {body}."
+    if back and back > today:
+        out += f" Back on your list {day_words(back, today)}."
+    return out
 
 
 def _asks_date(case: dict, today: date) -> bool:
@@ -1042,6 +1131,10 @@ def entry(case: dict, today: date, rows: dict | None = None, *, records=False, m
            key: [{"name": _clean(d.get("name"), 80) if lv in ("full", "summary") else "",
                   "due": str(d.get("due") or "")[:10], "state": d.get("state") or "asked"}
                  for d in open_parts(case)][:CARD_DESTS]}
+    st = stage(case, today)
+    back = wake(case)
+    out.update(stage=st, do_by=str(case.get("do_by") or ""),
+               back_on=back.isoformat() if back and st == "quiet" else "", waits=waits(case, today))
     if w.kind != "letter":
         out["subkind"] = subkind(case)
     if got_news:
@@ -1095,12 +1188,15 @@ def apply_briefing(briefing: dict, view: dict, *, cap: int = 5, test=None) -> di
     """The briefing JSON with the cases in it: `letter_cases` (one entry
     per open letter case) and `work_cases` (every other kind), their
     `_finished` lists (the cases whose last part was delivered since
-    yesterday), the rows and threads the cases stand for taken out of
-    every list, and the cases due soon ranked into today_top (ref
-    `letter:<case id>` or `case:<case id>`)."""
+    yesterday), `quiet_cases` (dated cases before their lead time, every
+    kind: the weekly review's), the rows and threads every case stands for
+    taken out of every list, and the cases due soon ranked into today_top
+    (ref `letter:<case id>` or `case:<case id>`)."""
     if not view:
         return briefing
     hide = view.get("hide") or {}
+    quiet = [e for e in view.get("cases") or [] if e.get("waits")]
+    view = dict(view, cases=[e for e in view.get("cases") or [] if not e.get("waits")])
     for key in _STRIP:
         if isinstance(briefing.get(key), list):
             briefing[key] = [x for x in briefing[key] if not (isinstance(x, dict) and _hidden(x, hide, test))]
@@ -1127,12 +1223,18 @@ def apply_briefing(briefing: dict, view: dict, *, cap: int = 5, test=None) -> di
         briefing["work_cases"] = work
     if work_done or "work_cases_finished" in briefing:
         briefing["work_cases_finished"] = work_done
+    # Dated and not started: on no daily list until its lead time (the
+    # weekly review lists them by date); their rows stay hidden above.
+    briefing["quiet_cases"] = sorted(quiet, key=lambda e: (e.get("back_on") or "9999", e.get("name") or ""))
     return briefing
 
 
-def briefing_entries(b: dict) -> list[dict]:
-    """Every case entry a briefing JSON carries: letters, then the rest."""
-    return [e for key in ("letter_cases", "work_cases") for e in b.get(key) or []
+def briefing_entries(b: dict, *, quiet: bool = False) -> list[dict]:
+    """Every case entry a briefing JSON carries: letters, then the rest;
+    with `quiet`, the quiet cases after them (the weekly review lists
+    those by date; a daily post never does)."""
+    keys = ("letter_cases", "work_cases") + (("quiet_cases",) if quiet else ())
+    return [e for key in keys for e in b.get(key) or []
             if isinstance(e, dict) and e.get("case")]
 
 
@@ -1249,40 +1351,46 @@ def rung(due: date | None, today: date, ladder=LETTER.ladder) -> int | None:
 
 
 def reminders(cases: list[dict], today: date, sent: dict | None = None) -> list[dict]:
-    """The reminders due today that have not fired: [{case, dest, rung,
-    loud, due, key}], one per open part with a dated rung today on its
-    kind's ladder; `sent` is {key: when} of the rungs that fired (key
-    "<part id>:<rung>:<due>", so a moved date starts its ladder again).
-    A delivered or declined part is never reminded."""
+    """The loud rungs due today that have not fired: [{case, dest, rung,
+    loud, due, key}], one per case: its nearest date (a part's own, else
+    the case's one date) on its kind's loud rungs (the day before, the day,
+    the day after). `sent` is {key: when} of the rungs that fired (key
+    "<case id>:<rung>:<due>", so a moved date starts again). The lead time
+    is no rung: a case comes back when its stage turns due (card_plan). A
+    finished case is never reminded."""
     sent = sent or {}
     out = []
     for c in cases:
         w = words_of(c)
-        for d in open_parts(c):
-            due = _date(d.get("due"))
-            r = rung(due, today, w.ladder)
-            if r is None:
-                continue
-            key = f"{d.get('id')}:{r}:{due.isoformat()}"
-            if key in sent:
-                continue
-            out.append({"case": str(c.get("id") or ""), "dest": str(d.get("id") or ""), "rung": r,
-                        "loud": r in w.loud, "due": due.isoformat(), "key": key})
+        f = facts(c, today)
+        due = f["next_due"]
+        r = rung(due, today, tuple(w.loud)) if f["open"] else None
+        if r is None:
+            continue
+        key = f"{c.get('id')}:{r}:{due.isoformat()}"
+        if key in sent:
+            continue
+        first = f["due_next"][0] if f["due_next"] else {}
+        out.append({"case": str(c.get("id") or ""), "dest": str(first.get("id") or ""), "rung": r,
+                    "loud": True, "due": due.isoformat(), "key": key,
+                    "parts": [str(d.get("id") or "") for d in f["due_next"]]})
     return out
 
 
 def reminder_text(case: dict, items: list[dict], today: date, lv: str) -> str:
     """The loud reminder's first line (the push and the card's title):
-    "Letter for Dana Reyes: 2 destinations due tomorrow (North
-    University, Coastal Institute)."."""
+    "Letter for Dana Reyes: 2 places due tomorrow (North University,
+    Coastal Institute)."."""
     w = words_of(case)
     hd = head(case, lv, w)
     by_id = {str(d.get("id")): d for d in parts(case)}
-    named = [by_id[i["dest"]] for i in items if i["dest"] in by_id]
+    ids = [i for it in items for i in (it.get("parts") or [it.get("dest")])]
+    named = [by_id[i] for i in dict.fromkeys(ids) if i in by_id]
     due = _date(items[0]["due"]) if items else None
     when = ("was due " + day_words(due, today)) if due and due < today else ("due " + day_words(due, today))
+    one, many = place_words(w)
     names_ = ", ".join(_clean(d.get("name"), 50) for d in named[:3]) if lv in ("full", "summary") else ""
-    return f"{hd}: {_n(len(named), w.part, w.parts)} {when}" + (f" ({names_})." if names_ else ".")
+    return f"{hd}: {_n(len(named), one, many)} {when}" + (f" ({names_})." if names_ else ".")
 
 
 # ── the cards in Action requests (ea-chat-bot.py) ─────────────────────
@@ -1296,14 +1404,23 @@ def _value(case: dict, **extra) -> dict:
     return {"case": str(case.get("id") or ""), "rows": ledger_ids(case), **extra}
 
 
-def _part_line(d: dict, today: date, lv: str, n: int, w: Words) -> str:
+def _part_line(d: dict, today: date, lv: str, n: int, w: Words, case: dict | None = None) -> str:
+    """One part on a card: its name, its date when it has one of its own
+    that the case's one date does not cover (an earlier one), its state
+    and how it goes in."""
     nm = _clean(d.get("name"), 80) if lv in ("full", "summary") else f"{w.part.capitalize()} {n}"
-    due = _date(d.get("due"))
-    when = ("was due " + day_words(due, today)) if due and due < today \
-        else ("due " + day_words(due, today)) if due else "no due date"
+    D = _dates()
+    cby = D.do_by(case) if case else None
+    own = D.own_due(d) if case else _date(d.get("due"))
+    due = own if not cby else (own if own and own < cby else None)
+    if due:
+        when = ("was due " if due < today else "due ") + day_words(due, today)
+    else:
+        when = "" if cby else "no due date"
     how = w.method_words.get(str(d.get("method") or ""), "")
     state = w.state_words.get(d.get("state") or "asked", d.get("state") or "")
-    return f"{nm}: {when}, {state}" + (f", {how}" if how and lv in ("full", "summary") else "")
+    bits = [b for b in (when, state, how if lv in ("full", "summary") else "") if b]
+    return f"{nm}: {', '.join(bits)}"
 
 
 def _materials(case: dict, lv: str, w: Words) -> str:
@@ -1336,25 +1453,36 @@ def _links(case: dict, lv: str, w: Words) -> list[str]:
     return out[:CARD_DESTS]
 
 
-def _when_field(f: dict, today: date) -> str:
+def _when_field(f: dict, today: date, case: dict | None = None) -> str:
+    by = _dates().do_by(case) if case else None
+    if by:
+        return "By " + day_words(by, today)
     return ("Next due " + day_words(f["next_due"], today)) if f["next_due"] else "No due date yet"
 
 
 _ICONS = {"yes": ":white_check_mark:", "yes_ask": ":page_facing_up:", "no": ":no_entry_sign:"}
+# A date action's line (CardAction.ask): the frontends draw a date picker
+# for it (CardAction.date) and send the picked day, never free words.
+DATE_ASK = "The date"
+# The delivery list's verb, by the kind's delivered word.
+_SEND = {"submitted": "Submit", "returned": "Return", "delivered": "Deliver"}
 _WORD = {"yes": "yes", "yes_ask": "ask", "no": "no"}
 
 
 def decision_spec(case: dict, today: date, lv: str = "full", w: Words | None = None) -> dict:
     """The new-case card: the kind's one question (Will you write it? Will
     you do this review?) with its answers, what the request included and
-    the dates. No reaction answers it (`no_default`, no danger style on
-    No)."""
+    the dates. Its yes carries the case's one date in the same tap: "Yes,
+    by Tue Dec 1" (the earliest date the records state) and "Yes, by
+    another date" (a date picker); with no date stated, the yes itself
+    asks for one with the picker. No reaction answers it (`no_default`, no
+    danger style on No)."""
     w = w or words_of(case)
     f = facts(case, today)
     nm = name(case, lv, w)
     lines = [f"{nm}." if nm != w.kept else f"{w.kept}: a new request."]
     shown = open_parts(case)[:CARD_DESTS]
-    lines += [f"{i}. {_part_line(d, today, lv, i, w)}" for i, d in enumerate(shown, 1)]
+    lines += [f"{i}. {_part_line(d, today, lv, i, w, case)}" for i, d in enumerate(shown, 1)]
     if f["total"] > len(shown):
         lines.append(f"And {f['total'] - len(shown)} more.")
     if not shown:
@@ -1362,12 +1490,67 @@ def decision_spec(case: dict, today: date, lv: str = "full", w: Words | None = N
     lines.append(_materials(case, lv, w))
     q = decision_question(case)
     value = _value(case, **({"question": str(q["id"])} if q and q.get("id") else {}))
-    actions = [(f"{w.prefix}_{a}", f"{_ICONS[a]} {text}", value, "primary" if a == "yes" else "", _WORD[a], "")
-               for a, text in w.choices]
+    D = _dates()
+    prop = D.proposed(case)
+    pick = D.date_spec(today, prop)
+    p = w.prefix
+    actions = []
+    if not dated_yes(w):
+        prop, pick = None, {}
+    for a, text in w.choices:
+        if a == "yes" and prop:
+            actions.append((f"{p}_yes", f"{_ICONS['yes']} Yes, by {day_words(prop, today)}",
+                            dict(value, by=prop.isoformat()), "primary", "yes", ""))
+            actions.append((f"{p}_yes_date", ":calendar: Yes, by another date", value, "", "date",
+                            DATE_ASK, pick))
+        elif a == "yes":
+            actions.append((f"{p}_yes", f"{_ICONS['yes']} {text}", value, "primary", "yes",
+                            DATE_ASK if pick else "", pick))
+        elif a == "yes_ask":
+            actions.append((f"{p}_yes_ask", f"{_ICONS[a]} {text}",
+                            dict(value, by=prop.isoformat()) if prop else value, "", _WORD[a], ""))
+        else:
+            actions.append((f"{p}_{a}", f"{_ICONS[a]} {text}", value, "", _WORD[a], ""))
     return {"kind": f"{w.prefix}_ask", "title": w.ask_title, "lines": lines,
             "fields": [("From", _from(case, lv, w)), ("Subject", nm),
-                       ("When", _when_field(f, today))],
+                       ("When", _when_field(f, today, case))],
             "actions": actions, "no_default": True, "block_id": f"{w.prefix}_ask_{value['case']}"}
+
+
+def date_spec(case: dict, today: date, lv: str = "full", w: Words | None = None) -> dict:
+    """The one card that asks a decided case for its date (a yes with no
+    date in it, or a case from before one date per case): "By Tue Dec 1"
+    (the earliest date its places state) and "Another date" (the picker),
+    or "Pick the date" alone. Asked once; every part goes under the date."""
+    w = w or words_of(case)
+    f = facts(case, today)
+    nm = name(case, lv, w)
+    who = person(case, lv) if w.kind == "letter" else (
+        _clean(case.get("counterpart_name") or "", 60) if lv != "local" else "")
+    title = f":calendar: *{w.when_q}{' for ' + who if who else ''}?*"
+    one, many = place_words(w)
+    shown = f["open"][:CARD_DESTS]
+    lines = [f"{nm}." if nm != w.kept else f"{w.kept}."]
+    lines += [f"{i}. {_part_line(d, today, lv, i, w)}" for i, d in enumerate(shown, 1)]
+    if len(f["open"]) > len(shown):
+        lines.append(f"And {len(f['open']) - len(shown)} more.")
+    lead = _dates().lead(_tag(case, w.kind))
+    lines.append(f"Every {one} goes under this one date. I bring it back {_n(lead, 'day')} before it.")
+    D = _dates()
+    prop = D.proposed(case)
+    pick = D.date_spec(today, prop)
+    value = _value(case)
+    p = w.prefix
+    if prop:
+        actions = [(f"{p}_date", f"{_ICONS['yes']} By {day_words(prop, today)}",
+                    dict(value, by=prop.isoformat()), "primary", "date", ""),
+                   (f"{p}_date_pick", ":calendar: Another date", value, "", "pick", DATE_ASK, pick)]
+    else:
+        actions = [(f"{p}_date_pick", ":calendar: Pick the date", value, "primary", "pick", DATE_ASK, pick)]
+    return {"kind": f"{w.prefix}_ask", "title": title, "lines": lines,
+            "fields": [("From", _from(case, lv, w)), ("Subject", nm),
+                       ("When", _when_field(f, today, case))],
+            "actions": actions, "no_default": True, "block_id": f"{w.prefix}_date_{value['case']}"}
 
 
 def has_draft(case: dict, f: dict | None = None) -> bool:
@@ -1378,57 +1561,147 @@ def has_draft(case: dict, f: dict | None = None) -> bool:
 
 def case_spec(case: dict, today: date, lv: str = "full", *, reminder: str = "", news=None,
               w: Words | None = None) -> dict:
-    """The case block: the counterpart, the kind, each open part with its
-    date and state, what is missing, a link line per part with one, and
-    the actions that make sense now: Draft (Change once a draft exists),
-    Delivered per part (Submitted, Returned), Set the due date, Decline.
+    """The case block, once its time came: "Time to write the letter for
+    Dana Reyes: due Tue Dec 1, 4 places." with each open part, what is
+    missing and a link line per part with one, and Draft (Change once a
+    draft exists), Change the date, Decline and a menu for a part already
+    delivered. Once the work is ready it is the delivery list (ready_spec).
     `reminder` opens the title when a loud rung posts it; `news` (news())
     is its first line."""
     w = w or words_of(case)
+    if stage(case, today) == "ready":
+        return ready_spec(case, today, lv, reminder=reminder, news=news, w=w)
     f = facts(case, today)
     nm = name(case, lv, w)
-    hd = f":memo: *{nm}*: {f['submitted']} of {f['total'] - f['declined']} {w.delivered_word}."
+    one, many = place_words(w)
+    who = _who(case, lv, w)
+    by = _dates().do_by(case)
+    n = f["total"] - f["declined"]
+    if by:
+        hd = (f":memo: *Time to {w.verb}{' for ' + who if who else ''}*: due {day_words(f['next_due'] or by, today)}"
+              + (f", {_n(n, one, many)}" if n else "") + ".")
+    else:
+        hd = f":memo: *{nm}*: {f['submitted']} of {n} {w.delivered_word}."
     title = (f":alarm_clock: *{_clean(reminder, 200)}*\n" if reminder else "") + hd
     shown = f["open"][:CARD_DESTS]
     lines = [news_words(news, lv)] if news else []
-    lines += [f"{i}. {_part_line(d, today, lv, i, w)}" for i, d in enumerate(shown, 1)]
+    if by and nm != w.kept:
+        lines.append(f"{nm}.")
+    lines += [f"{i}. {_part_line(d, today, lv, i, w, case)}" for i, d in enumerate(shown, 1)]
     if len(f["open"]) > len(shown):
         lines.append(f"And {len(f['open']) - len(shown)} more to do.")
+    if by and f["submitted"]:
+        lines.append(f"{f['submitted']} of {n} {w.delivered_word} already.")
+    if not f["total"]:
+        lines.append(w.no_parts_card)
     drafted = has_draft(case, f)
     missing = []
     if not drafted:
         missing.append(w.missing_work)
-    if f["undated"]:
-        missing.append(f"the due date for {_n(len(f['undated']), w.part, w.parts)}")
+    if not by:
+        missing.append("the date")
     if w.missing_materials and not (case.get("materials") or case.get("request_attachments")):
         missing.append(w.missing_materials)
     if missing:
         lines.append("Missing: " + ", ".join(missing) + ".")
     lines += _links(case, lv, w)
     value = _value(case)
+    D = _dates()
     actions = [(f"{w.prefix}_draft", ":pencil2: " + (w.change if drafted else w.draft),
                 value, "primary", "draft", w.draft_ask)]
+    if by:
+        actions.append((f"{w.prefix}_date_pick", ":calendar: Change the date", value, "", "date",
+                        DATE_ASK, D.date_spec(today, by)))
+    else:
+        actions.append((f"{w.prefix}_date_pick", ":calendar: Pick the date", value, "", "date",
+                        DATE_ASK, D.date_spec(today, D.proposed(case))))
+    actions.append((f"{w.prefix}_decline", "Decline", value, "", "decline", ""))
     act = f"{w.prefix}_{w.deliver_choice}"
-    for d in f["open"][:CARD_BUTTONS]:
-        nm_d = _clean(d.get("name"), 40) if lv in ("full", "summary") else \
-            f"{w.part} {f['open'].index(d) + 1}"
+    select = None
+    if f["open"]:
+        select = (act, f"Already {w.delivered_word} one",
+                  [(_clean(d.get("name"), 60) if lv in ("full", "summary") else f"{w.part.capitalize()} {i}",
+                    str(d.get("id") or "")) for i, d in enumerate(f["open"], 1)])
+    return {"kind": w.prefix, "title": title, "lines": lines,
+            "fields": [("From", _from(case, lv, w)), ("Subject", nm),
+                       ("When", _when_field(f, today, case))],
+            "actions": actions, "select": select, "no_default": True,
+            "block_id": f"{w.prefix}_{value['case']}_{today.isoformat()}"}
+
+
+def ready_spec(case: dict, today: date, lv: str = "full", *, reminder: str = "", news=None,
+               w: Words | None = None) -> dict:
+    """The delivery list, once the work is ready: every open place with its
+    link, a button per place ("Submitted: North University"), "All
+    submitted" and Change. One tap per place, or one for all."""
+    w = w or words_of(case)
+    f = facts(case, today)
+    nm = name(case, lv, w)
+    one, many = place_words(w)
+    who = _who(case, lv, w)
+    send = _SEND.get(w.delivered_word, "Send")
+    n = len(f["open"])
+    by = f["next_due"]
+    hd = (f":outbox_tray: *The {w.work}{' for ' + who if who else ''} is ready.* {send} it"
+          + (f" to {_n(n, one, many)}" if n > 1 or w.kind == "letter" else "")
+          + (f" by {day_words(by, today)}" if by else "") + ".")
+    title = (f":alarm_clock: *{_clean(reminder, 200)}*\n" if reminder else "") + hd
+    lines = [news_words(news, lv)] if news else []
+    if nm != w.kept:
+        lines.append(f"{nm}.")
+    shown = f["open"][:CARD_DESTS]
+    lines += [f"{i}. {_part_line(d, today, lv, i, w, case)}" for i, d in enumerate(shown, 1)]
+    if n > len(shown):
+        lines.append(f"And {n - len(shown)} more.")
+    if f["submitted"]:
+        lines.append(f"{f['submitted']} of {f['total'] - f['declined']} {w.delivered_word} already.")
+    lines += _links(case, lv, w)
+    value = _value(case)
+    act = f"{w.prefix}_{w.deliver_choice}"
+    actions = []
+    for i, d in enumerate(f["open"][:CARD_BUTTONS], 1):
+        nm_d = _clean(d.get("name"), 40) if lv in ("full", "summary") else f"{w.part} {i}"
         actions.append((act, ":white_check_mark: " + w.delivered_button.format(name=nm_d),
                         _value(case, **{w.part_key: str(d.get("id") or "")}), "", "", ""))
     select = None
-    if len(f["open"]) > CARD_BUTTONS:
+    if n > CARD_BUTTONS:
         select = (act, w.delivered_another,
                   [(_clean(d.get("name"), 60) if lv in ("full", "summary") else f"{w.part.capitalize()} {i}",
                     str(d.get("id") or "")) for i, d in enumerate(f["open"], 1)][CARD_BUTTONS:])
-    if f["undated"]:
-        extra = {w.part_key: str(f["undated"][0].get("id") or "")} if len(f["undated"]) == 1 else {}
-        actions.append((f"{w.prefix}_date", ":calendar: Set the due date", _value(case, **extra), "", "date",
-                        "the date, like Dec 1"))
-    actions.append((f"{w.prefix}_decline", "Decline", value, "", "decline", ""))
+    if n > 1:
+        actions.append((f"{w.prefix}_all", f":white_check_mark: All {w.delivered_word}", value,
+                        "", "all", ""))
+    actions.append((f"{w.prefix}_draft", ":pencil2: " + w.change, value, "", "draft", w.draft_ask))
     return {"kind": w.prefix, "title": title, "lines": lines,
             "fields": [("From", _from(case, lv, w)), ("Subject", nm),
-                       ("When", _when_field(f, today))],
+                       ("When", _when_field(f, today, case))],
             "actions": actions, "select": select, "no_default": True,
             "block_id": f"{w.prefix}_{value['case']}_{today.isoformat()}"}
+
+
+def _who(case: dict, lv: str, w: Words) -> str:
+    """Who the work is for, in a title: the person (a letter) or who asked
+    (any other kind); "" when kept or not named."""
+    if w.kind == "letter":
+        return person(case, lv)
+    return _clean(case.get("counterpart_name") or "", 60) if lv != "local" else ""
+
+
+def block_sig(case: dict, today: date) -> str:
+    """What the owner must see on a case's block, as a digest: its stage,
+    its date, its open parts with their states and shown dates, whether
+    work exists, how many are done. A block is posted again only when this
+    changed (or a loud rung or a new message calls for it): never for the
+    same state, and never after a press that changed nothing."""
+    import hashlib
+    D = _dates()
+    f = facts(case, today)
+    body = {"stage": stage(case, today), "by": str(case.get("do_by") or ""),
+            "open": [[str(d.get("id") or ""), d.get("state") or "", str(d.get("name") or ""),
+                      str((D.due_of(d, case) or "") and D.due_of(d, case).isoformat())]
+                     for d in f["open"]],
+            "done": f["submitted"], "draft": has_draft(case, f)}
+    return hashlib.sha1(json.dumps(body, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def join_choices(q: dict, w: Words) -> tuple:
@@ -1537,14 +1810,31 @@ def _epoch(value) -> float:
 
 def card_plan(cases: list[dict], cards: dict, today: date, sent: dict | None = None,
               news: dict | None = None) -> list[dict]:
-    """What the bot posts this tick: [{case, what, reminder?, keys?}] with
-    `what` "ask" (a new case with no card yet), "case" (an open case with
-    an answer and no live case block), "remind" (a loud rung fired: the
-    block posts again, its old card retired) or "news" (a message came on
-    the case after its live block was posted: the block posts again with
-    it), and "retire" for a card whose case is no longer open. `cards` is
-    the bot's record {case id: {"kind", "card", "channel", "live",
-    "posted", "news_at"}}; `news` is news_marks()."""
+    """What the bot does this tick, one step per case: [{case, what, ...}].
+
+      ask      a new case's one decision, posted once (a loud rung puts it
+               up again: what "remind", kind "ask")
+      date     a decided case with no date: the date card, posted once
+               (`asked_date` in its record); never asked twice
+      quiet    a dated case before its lead time with a live card from
+               before: the card gives way to the line that says when it
+               comes back; then nothing until its time
+      case     its time came (or the work began): the block, posted when
+               there is none live and what it shows changed since the last
+               one (block_sig): never again in the same state, never after
+               a press that changed nothing
+      update   a live block whose content changed: redrawn in place, no push
+      remind   a loud rung fired: the block posts again, its old card retired
+      news     a message came on the case after its block was posted
+      note     one small line: a place joined after the work was ready, an
+               earlier date moved the case's date, a message came while
+               the case is quiet
+      mark     rungs and facts to record, nothing posted
+      retire   a card whose case is no longer open
+
+    `cards` is the bot's record {case id: {"kind", "card", "channel",
+    "live", "posted", "news_at", "sig", "asked_date", "do_by", "parts"}};
+    `news` is news_marks()."""
     out = []
     open_ids = set()
     due = {}
@@ -1563,30 +1853,123 @@ def card_plan(cases: list[dict], cards: dict, today: date, sent: dict | None = N
                 out.append({"case": cid, "what": "join", "question": str(q.get("id") or ""), "key": key})
         if joins:
             continue  # who it is comes first: the case's own card follows the answer
-        rec = cards.get(cid) or {}
-        live = bool(rec.get("live"))
-        todays = due.get(cid, [])
-        loud = [r for r in todays if r["loud"]]
-        keys = [r["key"] for r in todays]
-        new = is_new(c)
-        fresh = (news or {}).get(cid) or {}
-        if new and not rec:
-            # The one decision: asked once; a loud rung puts it up again.
-            out.append({"case": cid, "what": "ask", "keys": keys})
-        elif loud:
-            out.append({"case": cid, "what": "remind", "kind": "ask" if new else "case",
-                        "items": loud, "keys": keys})
-        elif (not new and live and rec.get("kind") == "case" and fresh.get("at")
-              and rec.get("news_at") != fresh["at"] and _epoch(fresh["at"]) > float(rec.get("posted") or 0)):
-            out.append({"case": cid, "what": "news", "kind": "case", "at": fresh["at"], "keys": keys})
-        elif not new and (not live or rec.get("kind") != "case") and _in_window(c, today):
-            out.append({"case": cid, "what": "case", "keys": keys})
-        elif keys:
-            out.append({"case": cid, "what": "mark", "keys": keys})
+        out += _plan_one(c, cards.get(cid) or {}, today, due.get(cid, []), (news or {}).get(cid) or {})
     for cid, rec in cards.items():
         if cid not in open_ids and rec.get("live"):
             out.append({"case": cid, "what": "retire"})  # a closed case, an answered question
     return out
+
+
+def _plan_one(c: dict, rec: dict, today: date, todays: list[dict], fresh: dict) -> list[dict]:
+    """card_plan's steps for one open case (see there)."""
+    cid = str(c.get("id") or "")
+    st = stage(c, today)
+    live = bool(rec.get("live"))
+    loud = [r for r in todays if r["loud"]]
+    keys = [r["key"] for r in todays]
+    f = facts(c, today)
+    ids = [str(d.get("id") or "") for d in f["open"]]
+    by = str(c.get("do_by") or "")
+    track = {"do_by": by, "parts": ids}
+    news_due = bool(fresh.get("at")) and rec.get("news_at") != fresh["at"] and \
+        _epoch(fresh["at"]) > float(rec.get("posted") or 0)
+    if st == "new":
+        if not rec:
+            return [{"case": cid, "what": "ask", "keys": keys}]
+        if loud:
+            return [{"case": cid, "what": "remind", "kind": "ask", "items": loud, "keys": keys}]
+        return [{"case": cid, "what": "mark", "keys": keys}] if keys else []
+    if st == "undated":
+        if not rec.get("asked_date"):
+            return [{"case": cid, "what": "date", "keys": keys, **track}]
+        if loud:
+            return [{"case": cid, "what": "remind", "kind": "case", "items": loud, "keys": keys, **track}]
+        return [{"case": cid, "what": "mark", "keys": keys}] if keys else []
+    steps: list[dict] = []
+    moved = _moved_earlier(c, rec)
+    if moved:
+        steps.append({"case": cid, "what": "note", "text_key": "moved", **track, "part": moved})
+    if st == "quiet":
+        if live and rec.get("kind") in ("case", "ask", "date"):
+            steps.append({"case": cid, "what": "quiet", "keys": keys, **track})
+        elif news_due:
+            steps.append({"case": cid, "what": "note", "text_key": "news", "at": fresh["at"],
+                          "items": fresh.get("items") or [], **track})
+        elif keys or rec.get("do_by") != by or rec.get("parts") != ids:
+            steps.append({"case": cid, "what": "mark", "keys": keys, **track})
+        return steps
+    sig = block_sig(c, today)
+    joined = [i for i in ids if rec.get("parts") is not None and i not in rec["parts"]]
+    if st == "ready" and joined and rec.get("kind") == "case" and rec.get("sig"):
+        steps.append({"case": cid, "what": "note", "text_key": "joined", **track, "joined": joined})
+    if loud:
+        steps.append({"case": cid, "what": "remind", "kind": "case", "items": loud, "keys": keys,
+                      "sig": sig, **track})
+    elif news_due and (live or rec.get("sig")):
+        steps.append({"case": cid, "what": "news", "kind": "case", "at": fresh["at"], "keys": keys,
+                      "sig": sig, **track})
+    elif not live or rec.get("kind") != "case":
+        if rec.get("sig") != sig:
+            steps.append({"case": cid, "what": "case", "keys": keys, "sig": sig, **track})
+        elif keys:
+            steps.append({"case": cid, "what": "mark", "keys": keys, **track})
+    elif rec.get("sig") and rec.get("sig") != sig:
+        steps.append({"case": cid, "what": "update", "keys": keys, "sig": sig, **track})
+    elif keys or rec.get("parts") != ids:
+        steps.append({"case": cid, "what": "mark", "keys": keys, **track})
+    return steps
+
+
+def _moved_earlier(c: dict, rec: dict) -> str:
+    """The open part whose own date moved the case's date earlier since the
+    bot last recorded it, or ""."""
+    was, now_ = str(rec.get("do_by") or ""), str(c.get("do_by") or "")
+    if not (was and now_ and now_ < was):
+        return ""
+    D = _dates()
+    return next((str(d.get("id") or "") for d in open_parts(c)
+                 if D.own_due(d) and D.own_due(d).isoformat() == now_), "")
+
+
+def note_text(c: dict, step: dict, today: date, lv: str = "full") -> str:
+    """The small line a `note` step posts: no card, no buttons.
+      moved   "Coastal Institute asks by Mon Nov 30. The letter for Dana
+              Reyes is now due Mon Nov 30."
+      joined  "Coastal Institute also asked. The letter is ready: <link>"
+      news    "New message from Dana Reyes. The letter for Dana Reyes stays
+              set for Tue Dec 1."
+    Names only where the case's level shows them."""
+    w = words_of(c)
+    who = _who(c, lv, w)
+    work = f"The {w.work}" + (f" for {who}" if who else "")
+    by = _dates().do_by(c)
+    open_ = lv in ("full", "summary")
+    if step.get("text_key") == "moved":
+        d = find_part(c, step.get("part") or "") or {}
+        nm = _clean(d.get("name"), 60) if open_ and d else f"A {place_words(w)[0]}"
+        return f":calendar: {nm} asks by {day_words(by, today)}. {work} is now due {day_words(by, today)}."
+    if step.get("text_key") == "joined":
+        out = []
+        for pid in step.get("joined") or []:
+            d = find_part(c, pid) or {}
+            nm = _clean(d.get("name"), 60) if open_ and d else f"Another {place_words(w)[0]}"
+            url = str(d.get("link") or "")
+            link = (f" <{url}|Open its link>" if open_ and url.startswith("https://")
+                    and not any(ch in url for ch in " <>|") else "")
+            out.append(f":inbox_tray: {nm} also asked. The {w.work} is ready:{link or ' it is on its block.'}")
+        return "\n".join(out)
+    if step.get("text_key") == "news":
+        return (f":envelope: {news_words(step.get('items') or [{}], lv)} {work} stays set for "
+                f"{day_words(by, today)}.")
+    return ""
+
+
+def quiet_words(c: dict, today: date) -> str:
+    """The status line a card gives way to when its case goes quiet."""
+    back = wake(c)
+    by = _dates().do_by(c)
+    return (f":zzz: Set for {day_words(by, today)}. I bring it back on {day_words(back, today)}."
+            if back and by else ":zzz: Set. It is off your lists until its time.")
 
 
 def _in_window(case: dict, today: date) -> bool:
@@ -1613,8 +1996,14 @@ def find_part(case: dict, part_id: str) -> dict | None:
 # decision, a delivery, a date) and one EA turn for the rest (a request
 # for materials, a draft, a decline written for the owner's Send).
 
-CASE_CHOICES = ("yes", "yes_ask", "no", "draft", "delivered", "date", "decline", "join_same", "join_other")
+CASE_CHOICES = ("yes", "yes_ask", "yes_date", "no", "draft", "delivered", "all", "date", "decline",
+                "join_same", "join_other")
 CASE_ACTIONS = {f"case_{c}": c for c in CASE_CHOICES}
+CASE_ACTIONS["case_date_pick"] = "date"
+# The answers that carry the case's one date (a picked day, or the date the
+# button names in its value as `by`).
+DATED = ("yes", "yes_ask", "yes_date", "date")
+PICK_A_DATE = "Pick a date with the date button. Nothing was changed."
 # The words of a press, by answer (a kind's own `said` goes first).
 SAID = {"yes": "You said yes. It is on your list with its date.",
         "yes_ask": "I am writing the request for the materials.",
@@ -1623,7 +2012,8 @@ SAID = {"yes": "You said yes. It is on your list with its date.",
         "decline": "Declined. I am writing a decline for you to check and send.",
         "decline_quiet": "Declined. Nothing is sent.",
         "draft": "I am writing the draft.",
-        "date": "I am recording the date."}
+        "date": "I am recording the date.",
+        "all": "Marked as {done}. The case is closed."}
 _PRIVATE = {"review": "A review's text never goes in a channel post, a room or the doc-review repo.",
             "form": "A form's personal data never goes in a channel post, a room or the doc-review repo."}
 
@@ -1636,7 +2026,32 @@ def action_choice(action_id: str) -> str:
 def _said(w: Words, key: str) -> str:
     if key == "delivered":
         return f"Marked as {w.delivered_word}."
+    if key == "all":
+        return f"All {w.delivered_word}. The case is closed."
     return w.said.get(key) or SAID.get(key, "Done.")
+
+
+def picked_day(text: str, today: date) -> date | None:
+    """The day a date answer names: the picker's YYYY-MM-DD, else the
+    owner's words in a common form (case_dates.parse_words); None for
+    none."""
+    D = _dates()
+    return D.picked(text, today) or D.parse_words(text, today)
+
+
+def dated_words(case: dict, by: date, today: date) -> str:
+    """What follows the date in a dated answer's line: an earlier place's
+    own date, and when the case comes back. " I bring it back on Tue Nov
+    24." or " It is time to start, so it stays on your list."."""
+    w = words_of(case)
+    D = _dates()
+    c = dict(_tag(case, w.kind), do_by=by.isoformat())
+    early = sorted(((D.own_due(d), d.get("name") or "") for d in open_parts(c)
+                    if D.own_due(d) and D.own_due(d) < by), key=lambda x: x[0])
+    out = f" {_clean(early[0][1], 60)} asks by {day_words(early[0][0], today)}." if early else ""
+    back = D.wake(c)
+    return out + (f" I bring it back on {day_words(back, today)}." if back and back > today
+                  else " It is time to start, so it stays on your list.")
 
 
 def turn_prompt(case: dict, choice: str, part: str = "", text: str = "") -> str:
@@ -1676,38 +2091,11 @@ _MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun",
 
 
 def parse_day(text: str, today: date) -> date | None:
-    """A due date from the owner's words: "2026-12-01", "Dec 1", "December
-    1", "12/1", "today", "tomorrow"; a month and day without a year is the
-    next one to come. None for anything else."""
-    t = " ".join(str(text or "").lower().replace(",", " ").split())
-    if not t:
-        return None
-    if t in ("today", "tomorrow"):
-        return today + timedelta(days=0 if t == "today" else 1)
-    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", t)
-    if m:
-        try:
-            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except ValueError:
-            return None
-    m = re.search(r"\b([a-z]{3})[a-z]*\.?\s+(\d{1,2})\b", t)
-    mon = day = None
-    if m and m.group(1) in _MONTHS:
-        mon, day = _MONTHS[m.group(1)], int(m.group(2))
-    else:
-        m = re.search(r"\b(\d{1,2})/(\d{1,2})\b", t)
-        if m:
-            mon, day = int(m.group(1)), int(m.group(2))
-    if not mon:
-        return None
-    for year in (today.year, today.year + 1):
-        try:
-            d = date(year, mon, day)
-        except ValueError:
-            return None
-        if d >= today:
-            return d
-    return None
+    """A due date from the owner's words (case_dates.parse_words): "2026-12-01",
+    "Dec 1", "December 1st", "12/1", "today", "tomorrow", "next Friday"; a
+    month and day without a year is the next one to come. None for
+    anything else."""
+    return _dates().parse_words(text, today)
 
 
 def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question: str = "",
@@ -1737,17 +2125,35 @@ def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question:
         same, other = join_choices(q, w)
         return done(run(["answer", "--question", question, "--choice", same if choice == "join_same" else other]),
                     w.join_said[0] if choice == "join_same" else w.join_said[1])
-    if choice in ("yes", "yes_ask", "no"):
+    today = today_local()
+    by = None
+    if choice in DATED:
+        # No words: the date the button stands for (the earliest the
+        # records state); "another date" always names its own.
+        by = picked_day(text, today) if text else (None if choice == "yes_date" else _dates().proposed(case))
+        if (text or choice == "yes_date") and not by:
+            return {"ok": False, "said": PICK_A_DATE}
+    if choice in ("yes", "yes_ask", "yes_date", "no"):
         texts = dict(w.choices)
         q = next((x for x in case.get("questions") or [] if str((x or {}).get("id")) == question), {})
         picks = dict(_choices_of(q)) if q.get("choices") else {}
-        pick = picks.get(choice) or texts.get(choice) or ("No" if choice == "no" else "Yes")
+        key = "yes" if choice == "yes_date" else choice
+        pick = picks.get(key) or texts.get(key) or ("No" if choice == "no" else "Yes")
         argv = (["answer", "--question", question, "--choice", pick] if question
                 else ["decline" if choice == "no" else "accept", "--case", cid])
+        if by:
+            argv += ["--date", by.isoformat()]
         quiet = choice == "no" and not w.decline_turn
-        got = done(run(argv), _said(w, "no_quiet" if quiet else choice))
+        said = _said(w, "no_quiet" if quiet else key)
+        if by and key == "yes":
+            said = f"You said yes, by {day_words(by, today)}." + dated_words(case, by, today)
+        elif by and key == "yes_ask":
+            said = f"You said yes, by {day_words(by, today)}. {said}"
+        elif key == "yes":
+            said = "You said yes. Pick its date on the next card."
+        got = done(run(argv), said)
         if got["ok"] and (choice == "yes_ask" or (choice == "no" and not quiet)):
-            got["turn"] = turn_prompt(case, choice, "", text)
+            got["turn"] = turn_prompt(case, choice, "", text if choice == "no" else "")
         return got
     if choice == "decline":
         quiet = not w.decline_turn
@@ -1760,16 +2166,23 @@ def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question:
             return {"ok": False, "said": f"Pick the {w.part} you {w.delivered_word}."}
         return done(run(["record-delivered", "--part", part, "--evidence",
                          "the owner said so in Action requests"]), _said(w, "delivered"))
-    if choice == "date":
-        undated = [d for d in open_parts(case) if not _date(d.get("due"))]
-        part = part or (str(undated[0].get("id") or "") if len(undated) == 1 else "")
-        day = parse_day(text, today_local())
-        if day and part:
-            got = done(run(["set-due", "--part", part, "--due", day.isoformat()]),
-                       f"Recorded: due {day_words(day, today_local())}.")
-            if got["ok"]:
+    if choice == "all":
+        opn = open_parts(case)
+        if not opn:
+            return {"ok": False, "said": "This changed since the card. Nothing was done."}
+        for d in opn:
+            got = done(run(["record-delivered", "--part", str(d.get("id") or ""), "--evidence",
+                            f"the owner said all are {w.delivered_word}, in Action requests"]), "")
+            if not got["ok"]:
                 return got
-        return {"ok": True, "said": _said(w, "date"), "turn": turn_prompt(case, "date", part, text)}
+        return {"ok": True, "said": _said(w, "all")}
+    if choice == "date":
+        # One date for the whole case: never a date per part, never a turn
+        # to ask which part, never a loop on words that hold no date.
+        if not by:
+            return {"ok": False, "said": PICK_A_DATE}
+        return done(run(["set-date", "--case", cid, "--date", by.isoformat()]),
+                    f"The date is {day_words(by, today)}." + dated_words(case, by, today))
     return {"ok": True, "said": _said(w, "draft"), "turn": turn_prompt(case, "draft", part, text)}
 
 
@@ -1805,9 +2218,11 @@ CARD_KINDS = ("letter", "letter_ask", "case", "case_ask")
 def home_items(src, cases=None, *, rows: dict | None = None) -> tuple[list[dict], set]:
     """(Home's items for the open cases, the request ids they stand for).
     One item per case, kind `letter` for a letter, kind `case` for any
-    other kind: a new case (its decision card), a case overdue, due within
-    HOME_DAYS or with no date. A case's waiting card in Action requests
-    is the item's `href` and leaves the list as a request of its own."""
+    other kind, while the case needs the owner: a new case (its decision),
+    a case with no date (its date), and a case whose time came (due, ready
+    or overdue). A quiet case (dated, before its lead time) is not on
+    Home. A case's waiting card in Action requests is the item's `href`
+    and leaves the list as a request of its own."""
     cases = load_cases() if cases is None else cases
     if not cases:
         return [], set()
@@ -1838,18 +2253,20 @@ def home_items(src, cases=None, *, rows: dict | None = None) -> tuple[list[dict]
         f = facts(c, today)
         if not cid or not is_open(c):
             continue
-        n = (f["next_due"] - today).days if f["next_due"] else None
+        st = stage(c, today)
         card = cards.get(cid)
-        if not (f["new"] or f["overdue"] or f["undated"] or card
-                or (n is not None and n <= HOME_DAYS)):
+        if st == "closed" or waits(c, today):
+            if card is not None:
+                taken.add(f"request:{card.get('id')}")  # a card from before gives way on the next tick
             continue
         w = words_of(c)
         lv = level(c, rows, records=False)
-        due = _home_due(min([_date(d.get("due")) for d in f["overdue"]] or [f["next_due"]])
+        due = _home_due(min([_dates().due_of(d, c) for d in f["overdue"]] or [f["next_due"]])
                         if (f["overdue"] or f["next_due"]) else None, zone)
         urgency = "overdue" if f["overdue"] else ("soon" if due and due - now < 2 * 86400 else "calm")
         nm = name(c, lv, w)
-        title = f"{w.question} {nm}." if f["new"] else nm
+        title = f"{w.question} {nm}." if f["new"] else (
+            f"{w.when_q}{' for ' + _who(c, lv, w) if _who(c, lv, w) else ''}?" if st == "undated" else nm)
         got_news = news(c, rows, lv=lv, now=datetime.fromtimestamp(now, timezone.utc)) if rows else []
         full = line(c, today, lv=lv, news=got_news, w=w)
         detail = rest_of(full, head(c, lv, w)) or full
@@ -1907,7 +2324,9 @@ def home_brief(case: dict, today: date, lv: str = "full", news=None) -> dict:
     stands (and who wrote since), what Tacitus would do next."""
     w = words_of(case)
     f = facts(case, today)
+    st = stage(case, today)
     nm = name(case, lv, w)
+    one, many = place_words(w)
     standing = []
     if f["new"]:
         standing.append("You have not answered yet.")
@@ -1915,49 +2334,83 @@ def home_brief(case: dict, today: date, lv: str = "full", news=None) -> dict:
         standing.append(f"{f['submitted']} of {f['total'] - f['declined']} {w.parts} {w.delivered_word}.")
     if f["overdue"]:
         standing.append(f"{_n(len(f['overdue']), w.part, w.parts)} past its due date.")
-    if f["undated"]:
-        standing.append(f"{_n(len(f['undated']), w.part, w.parts)} with no due date.")
+    if st == "undated":
+        standing.append("It has no date yet.")
     if news:
         standing.append(news_words(news, lv))
     q = w.question
     if f["new"]:
         nxt = f"Tacitus waits for your answer: {q[0].lower() + q[1:]}"
-    elif f["undated"] and not f["next_due"]:
-        nxt = "Tacitus needs the due date."
+    elif st == "undated":
+        nxt = f"Pick one date. Every {one} goes under it, and it stays off your list until near then."
+    elif st == "ready":
+        nxt = w.next_deliver
     elif not has_draft(case, f):
         nxt = w.next_draft
     else:
         nxt = w.next_deliver
     asked = (w.asked_many.format(n=_n(f["total"], w.part, w.parts)) if f["total"] else w.asked_none)
-    return {"what": f"{nm}.", "asked": asked,
-            "due": (f"Next due {day_words(f['next_due'], today)}." if f["next_due"] else "No due date yet."),
-            "standing": standing[:4], "next": nxt}
+    by, nd = _dates().do_by(case), f["next_due"]
+    due = (f"Due {day_words(nd, today)}." if nd and nd == by else
+           f"Next due {day_words(nd, today)}." if nd else "No due date yet.")
+    return {"what": f"{nm}.", "asked": asked, "due": due, "standing": standing[:4], "next": nxt}
 
 
 def home_choices(case: dict, today: date, lv: str = "full") -> list[dict]:
-    """The choices for a case item, in the Home cards contract's shapes:
-    the new case's answers (the card's own), or for an open case Draft (a
-    line of the owner's words), Delivered per part (the CARD_BUTTONS
-    nearest; the card's menu has the rest), Set the due date (a line) and
-    Open it in Action requests. A choice `<prefix>:<answer>[:<part id>]`
-    runs answer() as a press on the card does. No Done, Not needed or
-    Later: a case closes only on its deliveries, and its dates move its
-    reminders."""
+    """The choices for a case item, in the Home cards contract's shapes,
+    the card's own answers by stage: a new case's yes with its date ("Yes,
+    by Tue Dec 1"; "Yes, by another date" or a yes with no date stated:
+    `input: "date"`), its other answers; a case with no date: "By Tue Dec
+    1" and "Another date"; a case whose time came: Draft (a line of the
+    owner's words), Change the date; the delivery list: Delivered per part
+    (the CARD_BUTTONS nearest), All delivered, Change. Then Open it in
+    Action requests. A choice `<prefix>:<answer>[:<part id>]` runs
+    answer() as a press on the card does; a date choice posts the picked
+    day as its `arg`. No Done, Not needed or Later: a case closes only on
+    its deliveries, and its date keeps it off the list until its time."""
     w = words_of(case)
     f = facts(case, today)
+    st = stage(case, today)
     p = w.prefix
+    D = _dates()
+    prop = D.proposed(case)
+    pick = D.date_spec(today, prop)
     if f["new"]:
-        return [{"id": f"{p}:yes", "label": w.home_yes, "style": "primary"} if a == "yes"
-                else {"id": f"{p}:{a}", "label": text} for a, text in w.choices]
+        out = []
+        if not dated_yes(w):
+            prop, pick = None, {}
+        for a, text in w.choices:
+            if a == "yes" and prop:
+                out += [{"id": f"{p}:yes", "label": f"Yes, by {day_words(prop, today)}", "style": "primary"},
+                        {"id": f"{p}:yes_date", "label": "Yes, by another date", "input": "date", **pick}]
+            elif a == "yes":
+                out.append({"id": f"{p}:yes", "label": w.home_yes, "style": "primary",
+                            **({"input": "date", **pick} if pick else {})})
+            else:
+                out.append({"id": f"{p}:{a}", "label": text})
+        return out
+    if st == "undated":
+        out = ([{"id": f"{p}:date", "label": f"By {day_words(prop, today)}", "style": "primary"},
+                {"id": f"{p}:date_pick", "label": "Another date",
+                 "input": "date", **pick}] if prop else
+               [{"id": f"{p}:date_pick", "label": "Pick the date", "style": "primary", "input": "date", **pick}])
+        return out + [{"id": "open", "label": "Open it in Action requests"}]
     drafted = has_draft(case, f)
-    out = [{"id": f"{p}:draft", "label": w.change if drafted else w.draft, "style": "primary", "input": "text"}]
-    for i, d in enumerate(f["open"][:CARD_BUTTONS], 1):
-        nm = _clean(d.get("name"), 40) if lv in ("full", "summary") else f"{w.part} {i}"
-        out.append({"id": f"{p}:{w.deliver_choice}:{d.get('id')}", "label": w.delivered_button.format(name=nm)})
-    if f["undated"]:
-        out.append({"id": f"{p}:date", "label": "Set the due date", "input": "text"})
-    out.append({"id": "open", "label": "Open it in Action requests"})
-    return out
+    if st == "ready":
+        out = []
+        for i, d in enumerate(f["open"][:CARD_BUTTONS], 1):
+            nm = _clean(d.get("name"), 40) if lv in ("full", "summary") else f"{w.part} {i}"
+            out.append({"id": f"{p}:{w.deliver_choice}:{d.get('id')}",
+                        "label": w.delivered_button.format(name=nm)})
+        if len(f["open"]) > 1:
+            out.append({"id": f"{p}:all", "label": f"All {w.delivered_word}"})
+        out.append({"id": f"{p}:draft", "label": w.change, "input": "text"})
+        return out + [{"id": "open", "label": "Open it in Action requests"}]
+    by = D.do_by(case)
+    out = [{"id": f"{p}:draft", "label": w.change if drafted else w.draft, "style": "primary", "input": "text"},
+           {"id": f"{p}:date_pick", "label": "Change the date" if by else "Pick the date", "input": "date",
+            **D.date_spec(today, by or prop)}]
+    return out + [{"id": "open", "label": "Open it in Action requests"}]
 
 
 def home_choice(choice_id: str, prefixes=("letter", "case")) -> tuple[str, str]:
@@ -1967,6 +2420,7 @@ def home_choice(choice_id: str, prefixes=("letter", "case")) -> tuple[str, str]:
     if hd not in prefixes:
         return "", ""
     choice, _sep, part = rest.partition(":")
+    choice = "date" if choice == "date_pick" else choice   # the picker's own button
     valid = _ls().CHOICES if hd == "letter" else CASE_CHOICES
     return (choice, part) if choice in valid else ("", "")
 

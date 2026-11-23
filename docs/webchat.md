@@ -670,7 +670,7 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 | Part | Source |
 |---|---|
 | Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. An item kept from hosted models is its fixed words alone (Kept mail, below). A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
-| Letters and other work | one item per work case, kind `letter` for a letter and kind `case` (`case:<id>`, choices `case:*`, `Hooks.case`) for a review, a form or a report, with the same rules in their kind's words (`case_surface.home_left`, the one hook in `left`). For a letter: a new case ("Letter request", its decision card in Action requests as its `href`), a case overdue, due within 14 days or with no date; its destinations' rows, threads and cards are not listed on their own. A case further out stays on the briefing's Letters list. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's three answers, else Draft the letter (a line of words), Submitted per destination (the three nearest), Set the due date (a line) and Open it in Action requests; no Done, Not needed or Later. Its deeper briefing is the briefing on a case (below), for a `case` item as for a letter. A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
+| Letters and other work | one item per work case, kind `letter` for a letter and kind `case` (`case:<id>`, choices `case:*`, `Hooks.case`) for a review, a form or a report, with the same rules in their kind's words (`case_surface.home_left`, the one hook in `left`). For a letter: a new case ("Letter request", its decision card in Action requests as its `href`), a case with no date (its date), and a case whose time came (its lead time before its one date, or overdue); its destinations' rows, threads and cards are not listed on their own. A dated case before its lead time is quiet: not on Home. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's answers with the date in its yes ("Yes, by Tue Dec 1", "Yes, by another date" with `input: "date"`), a case with no date "By Tue Dec 1" and "Another date", a case whose time came Draft the letter (a line of words) and Change the date (`input: "date"`), a ready letter Submitted per destination (the three nearest) and All submitted; then Open it in Action requests; no Done, Not needed or Later. Its deeper briefing is the briefing on a case (below), for a `case` item as for a letter. A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
 | So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or, while the owner is in a meeting, after the busy stretch (meetings less than 10 minutes apart are one: "You are busy until 1:30. Then you have 50 minutes before your 2:20."), and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
@@ -879,8 +879,8 @@ it is written for one kind.
   checked in code (`check_step`): draft the work (once he said yes, never
   on a kept case), ask for what is missing (when the kind wants a material
   the case lacks and there is an address; he confirms, and the draft waits
-  for Send), set a part's due date (a part with none; a date the records
-  state, else he picks it), mark a part delivered (only where its work
+  for Send), set the case's one date (while it has none; a date the records
+  state, else he picks it with the date picker), mark a part delivered (only where its work
   exists; he confirms), open a part's link (from Summary up; nothing is
   posted). Saying no is never a step: the case card's own Decline button
   stays his. A step runs the same path as the matching button on the case's
@@ -1302,16 +1302,27 @@ and what the place does changed.
   reaction answers it. A new mail whose person may be an open case's
   person asks that first, on its own card ("Is this the same person?":
   Same person, Someone else; the store remembers the answer), and the
-  decision follows the answer. After a yes the case has one live card, kind `letter`
-  ("Letter to write"): each open destination with its date, state and how
-  it is submitted, what is missing, a link line per portal, and Draft the
-  letter (Change the letter once drafted), Submitted per destination (a
-  menu for more than three), Set the due date and Decline. A case whose
-  next date is more than two weeks out gets its card when the date comes
-  that close (it is on the briefing's Letters list until then). A loud rung of
-  the date ladder (the day before a date, the day itself, the day after)
-  posts the card again, the old one retired, so it tops the list and
-  pushes. Each value names the case and its open rows as `rows`, never
+  decision follows the answer. Its yes carries the case's one date in the
+  same tap ("Yes, by Tue Dec 1", the earliest date a place states; "Yes, by
+  another date", a date picker; with no date stated the yes itself asks for
+  one), so a date is never asked again. A case decided without a date gets
+  one date card ("When will you write the letter for ...?": By Tue Dec 1,
+  Another date), once. A dated case is quiet until its lead time (7 days
+  for a letter): no card, not on Home, on no daily list. Then it has one
+  live card, kind `letter` ("Letter to write"): "Time to write the letter
+  for <person>: due Tue Dec 1, 4 places.", each open destination with its
+  state and how it is submitted (its own date only when earlier than the
+  case's), what is missing, a link line per portal, and Draft the letter
+  (Change the letter once drafted, the card's only field of words), Change
+  the date (a date picker), Decline and a menu for a place already
+  submitted. Once the letter is ready the card is the delivery list:
+  Submitted per destination (a menu for more than three), All submitted,
+  Change the letter; a place that asks after that is one line with its
+  link. The card is posted again only when what it shows changed, or on a
+  loud rung of the date (the day before, the day itself, the day after),
+  the old one retired, so it tops the list and pushes. A press that did
+  nothing (a date answer with no day, a refusal) redraws its own card with
+  the bot's words (`failed`), open; it never brings a second card. Each value names the case and its open rows as `rows`, never
   `ledger_id`: the block's project and urgency edge come from them (and
   the case's own nearest date, `web_requests`), and Mark done never
   closes a destination. A press runs `letter_surface.answer`

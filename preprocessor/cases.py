@@ -46,7 +46,10 @@ store refuses writes, so nothing is lost or written twice.
     cases.py open --kind K --who "<counterpart>" [--email <addr>] [--title "<what>"]
                   [--part "<name>"] [--due YYYY-MM-DD] [--method M] [--link <url>]
                   [--ledger-id <id>]
-    cases.py accept --case <id> [--quote "<owner's words>"]
+    cases.py accept --case <id> [--quote "<owner's words>"] [--date YYYY-MM-DD]
+    cases.py set-date --case <id> --date YYYY-MM-DD   (the case's one date)
+    cases.py lead --case <id> --days N   (comes back N days before its date)
+    cases.py start --case <id>           (back on his lists now)
     cases.py decline --case <id> [--quote "<owner's words>"]
     cases.py add-part --case <id> --name <name> [--due D] [--method M] [--link L] [--ledger-id <id>]
     cases.py set-due --part <id> --due YYYY-MM-DD
@@ -56,7 +59,7 @@ store refuses writes, so nothing is lost or written twice.
     cases.py record-delivered --part <id> --evidence "<what shows it>"
     cases.py merge --from <case> --into <case>
     cases.py questions [--kind K]
-    cases.py answer --question <id> --choice "<the answer>"
+    cases.py answer --question <id> --choice "<the answer>" [--date YYYY-MM-DD]
     cases.py migrate [--apply] [--report <path>]
 """
 from __future__ import annotations
@@ -139,7 +142,10 @@ SCHEMA = (
         aliases           TEXT NOT NULL DEFAULT '[]',
         keep_level        TEXT NOT NULL DEFAULT 'full',
         case_ledger_id    TEXT NOT NULL DEFAULT '',
-        updated_at        TEXT NOT NULL)""",
+        updated_at        TEXT NOT NULL,
+        do_by             TEXT NOT NULL DEFAULT '',
+        lead_days         INTEGER,
+        start_on          TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_cases_kind ON cases(kind, status)",
     """CREATE TABLE IF NOT EXISTS case_parts (
         id              TEXT PRIMARY KEY,
@@ -156,7 +162,8 @@ SCHEMA = (
         delivered_at    TEXT,
         evidence        TEXT NOT NULL DEFAULT '',
         created_at      TEXT NOT NULL,
-        updated_at      TEXT NOT NULL)""",
+        updated_at      TEXT NOT NULL,
+        label           TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_case_parts_case ON case_parts(case_id)",
     "CREATE INDEX IF NOT EXISTS idx_case_parts_ledger ON case_parts(ledger_id)",
     "CREATE INDEX IF NOT EXISTS idx_case_parts_conv ON case_parts(conversation_id)",
@@ -199,6 +206,15 @@ SCHEMA = (
     "CREATE INDEX IF NOT EXISTS idx_case_events_case ON case_events(case_id)",
 )
 
+# Columns added after the first release of the store: an older table gets
+# them on its first writable connection (ensure_schema), in this order.
+ADDED_COLUMNS = (
+    ("cases", "do_by", "TEXT NOT NULL DEFAULT ''"),
+    ("cases", "lead_days", "INTEGER"),
+    ("cases", "start_on", "TEXT NOT NULL DEFAULT ''"),
+    ("case_parts", "label", "TEXT NOT NULL DEFAULT ''"),
+)
+
 # The letter tables as views over the store, so a reader of the first
 # letter release's tables (a query, a test) still finds them.
 _LETTER_CASES = "SELECT id FROM cases WHERE kind = 'letter'"
@@ -230,11 +246,12 @@ _LEGACY_SHADOW = {
     "cases": (
         "SELECT id, 'letter' AS kind, kind AS subkind, person_name AS counterpart_name, "
         "person_email AS counterpart_email, '' AS title, status, decision, opened, closed_at, "
-        "base_letter AS base_doc, notes, aliases, keep_level, case_ledger_id, updated_at "
+        "base_letter AS base_doc, notes, aliases, keep_level, case_ledger_id, updated_at, "
+        "'' AS do_by, NULL AS lead_days, '' AS start_on "
         "FROM main.letter_cases"),
     "case_parts": (
         "SELECT id, case_id, name, due, method, link, state, ledger_id, conversation_id, sender, "
-        "draft, submitted_at AS delivered_at, evidence, created_at, updated_at "
+        "draft, submitted_at AS delivered_at, evidence, created_at, updated_at, '' AS label "
         "FROM main.letter_destinations"),
     "case_materials": (
         "SELECT NULL AS seq, l.id AS case_id, json_extract(j.value, '$.kind') AS kind, "
@@ -380,6 +397,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             writable = False
             break
+    if writable:
+        _add_columns(conn)
     legacy = legacy_tables(conn)
     if legacy and writable:
         empty = True
@@ -405,6 +424,33 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         _shadow(conn)
 
 
+def _columns(conn, table: str, schema: str = "main") -> list[str]:
+    try:
+        return [r[1] for r in conn.execute(f"PRAGMA {schema}.table_info({table})")]
+    except sqlite3.Error:
+        return []
+
+
+def _add_columns(conn) -> None:
+    """The columns ADDED_COLUMNS names, on a table from before them."""
+    for table, col, decl in ADDED_COLUMNS:
+        have = _columns(conn, table)
+        if have and col not in have:
+            try:
+                conn.execute(f"ALTER TABLE main.{table} ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                return  # read-only: readers take the column as empty (_col)
+
+
+def _col(r, name: str, default=""):
+    """A column of a store row, or `default` on a table from before it."""
+    try:
+        v = r[name]
+    except (IndexError, KeyError):
+        return default
+    return default if v is None else v
+
+
 def _shadow(conn) -> None:
     temp = _objects(conn, "temp")
     main = _objects(conn)
@@ -412,10 +458,16 @@ def _shadow(conn) -> None:
         if temp.get(name):
             continue
         sql = legacy_sql
+        if name in ("cases", "case_parts") and main.get(name) == "table":
+            # The added columns only where the store's own table has them.
+            have = set(_columns(conn, name))
+            for _t, col, _decl in ADDED_COLUMNS:
+                if _t == name and col not in have:
+                    sql = re.sub(rf",\s*(?:''|NULL) AS {col}\b", "", sql)
         if main.get(name) == "table":
-            sql = (f"SELECT * FROM main.{name} UNION ALL {legacy_sql}"
+            sql = (f"SELECT * FROM main.{name} UNION ALL {sql}"
                    if name in ("case_materials", "case_events")
-                   else f"SELECT * FROM main.{name} UNION ALL SELECT * FROM ({legacy_sql}) "
+                   else f"SELECT * FROM main.{name} UNION ALL SELECT * FROM ({sql}) "
                         f"WHERE {'id' if name != 'case_aliases' else 'key || case_id'} NOT IN "
                         f"(SELECT {'id' if name != 'case_aliases' else 'key || case_id'} "
                         f"FROM main.{name})")
@@ -456,12 +508,53 @@ def _event(conn, case_id: str, kind_: str, *, part_id: str = "", state: str = ""
 
 # ── reading the store ──────────────────────────────────────────────────
 
-def part_dict(r) -> dict:
-    return {"id": r["id"], "case": r["case_id"], "name": r["name"], "due": r["due"],
-            "method": r["method"], "link": r["link"], "state": r["state"],
+def part_dict(r, do_by: str = "") -> dict:
+    """A part as the readers take it. `due` is the date it is due by: the
+    case's one date (`do_by`), or its own (`own_due`, what its mail
+    stated) when that is earlier or the case has none. `name` is never
+    empty: the place its mail named, else the label intake gave it (the
+    sender's own name), else its service's domain; `named` says whether a
+    mail named it."""
+    own = r["due"] or ""
+    name = r["name"] or ""
+    due = min(x for x in (own, do_by) if x) if (own or do_by) else ""
+    return {"id": r["id"], "case": r["case_id"], "name": name or _col(r, "label") or
+            _service_name(r["sender"]), "named": bool(name), "due": due,
+            "own_due": own, "method": r["method"], "link": r["link"], "state": r["state"],
             "ledger_id": r["ledger_id"], "conversation_id": r["conversation_id"],
             "sender": r["sender"], "draft": r["draft"],
             "delivered_at": r["delivered_at"] or "", "evidence": r["evidence"]}
+
+
+# The words of a service's domain that name no place.
+_SERVICE_HOSTS = re.compile(r"^(?:mail|email|e|em|mg|www|apply|app|apps|portal|forms?|"
+                            r"notifications?|noreply|no-reply|lor|refer|recommend\w*)$", re.I)
+
+
+def _service_name(sender: str) -> str:
+    """The place a mail came from, by its sender's domain ("" for none):
+    `gradadmit@case.example.edu` is "case.example.edu" less its host words."""
+    dom = (sender or "").rsplit("@", 1)[-1].lower().strip(".")
+    if "@" not in (sender or "") or "." not in dom:
+        return ""
+    parts = dom.split(".")
+    while len(parts) > 2 and _SERVICE_HOSTS.match(parts[0]):
+        parts = parts[1:]
+    return ".".join(parts)
+
+
+def _numbered(parts: list[dict], noun: str) -> list[dict]:
+    """Every part with a name the owner can tell apart: a part with no name
+    at all is "<Noun> N", and two that read the same get " 2", " 3"."""
+    seen: dict[str, int] = {}
+    for i, d in enumerate(parts, 1):
+        if not d["name"]:
+            d["name"] = f"{noun[:1].upper() + noun[1:]} {i}"
+        key = d["name"].lower()
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            d["name"] = f"{d['name']} {seen[key]}"
+    return parts
 
 
 def question_dict(q) -> dict:
@@ -478,9 +571,12 @@ def _materials(conn, case_id: str) -> list[dict]:
 
 
 def _case_dict(conn, r) -> dict:
-    parts = [part_dict(d) for d in conn.execute(
+    do_by = str(_col(r, "do_by") or "")
+    k = kind(r["kind"])
+    parts = _numbered([part_dict(d, do_by) for d in conn.execute(
         "SELECT * FROM case_parts WHERE case_id = ? ORDER BY "
-        "CASE WHEN due = '' THEN 1 ELSE 0 END, due, created_at", (r["id"],))]
+        "CASE WHEN due = '' THEN 1 ELSE 0 END, due, created_at", (r["id"],))],
+        PLACE_NOUN.get(r["kind"], k.part_noun if k else "part"))
     qs = [question_dict(q) for q in conn.execute(
         "SELECT * FROM case_questions WHERE case_id = ? AND answer = '' ORDER BY asked_at",
         (r["id"],))]
@@ -491,7 +587,13 @@ def _case_dict(conn, r) -> dict:
             "materials": _materials(conn, r["id"]), "base_doc": r["base_doc"],
             "notes": r["notes"], "aliases": _json(r["aliases"], []),
             "keep_level": r["keep_level"] or "full", "case_ledger_id": r["case_ledger_id"],
+            "do_by": do_by, "lead_days": _col(r, "lead_days", None),
+            "start_on": str(_col(r, "start_on") or ""),
             "parts": parts, "questions": qs, "messages": _messages(conn, r["id"])}
+
+
+# What a part with no name is called, by kind ("Place 2").
+PLACE_NOUN = {"letter": "place"}
 
 
 MESSAGES_CAP = 20
@@ -762,6 +864,11 @@ def _absorb_identity(conn, cid: str, name: str, email: str, *, keep_level: str =
     if name and not r["counterpart_name"]:
         sets.append("counterpart_name = ?")
         params.append(name.strip()[:120])
+    elif name and better_spelling(r["counterpart_name"], name) != r["counterpart_name"]:
+        # The same name with a capital the first spelling lost ("Ana
+        # Ruiz-Diaz" over "Ana Ruiz-diaz"): the mail's own spelling wins.
+        sets.append("counterpart_name = ?")
+        params.append(name.strip()[:120])
     if level != (r["keep_level"] or "full"):
         sets.append("keep_level = ?")
         params.append(level)
@@ -769,6 +876,19 @@ def _absorb_identity(conn, cid: str, name: str, email: str, *, keep_level: str =
         sets.append("updated_at = ?")
         params += [_now(), cid]
         conn.execute(f"UPDATE cases SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def better_spelling(have: str, other: str) -> str:
+    """Of two spellings of one name that differ only in letter case, the
+    one that capitalises more of its word starts (a hyphenated surname's
+    second word too); `have` on a tie or for two different names."""
+    a, b = (have or "").strip(), (other or "").strip()
+    if not a or not b or a == b or a.lower() != b.lower():
+        return have
+
+    def caps(t: str) -> int:
+        return sum(1 for w in re.split(r"[\s'-]+", t) if w[:1].isupper())
+    return other.strip()[:120] if caps(b) > caps(a) else have
 
 
 def ensure_case(conn, kind: str, counterpart_name: str = "", counterpart_email: str = "",
@@ -956,11 +1076,14 @@ def _sync_row_date(conn, part_id: str) -> None:
 def add_part(conn, case_id: str, name: str, due: str = "", method: str = "unknown",
              link: str = "", ledger_id: str = "", *, conversation_id: str = "",
              sender: str = "", message_id: str = "", actor: str = "",
-             reuse_done: bool = True) -> str:
+             reuse_done: bool = True, label: str = "") -> str:
     """A part on the case, with its one open ledger row: the row given
     (linked here), else a new one. A part of the same name already on the
     case gets the new facts instead (a reminder, a service's mail for a
-    place the counterpart listed). Returns its id."""
+    place the counterpart listed). `label` is what the owner reads for a
+    part its mail did not name (the sender's own name); it never joins two
+    parts. A date earlier than the case's one date moves the case's date
+    to it (pull_date). Returns its id."""
     ensure_schema(conn)
     _writable(conn)
     c = conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
@@ -977,6 +1100,8 @@ def add_part(conn, case_id: str, name: str, due: str = "", method: str = "unknow
         sets = {"due": d["due"] or due, "method": d["method"] if d["method"] != "unknown" else method,
                 "link": d["link"] or link, "conversation_id": d["conversation_id"] or conversation_id,
                 "sender": d["sender"] or sender, "name": d["name"] or (name or "")[:160]}
+        if label and not _col(d, "label") and "label" in _columns(conn, "case_parts"):
+            sets["label"] = label[:120]
         lid = d["ledger_id"]
         old_row, new_row = _row(conn, lid), _row(conn, ledger_id)
         if ledger_id and ledger_id != lid and new_row is not None:
@@ -1007,6 +1132,7 @@ def add_part(conn, case_id: str, name: str, due: str = "", method: str = "unknow
         conn.execute(f"UPDATE case_parts SET {', '.join(x + ' = ?' for x in sets)} WHERE id = ?",
                      (*sets.values(), existing))
         _sync_row_date(conn, existing)
+        pull_date(conn, case_id, existing, actor=actor)
         return existing
     did = _id(k.prefixes[1], case_id, norm_part(name) or sender or link or now, now,
               os.urandom(4).hex())
@@ -1027,11 +1153,14 @@ def add_part(conn, case_id: str, name: str, due: str = "", method: str = "unknow
                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                  (did, case_id, (name or "")[:160], due, method, (link or "")[:600], state, lid,
                   conversation_id, (sender or "").lower(), now, now))
+    if label and "label" in _columns(conn, "case_parts"):
+        conn.execute("UPDATE case_parts SET label = ? WHERE id = ?", (label[:120], did))
     link_row(conn, lid, case_id, did)
     _event(conn, case_id, "part" if k.name != "letter" else "destination", part_id=did,
            state=state, actor=actor,
            evidence={"name": name, "due": due, "method": method, "ledger_id": lid})
     _sync_row_date(conn, did)
+    pull_date(conn, case_id, did, actor=actor)
     return did
 
 
@@ -1055,7 +1184,81 @@ def set_due(conn, part_id: str, due: str, *, actor: str = "") -> dict:
                      (new or None, now, d["ledger_id"]))
     _event(conn, d["case_id"], "due", part_id=part_id, state=new, actor=actor,
            evidence={"from": d["due"], "to": new})
+    pull_date(conn, d["case_id"], part_id, actor=actor)
     return {"part": part_id, "due": new, "was": d["due"]}
+
+
+# ── the case's one date ────────────────────────────────────────────────
+# A case has one date it is done by (`do_by`): the owner sets it with his
+# yes, or once on the date card. A part with no date of its own is due by
+# it; a part's own date stays its own. A part that comes later with an
+# EARLIER date of its own moves the case's date to it (an event `do_by`
+# with why "earlier", which the surfaces say once). `lead_days` (none:
+# the kind's, or the owner's setting) is how many days before the date the
+# work comes back to his lists; `start_on` brings it back sooner ("start
+# this one now").
+
+def set_date(conn, case_id: str, due: str, *, actor: str = "", why: str = "owner",
+             part_id: str = "") -> dict:
+    """The case's one date (YYYY-MM-DD, or "" for none), with an event.
+    Returns {"case", "do_by", "was"}."""
+    ensure_schema(conn)
+    _writable(conn)
+    c = conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
+    if c is None:
+        raise ValueError(f"no case {case_id}")
+    if "do_by" not in _columns(conn, "cases"):
+        raise ValueError("the case store is not updated yet: run any cases.py verb from the owner's shell")
+    new = _ck.day(due)
+    if due and not new:
+        raise ValueError("the date must be YYYY-MM-DD")
+    was = str(_col(c, "do_by") or "")
+    if new == was:
+        return {"case": case_id, "do_by": new, "was": was}
+    conn.execute("UPDATE cases SET do_by = ?, updated_at = ? WHERE id = ?", (new, _now(), case_id))
+    _event(conn, case_id, "do_by", part_id=part_id, state=new, actor=actor,
+           evidence={"from": was, "to": new, "why": why})
+    return {"case": case_id, "do_by": new, "was": was}
+
+
+def pull_date(conn, case_id: str, part_id: str, *, actor: str = "") -> dict | None:
+    """An open part's own date earlier than the case's date moves the case's
+    date to it. Returns set_date's result when it moved, else None."""
+    c = conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
+    d = conn.execute("SELECT * FROM case_parts WHERE id = ?", (part_id,)).fetchone()
+    do_by = str(_col(c, "do_by") or "") if c is not None else ""
+    if not (c is not None and d is not None and c["status"] == "open" and do_by and d["due"]
+            and d["state"] in OPEN_STATES and d["due"] < do_by):
+        return None
+    return set_date(conn, case_id, d["due"], actor=actor or "cases", why="earlier", part_id=part_id)
+
+
+def set_lead(conn, case_id: str, days, *, actor: str = "") -> dict:
+    """How many days before its date this case comes back ("remind me N
+    days before"); None or "" for the kind's own."""
+    ensure_schema(conn)
+    _writable(conn)
+    if case(conn, case_id) is None:
+        raise ValueError(f"no case {case_id}")
+    n = None if days in (None, "") else _ck._lead(days, -1)
+    if n == -1:
+        raise ValueError(f"the lead time is 0 to {_ck.LEAD_MAX} days")
+    conn.execute("UPDATE cases SET lead_days = ?, updated_at = ? WHERE id = ?", (n, _now(), case_id))
+    _event(conn, case_id, "lead", state="" if n is None else str(n), actor=actor)
+    return {"case": case_id, "lead_days": n}
+
+
+def start_now(conn, case_id: str, *, actor: str = "", day: str = "") -> dict:
+    """Bring the case back to his lists now ("start this one now"), or on
+    `day`."""
+    ensure_schema(conn)
+    _writable(conn)
+    if case(conn, case_id) is None:
+        raise ValueError(f"no case {case_id}")
+    on = _ck.day(day) if day else datetime.now(timezone.utc).date().isoformat()
+    conn.execute("UPDATE cases SET start_on = ?, updated_at = ? WHERE id = ?", (on, _now(), case_id))
+    _event(conn, case_id, "start", state=on, actor=actor)
+    return {"case": case_id, "start_on": on}
 
 
 def add_material(conn, case_id: str, kind: str, ref: str, *, actor: str = "") -> bool:
@@ -1175,9 +1378,10 @@ def _ledger_note(conn, ledger_id: str, line: str) -> None:
                  (text, _now(), ledger_id))
 
 
-def accept(conn, case_id: str, *, actor: str = "", quote: str = "") -> dict:
+def accept(conn, case_id: str, *, actor: str = "", quote: str = "", do_by: str = "") -> dict:
     """The owner will do it: every asked part is accepted. The case stays
-    open; its rows are work with dates, not replies owed."""
+    open; its rows are work with dates, not replies owed. `do_by` is the
+    case's one date, given with the yes."""
     ensure_schema(conn)
     _writable(conn)
     c = conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
@@ -1195,7 +1399,10 @@ def accept(conn, case_id: str, *, actor: str = "", quote: str = "") -> dict:
         said = "you will write it" if k.name == "letter" else "you said yes"
         _ledger_note(conn, c["case_ledger_id"], f"{now[:10]}: {said}"
                      + (f" (\"{quote[:80]}\")" if quote else ""))
-    return {"case": case_id, "decision": "accepted"}
+    out = {"case": case_id, "decision": "accepted"}
+    if do_by:
+        out["do_by"] = set_date(conn, case_id, do_by, actor=actor)["do_by"]
+    return out
 
 
 def decline(conn, case_id: str, *, actor: str = "", quote: str = "") -> dict:
@@ -1371,7 +1578,7 @@ def _answer_open(conn, case_id: str, qkind: str, answer_: str, actor: str) -> No
                  (answer_, _now(), actor, case_id, qkind))
 
 
-def answer(conn, question_id: str, choice: str, *, actor: str = "owner") -> dict:
+def answer(conn, question_id: str, choice: str, *, actor: str = "owner", do_by: str = "") -> dict:
     """The owner's tap on a question's button.
       decision (the kind's first question): a `yes` choice accepts, a `no`
         choice declines, and a choice with a next step says it (`next`).
@@ -1419,7 +1626,7 @@ def answer(conn, question_id: str, choice: str, *, actor: str = "owner") -> dict
         if dec and pick in dec.no:
             out.update(decline(conn, q["case_id"], actor=actor, quote=pick))
         else:
-            out.update(accept(conn, q["case_id"], actor=actor, quote=pick))
+            out.update(accept(conn, q["case_id"], actor=actor, quote=pick, do_by=do_by))
             if dec and dec.then.get(pick):
                 out["next"] = dec.then[pick]
     conn.execute("UPDATE case_questions SET answer = ?, answered_at = ?, actor = ? WHERE id = ?",
@@ -1591,7 +1798,8 @@ def view(c: dict, level: str | None = None) -> dict:
         if level == "summary":
             out["notes"] = ""
         return out
-    parts = [{"id": d["id"], "due": d["due"], "method": d["method"], "state": d["state"],
+    parts = [{"id": d["id"], "due": d["due"], "own_due": d.get("own_due", d["due"]),
+              "method": d["method"], "state": d["state"],
               "ledger_id": d["ledger_id"], "delivered_at": d.get("delivered_at", "")}
              for d in c.get("parts") or []]
     return {"id": c["id"], "kind": c.get("kind"), "subkind": c.get("subkind", ""),
@@ -1599,7 +1807,8 @@ def view(c: dict, level: str | None = None) -> dict:
             "keep_level": level, "counterpart_name": "", "counterpart_email": "", "title": "",
             "notes": "", "materials": [{"kind": m.get("kind")} for m in c.get("materials") or []],
             "base_doc": "", "aliases": [], "case_ledger_id": c.get("case_ledger_id", ""),
-            "parts": parts, "questions": [],
+            "do_by": c.get("do_by", ""), "lead_days": c.get("lead_days"),
+            "start_on": c.get("start_on", ""), "parts": parts, "questions": [],
             "messages": [{k: m.get(k, "") for k in ("at", "conversation_id", "message_id", "part")}
                          for m in c.get("messages") or []]}
 
@@ -1663,9 +1872,10 @@ def summary_line(c: dict, *, level: str | None = None, today: date | None = None
 def moves(c: dict) -> list[dict]:
     """The next steps this case allows now, for buttons a briefing offers
     (each validated against this list): {"move", "part"?}. `accept` /
-    `decline` while undecided; per open part `draft`, `ready`, `delivered`,
-    `set_due` (no date yet) and `open_link` (a link); `ask_materials` when
-    the kind wants materials the case lacks; `decline` while open."""
+    `decline` while undecided; per open part `draft`, `ready`, `delivered`
+    and `open_link` (a link); `set_due` (no part) while the case has no
+    date; `ask_materials` when the kind wants materials the case lacks;
+    `decline` while open."""
     k = kind(c.get("kind") or "")
     if k is None or c.get("status") != "open":
         return []
@@ -1683,10 +1893,11 @@ def moves(c: dict) -> list[dict]:
         if d["state"] == "drafted":
             out.append({"move": "ready", "part": d["id"]})
         out.append({"move": "delivered", "part": d["id"]})
-        if not d.get("due"):
-            out.append({"move": "set_due", "part": d["id"]})
         if d.get("link"):
             out.append({"move": "open_link", "part": d["id"]})
+    if not c.get("do_by"):
+        # One date for the whole case: never a date per part.
+        out.append({"move": "set_due"})
     if c.get("decision") and not any(m["move"] == "decline" for m in out):
         out.append({"move": "decline"})
     return out
@@ -1889,6 +2100,23 @@ def name_from_address(addr: str) -> str:
     return " ".join(p.capitalize() for p in parts[:3]) if len(parts) >= 2 else ""
 
 
+_NO_PLACE = re.compile(r"^(?:no[- ]?reply|do[- ]?not[- ]?reply|notifications?|mailer|admin|"
+                       r"system|support|info|team)$", re.I)
+
+
+def place_label(rec: dict, person: str = "") -> str:
+    """What to call a part its mail did not name: the sender's own name as
+    the mail shows it ("Graduate Admissions, North University"), unless it
+    is the person the case is about or a bare system word; "" for none (a
+    reader then names it by its service's domain)."""
+    shown = " ".join(str(rec.get("from_name") or "").replace('"', " ").split())
+    if not shown or "@" in shown or _NO_PLACE.match(shown):
+        return ""
+    if person and name_match(person, shown) in ("same", "maybe"):
+        return ""
+    return shown[:120]
+
+
 def material_kind(k: Kind, filename: str) -> str:
     try:
         from case_kinds import letter as _letter
@@ -1970,7 +2198,8 @@ def ingest_record(conn, rec: dict, *, ledger_id: str = "", keep_level: str = "fu
         return out
     did = add_part(conn, cid, found.get("part") or "", found.get("due", ""),
                    found.get("method", "unknown"), found.get("link", ""), ledger_id,
-                   conversation_id=conv, sender=sender, message_id=mid, actor=actor)
+                   conversation_id=conv, sender=sender, message_id=mid, actor=actor,
+                   label="" if found.get("part") else place_label(rec, person))
     out["part"] = did
     if new_case and not out.get("question"):
         out["question"] = ask_decision(conn, cid)
@@ -2007,7 +2236,7 @@ def _ingest_work(conn, k: Kind, rec: dict, found: dict, *, ledger_id: str, keep_
         name, link = open_parts[0]["name"], open_parts[0]["link"] or link
     did = add_part(conn, cid, name, found.get("due", ""), found.get("method", "unknown"), link,
                    ledger_id, conversation_id=conv, sender=sender, message_id=mid, actor=actor,
-                   reuse_done=False)
+                   reuse_done=False, label="" if name else place_label(rec, ""))
     out = {"action": "case" if new_case else "part", "case": cid, "part": did}
     if new_case:
         q = ask_decision(conn, cid)
@@ -2358,6 +2587,16 @@ def main(argv=None) -> int:
         s = sub.add_parser(name, allow_abbrev=False)
         s.add_argument("--case", required=True)
         s.add_argument("--quote", default="")
+        if name == "accept":
+            s.add_argument("--date", default="", help="the case's one date, YYYY-MM-DD")
+    s = sub.add_parser("set-date", allow_abbrev=False)
+    s.add_argument("--case", required=True)
+    s.add_argument("--date", required=True, help="YYYY-MM-DD, or \"\" for no date")
+    s = sub.add_parser("lead", allow_abbrev=False)
+    s.add_argument("--case", required=True)
+    s.add_argument("--days", required=True, help="days before the date it comes back; \"\" for the kind's")
+    s = sub.add_parser("start", allow_abbrev=False)
+    s.add_argument("--case", required=True)
     s = sub.add_parser("add-part", allow_abbrev=False)
     s.add_argument("--case", required=True)
     s.add_argument("--name", required=True)
@@ -2389,6 +2628,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("answer", allow_abbrev=False)
     s.add_argument("--question", required=True)
     s.add_argument("--choice", required=True)
+    s.add_argument("--date", default="", help="with a yes: the case's one date, YYYY-MM-DD")
     s = sub.add_parser("migrate", allow_abbrev=False)
     s.add_argument("--apply", action="store_true")
     s.add_argument("--report", default="", help="write the full report (with names) to this file")
@@ -2443,7 +2683,13 @@ def main(argv=None) -> int:
                             part_name=args.part, due=args.due, method=args.method, link=args.link,
                             ledger_id=args.ledger_id, actor=actor)
         elif args.cmd == "accept":
-            res = accept(conn, args.case, actor=actor, quote=args.quote)
+            res = accept(conn, args.case, actor=actor, quote=args.quote, do_by=args.date)
+        elif args.cmd == "set-date":
+            res = set_date(conn, args.case, args.date, actor=actor)
+        elif args.cmd == "lead":
+            res = set_lead(conn, args.case, args.days, actor=actor)
+        elif args.cmd == "start":
+            res = start_now(conn, args.case, actor=actor)
         elif args.cmd == "decline":
             res = decline(conn, args.case, actor=actor, quote=args.quote)
         elif args.cmd == "add-part":
@@ -2464,7 +2710,7 @@ def main(argv=None) -> int:
         elif args.cmd == "questions":
             return _out({"questions": questions(conn, kind=args.kind or None)})
         elif args.cmd == "answer":
-            res = answer(conn, args.question, args.choice, actor=actor)
+            res = answer(conn, args.question, args.choice, actor=actor, do_by=args.date)
         else:
             return _err(f"unknown command {args.cmd}")
         conn.commit()

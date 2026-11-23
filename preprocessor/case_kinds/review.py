@@ -12,7 +12,7 @@ KIND = Kind(
     subkinds=("paper", "proposal", "contract", "draft", "thesis", "application"),
     decision=Decision(question="Will you do this review?"),
     material_kinds=("document", "form", "instructions", "other"),
-    ladder=(14, 7, 3, 1, 0, -1), guide="reviews.md", model_kinds=("review",),
+    ladder=(14, 7, 3, 1, 0, -1), guide="reviews.md", lead=10, model_kinds=("review",),
     autonomy={"draft": "ask-first", "deliver": "ask-first"},
     rules=Rules(
         request=r"\b(?:invit\w+ to (?:serve as an? )?(?:review|referee)|review(?:er)? invitation|"

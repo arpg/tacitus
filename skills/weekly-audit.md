@@ -118,7 +118,10 @@ Look across the full week's context log for patterns:
 all its parts. In Critical or Important, a case is one bullet: its
 `line` as it is. A row with a `letter` or `work_case` field is a part of
 a case: never a bullet of its own, never a close because of a reply.
-Under Completed, a case's delivered parts are one line.
+Under Completed, a case's delivered parts are one line. `quiet_cases`
+are dated cases before their lead time: list them under Important by
+date, each `line` as it is (it says the day it comes back). The daily
+briefing never names them.
 
 ### 6.4. Project hygiene (the PARA pass)
 

@@ -35,6 +35,9 @@ The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:
   work someone asked of the user (cases.py: a review, a form, a
   report), with `case_kind`, `subkind` and its open `parts`; ref
   `case:<case id>`. One list of cases in the post, letters and the rest.
+- `quiet_cases`: dated cases of every kind before their lead time
+  (`back_on`). The daily briefing never names them; the weekly review
+  lists them by date. Their rows stay out of every list.
 - `handled_by_reply`: items the user already answered by email (matched
   against sent mail, in-thread or same person+subject). Never surface as
   open; recap in one line.

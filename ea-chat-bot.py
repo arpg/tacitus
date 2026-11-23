@@ -5478,10 +5478,12 @@ def _save_case_cards(data: dict) -> None:
 
 def _letter_card(spec: dict) -> "_chat.ConfirmationCard":
     """A case_surface card spec (a letter's or any kind's) as the
-    frontend's card."""
+    frontend's card. An action's seventh item, when it has one, is its
+    date picker (CardAction.date)."""
     inert = _chat.card_text.inert
-    actions = [_chat.CardAction(aid, label, value, style, word, ask=ask)
-               for aid, label, value, style, word, ask in spec["actions"]]
+    actions = [_chat.CardAction(a[0], a[1], a[2], a[3], a[4], ask=a[5],
+                                **({"date": dict(a[6])} if len(a) > 6 and a[6] else {}))
+               for a in spec["actions"]]
     sel = spec.get("select")
     select = _chat.CardSelect(sel[0], sel[1], list(sel[2])) if sel else None
     lines = [inert(ln, 300) if not ln.startswith("<https://") else ln for ln in spec["lines"]]
@@ -5552,34 +5554,69 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
             if row is not None and row.get("status") != "live":
                 rec["live"] = False  # answered, expired or replaced elsewhere
     today = surface.today_local()
-    live_blocks = [c for c in cases if (cards.get(str(c.get("id") or "")) or {}).get("live")
-                   and (cards.get(str(c.get("id") or "")) or {}).get("kind") == "case"]
-    news = surface.news_marks(live_blocks, _case_rows()) if live_blocks else {}
+    # A message on a case's thread is news for a case with a card record
+    # (a block, or a quiet case once answered): it surfaces once.
+    watched = [c for c in cases if cards.get(str(c.get("id") or "")) and not surface.is_new(c)]
+    news = surface.news_marks(watched, _case_rows()) if watched else {}
     plan = surface.card_plan(cases, cards, today, sent, news)
     if not plan:
         return 0
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
         return 0
-    levels = levels_of(cases) if any(p["what"] in ("ask", "case", "remind", "join", "news")
+    levels = levels_of(cases) if any(p["what"] in ("ask", "case", "remind", "join", "news", "date",
+                                                   "update", "note")
                                      for p in plan) else {}
     posted = 0
     for p in plan:
         cid, what = p["case"], p["what"]
         rec = cards.get(cid) or {}
-        if what in ("retire", "remind", "news") and rec.get("live") and rec.get("card"):
+        gone = {"retire": closed, "date": ":calendar: One date for all of it: the card below asks for it.",
+                "case": ":white_check_mark: Answered. Its block is below."}
+        if rec.get("live") and rec.get("card") and (
+                what in ("retire", "remind", "news", "date", "quiet")
+                or (what == "case" and rec.get("kind") in ("ask", "date"))):
+            case = surface.find(cases, cid)
             try:
                 _replace_buttons_with_status(
                     rec.get("channel") or dm_channel, rec["card"],
-                    closed if what == "retire" else ":arrow_down: A newer card for this is in the list.")
+                    surface.quiet_words(case, today) if what == "quiet" and case is not None
+                    else gone.get(what) or ":arrow_down: A newer card for this is in the list.")
             except Exception as e:
                 log.warning(f"case card {cid}: not retired: {e}")
             rec["live"] = False
-        if what == "retire":
+        for key in ("do_by", "parts"):
+            if key in p:
+                rec[key] = p[key]  # what the owner has been shown of the case
+        if what in ("retire", "quiet", "mark"):
+            sent.update({k: now for k in p.get("keys") or []})
             cards[cid] = rec
             continue
-        if what == "mark":
+        if what == "note":
+            case = surface.find(cases, cid)
+            text = surface.note_text(case, p, today, levels.get(cid, "local")) if case is not None else ""
+            if text:
+                try:
+                    FRONTEND.post(channel=rec.get("channel") or dm_channel,
+                                  thread_ts=rec.get("card") if rec.get("live") else None, text=text)
+                    posted += 1
+                except Exception as e:
+                    log.warning(f"case note {cid}: not posted: {e}")
+            if p.get("at"):
+                rec["news_at"] = p["at"]
+            cards[cid] = rec
+            continue
+        if what == "update":
+            case = surface.find(cases, cid)
+            if case is not None and rec.get("card"):
+                try:
+                    FRONTEND.update_card(_card_ref(rec.get("channel") or dm_channel, rec["card"]),
+                                         _letter_card(surface.case_spec(case, today, levels.get(cid, "local"))))
+                    rec["sig"] = p.get("sig") or rec.get("sig")
+                except Exception as e:
+                    log.warning(f"case card {cid}: not redrawn: {e}")
             sent.update({k: now for k in p.get("keys") or []})
+            cards[cid] = rec
             continue
         case = surface.find(cases, cid)
         if case is None:
@@ -5601,6 +5638,8 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
         fresh = news.get(cid) or {}
         if what == "ask" or p.get("kind") == "ask":
             spec = surface.decision_spec(case, today, lv)
+        elif what == "date":
+            spec = surface.date_spec(case, today, lv)
         else:
             reminder = surface.reminder_text(case, p.get("items") or [], today, lv) if what == "remind" else ""
             spec = surface.case_spec(case, today, lv, reminder=reminder,
@@ -5611,9 +5650,13 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
             log.warning(f"case card {cid}: not posted: {e}")
             continue
         posted += 1
-        cards[cid] = {"kind": "ask" if spec["kind"].endswith("_ask") else "case", "live": True,
-                      "card": getattr(ref, "id", "") or "",
-                      "channel": getattr(ref, "channel", "") or dm_channel, "posted": now}
+        kind = "date" if what == "date" else ("ask" if spec["kind"].endswith("_ask") else "case")
+        cards[cid] = dict(rec, kind=kind, live=True, card=getattr(ref, "id", "") or "",
+                          channel=getattr(ref, "channel", "") or dm_channel, posted=now)
+        if what == "date":
+            cards[cid]["asked_date"] = True  # the date is asked once
+        if kind == "case":
+            cards[cid]["sig"] = p.get("sig") or surface.block_sig(case, today)
         if fresh.get("at"):
             cards[cid]["news_at"] = fresh["at"]  # this message is on the card now
         sent.update({k: now for k in p.get("keys") or []})
@@ -5695,7 +5738,8 @@ def _home_kind(surface, cases: list, case_id: str, answer: str, part: str, words
     q = next(iter(surface.questions(case, question_kind)), None) if question_kind else \
         surface.decision_question(case)
     got = surface.answer(case, answer, dest=part, text=words,
-                         question=str((q or {}).get("id") or "") if answer in ("yes", "yes_ask", "no") else "")
+                         question=str((q or {}).get("id") or "")
+                         if answer in ("yes", "yes_ask", "yes_date", "no") else "")
     out = {"ok": bool(got.get("ok")), "said": str(got.get("said") or "")}
     dm = _resolve_dm_channel()
     if got.get("turn") and dm and OWNER_SLACK_USER_ID:
@@ -5721,24 +5765,87 @@ def _home_case(case_id: str, answer: str, part: str = "", words: str = "") -> di
     return _home_kind(_cs, _cs.load_cases(kinds=_cs.other_kinds()), case_id, answer, part, words, "")
 
 
+# The answers that carry the case's one date: a picked day (the press's
+# text) or the day the button names in its value (`by`).
+CASE_DATED = ("yes", "yes_ask", "yes_date", "date")
+CASE_PICK_A_DATE = "Pick a date with the date button. Nothing was changed."
+
+
+def _press_value(ev: "_chat.ActionEvent") -> dict:
+    """The press's value: the event's, or the card registry's for the
+    action when the frontend sent none (a Slack date picker carries no
+    value)."""
+    if isinstance(ev.value, dict) and ev.value:
+        return ev.value
+    try:
+        row = _CARDS.by_ref(ev.card.channel, ev.card.id) or {}
+        got = ((row.get("actions") or {}).get(ev.action_id) or {}).get("value")
+        return got if isinstance(got, dict) else {}
+    except Exception:
+        return {}
+
+
+def _case_card_failed(surface, case: dict, channel: str, card_id: str, said: str, load, save) -> bool:
+    """A press that did nothing: its own card is drawn again in place, the
+    bot's words on it (ConfirmationCard.failed), open for the next press.
+    Never a status line and the same block posted again. False when the
+    card is not one the record knows (the caller says it in a status
+    line)."""
+    data = load()
+    cid = str(case.get("id") or "")
+    rec = (data.get("cards") or {}).get(cid) or {}
+    if rec.get("card") != card_id or rec.get("kind") not in ("ask", "date", "case"):
+        return False
+    today = surface.today_local()
+    lv = (_letter_levels if surface.__name__.endswith("letter_surface") else _case_levels)([case]).get(cid, "local")
+    build = {"ask": surface.decision_spec, "date": surface.date_spec, "case": surface.case_spec}[rec["kind"]]
+    try:
+        card = _letter_card(build(case, today, lv))
+        card.failed = _chat.card_text.one_line(said, 200)
+        ref = _card_ref(channel, card_id)
+        FRONTEND.update_card(ref, card)
+        if not FRONTEND.supports("registers_cards"):
+            _CARDS.add(ref, card, code=None)
+    except Exception as e:
+        log.warning(f"case card {cid}: not drawn again after a failed press: {e}")
+        return False
+    rec["live"] = True
+    save(data)
+    return True
+
+
 def _press_case(ev: "_chat.ActionEvent", surface, cases: list, choice: str, gone: str,
                 load, save) -> None:
     """A press on a case card: the case must still be open, and a delivery
     must name one of its open parts. The answer is the surface's; its
-    turn, when it has one, runs in the card's thread. The card gives way
-    to a status line, and the next tick posts the case's block again
-    while the case is open."""
+    turn, when it has one, runs in the card's thread. A press that did
+    something gives way to a status line, and the next tick posts the
+    case's block only when what it shows changed (case_surface.block_sig).
+    A press that did nothing (a date answer with no day in it, a refusal,
+    a fault) draws its own card again in place with the bot's words on
+    it: never a status line and the same block posted again."""
     channel, card_id = ev.card.channel, ev.card.id
-    v = ev.value if isinstance(ev.value, dict) else {}
+    v = _press_value(ev)
     part = str(v.get("dest") or v.get("part") or ev.selected or "")
     case = surface.find(cases, str(v.get("case") or "")) or next(
         (c for c in cases if any(str(d.get("id")) == part for d in surface.open_parts(c))), None)
     if case is None or (part and not any(str(d.get("id")) == part for d in surface.open_parts(case))):
         _replace_buttons_with_status(channel, card_id, gone)
         return
-    _replace_buttons_with_status(channel, card_id, ":hourglass_flowing_sand: Working on it...")
     words = _chat.action_text(getattr(ev, "text", ""))
     thread = getattr(ev.card, "thread_key", "") or card_id
+    if choice in CASE_DATED:
+        words = words or str(v.get("by") or "")
+        if (words or choice in ("yes_date",) or ev.action_id.endswith("_date_pick")) \
+                and surface.picked_day(words, surface.today_local()) is None:
+            if _case_card_failed(surface, case, channel, card_id, CASE_PICK_A_DATE, load, save):
+                return
+            try:
+                FRONTEND.post(channel=channel, thread_ts=thread, text=f":calendar: {CASE_PICK_A_DATE}")
+            except Exception as e:
+                log.warning(f"case date line not posted: {e}")
+            return
+    _replace_buttons_with_status(channel, card_id, ":hourglass_flowing_sand: Working on it...")
 
     def run() -> None:
         try:
@@ -5750,12 +5857,17 @@ def _press_case(ev: "_chat.ActionEvent", surface, cases: list, choice: str, gone
         if got.get("turn") and not _letter_turn(str(got["turn"]), channel, thread, ev.user_id,
                                                 str(case.get("id")), said):
             said = "I could not start it. Ask me in Ask Tacitus."
+        if not got.get("ok") and _case_card_failed(surface, case, channel, card_id, said, load, save):
+            return
         icon = ":white_check_mark:" if got.get("ok") else ":warning:"
         _replace_buttons_with_status(channel, card_id, f"{icon} {_chat.card_text.inert(said, 0)}")
         data = load()
-        for rec in (data.get("cards") or {}).values():
+        cid = str(case.get("id") or "")
+        for key, rec in (data.get("cards") or {}).items():
             if rec.get("card") == card_id:
                 rec["live"] = False
+            if key == cid and got.get("ok") and choice in CASE_DATED:
+                rec.pop("do_by", None)  # his own date: no line that it moved
         save(data)
         try:
             _post_letter_cards(force=True)
@@ -5764,7 +5876,8 @@ def _press_case(ev: "_chat.ActionEvent", surface, cases: list, choice: str, gone
     threading.Thread(target=run, daemon=True).start()
 
 
-@app.action(re.compile(r"^letter_(?:yes|yes_ask|no|draft|submitted|date|decline|join_same|join_other)$"))
+@app.action(re.compile(r"^letter_(?:yes|yes_ask|yes_date|no|draft|submitted|all|date|date_pick|decline|"
+                       r"join_same|join_other)$"))
 def handle_letter(ev: "_chat.ActionEvent"):
     """A press on a letter card (letter_surface.answer)."""
     if not _verify_button_user(ev):
@@ -5799,7 +5912,8 @@ def handle_case_which(ev: "_chat.ActionEvent"):
         _save_case_cards(data)
 
 
-@app.action(re.compile(r"^case_(?:yes|yes_ask|no|draft|delivered|date|decline|join_same|join_other)$"))
+@app.action(re.compile(r"^case_(?:yes|yes_ask|yes_date|no|draft|delivered|all|date|date_pick|decline|"
+                       r"join_same|join_other)$"))
 def handle_case(ev: "_chat.ActionEvent"):
     """A press on a card of a review, a form, a report or any other kind
     of work case (case_surface.answer)."""

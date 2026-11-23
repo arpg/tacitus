@@ -13,7 +13,7 @@ KIND = Kind(
                       yes=("Yes", "Yes, ask for materials"), no=("No",),
                       then={"Yes, ask for materials": "ask_materials"}),
     material_kinds=("document", "instructions", "template", "other"),
-    ladder=(14, 7, 3, 1, 0, -1), guide="reports.md", model_kinds=("report",),
+    ladder=(14, 7, 3, 1, 0, -1), guide="reports.md", lead=7, model_kinds=("report",),
     autonomy={"draft": "ask-first", "deliver": "ask-first"},
     response_mode="document",
     rules=Rules(

@@ -38,8 +38,10 @@ Hooks.letter or Hooks.case), never a second one:
   draft            draft the work (the kind's Draft and Change words)
   ask_materials    a short ask for what is missing (the owner confirms;
                    the draft waits for Send)
-  set_due          the due date of a part with none: a date the records
-                   state, else the owner picks it
+  set_due          the case's one date, while it has none: a date the
+                   records state, else the owner picks it (never a date
+                   per part: a part with no date of its own is due by
+                   the case's)
   mark_delivered   the owner's word that a part went in (confirms; only
                    for a part whose work exists)
   open_link        the part's link, a link (no post, nothing changes)
@@ -246,6 +248,8 @@ def general(case: dict) -> dict:
             "base_doc": case.get("base_letter") or "", "notes": case.get("notes") or "",
             "keep_level": case.get("keep_level") or "full", "case_ledger_id": case.get("case_ledger_id") or "",
             "questions": case.get("questions") or [], "messages": case.get("messages") or [],
+            "do_by": case.get("do_by") or "", "lead_days": case.get("lead_days"),
+            "start_on": case.get("start_on") or "",
             "parts": [dict(d, delivered_at=d.get("delivered_at") or d.get("submitted_at") or "")
                       for d in case.get("destinations") or []]}
 
@@ -496,8 +500,10 @@ def view(x: dict, *, today: date) -> dict:
     for i, d in enumerate(case.get("parts") or [], 1):
         link = str(d.get("link") or "")
         named = _one(_scrub(d.get("name")), 80) if open_ else ""
+        due = cs._dates().due_of(d, case)           # its own, else the case's one date
         parts.append({"ref": f"p{i}", "id": str(d.get("id") or ""), "name": named or f"{_cap(w.part)} {i}",
-                      "due": str(d.get("due") or "")[:10], "state": d.get("state") or "asked",
+                      "due": due.isoformat() if due else "", "state": d.get("state") or "asked",
+                      "own_due": str(d.get("own_due", d.get("due")) or "")[:10],
                       "method": d.get("method") or "unknown",
                       "delivered_at": str(d.get("delivered_at") or "")[:10],
                       "link": link if open_ and re.match(r"^https://[^\s<>|]+$", link) else ""})
@@ -525,15 +531,15 @@ def view(x: dict, *, today: date) -> dict:
         if want not in present:
             missing.append(mw.get(want, want))
             asks.append(mw.get(want, want))
-    undated = [p for p in opn if not p["due"]]
+    do_by = str(case.get("do_by") or "")[:10]
+    undated = [p for p in opn if not p["due"]] if not do_by else []
     no_method = [p for p in opn if p["method"] in ("", "unknown")]
-    if undated:
-        missing.append(f"the due date for {_n(len(undated), w.part, w.parts)}")
+    if undated or (not do_by and not parts and case.get("decision")):
+        missing.append("the date")  # one date for the whole case
     if no_method:
         missing.append(f"how to send {_n(len(no_method), w.part, w.parts)}")
-    if undated or no_method:
-        what = _join((["the due date"] if undated else []) + (["how to send it"] if no_method else []))
-        asks.append(f"{what} for {_n(len({p['ref'] for p in undated + no_method}), w.part, w.parts)}")
+    if no_method:
+        asks.append(f"how to send it for {_n(len(no_method), w.part, w.parts)}")
     nameless = dict(case, counterpart_email="")
     label = cs.name(nameless, level, w)
     who = _one(_scrub(case.get("counterpart_name")), 60) if level != "local" else ""
@@ -543,6 +549,7 @@ def view(x: dict, *, today: date) -> dict:
             "what": _what(case, w), "who": who, "asked_on": min(inbound).isoformat() if inbound else "",
             "asked_by": "them" if case.get("case_ledger_id") else "service",
             "status": case.get("status") or "open", "decision": case.get("decision") or "", "new": new,
+            "do_by": do_by,
             "decided_on": _decided_on(case, x["events"]), "opened": str(case.get("opened") or ""),
             "parts": parts, "arrived": arrived, "missing": missing, "asks": asks, "drafted": drafted,
             "can_write": bool(case.get("counterpart_email")) and not kept(level),
@@ -581,7 +588,8 @@ def allowed_moves(v: dict) -> list[dict]:
     store's own move (cases.moves) and code's rule beside it. Draft once the
     owner said yes, never on a kept case (its work stays on his own model);
     the ask for materials only when the kind wants one the case lacks and
-    there is an address to write to; a date only for an open part with none;
+    there is an address to write to; the case's one date only while it has
+    none (never per part);
     delivered only for an open part whose work exists; its link only where
     it has one and the level shows it. Saying no is never a step: the
     card's own Decline button stays the owner's."""
@@ -597,9 +605,10 @@ def allowed_moves(v: dict) -> list[dict]:
         out.append({"kind": "draft"})
     if v["can_write"] and v["asks"] and has("ask_materials"):
         out.append({"kind": "ask_materials"})
+    if not v.get("do_by") and not v["new"] and has("set_due") and \
+            (any(not p["due"] for p in opn) or not v["parts"]):
+        out.append({"kind": "set_due"})
     for p in opn:
-        if not p["due"] and has("set_due", p["id"]):
-            out.append({"kind": "set_due", "part": p["ref"]})
         if p["state"] in WORK_STATES and has("delivered", p["id"]):
             out.append({"kind": "mark_delivered", "part": p["ref"]})
         if p["link"] and has("open_link", p["id"]):
@@ -884,7 +893,7 @@ The card already lists the {parts}, their dates and states, what came in and wha
 Then choose 2 or 3 next steps, each one of `moves_you_may_choose` exactly: its `kind`, and its `part` (p1, p2 ...) where the move names one, else "".
 - draft: the assistant drafts {work} from the materials, or changes the draft.
 - ask_materials: the assistant drafts a short ask for what is still missing. He confirms it first.
-- set_due: set a {part}'s due date. Give `date` (YYYY-MM-DD) only when the records state that date; else leave it "" and he picks it.
+- set_due: set the one date the whole work is done by (every {part} with no date of its own goes under it). Give `date` (YYYY-MM-DD) only when the records state that date; else leave it "" and he picks it. Its `part` is "".
 - mark_delivered: he says that {part} is {delivered}. Only when the records suggest it went in.
 - open_link: open that {part}'s link to send it.
 `why` is a few words on why the step fits.
@@ -1006,7 +1015,7 @@ def offered(steps: list[dict], v: dict, *, today: date) -> list[dict]:
     w = v["words"]
     by_ref = {p["ref"]: p for p in v["parts"]}
     labels = {"draft": w.change if v["drafted"] else w.draft, "ask_materials": "Ask for what is missing",
-              "set_due": "Set the due date", "mark_delivered": f"Mark it {w.delivered_word}",
+              "set_due": "Set the date", "mark_delivered": f"Mark it {w.delivered_word}",
               "open_link": w.link.split(" for ")[0]}
     out = []
     for s in steps or []:
@@ -1025,6 +1034,10 @@ def offered(steps: list[dict], v: dict, *, today: date) -> list[dict]:
                 pub["label"] = _one(f"{pub['label']}: {_short(d)}", LABEL_MAX)
             else:
                 pub["input"] = "date"
+                # the picker's bounds, and the earliest day a part states
+                stated = [_date(x.get("own_due")) for x in v["parts"]
+                          if x["state"] in _cs().OPEN_STATES and _date(x.get("own_due"))]
+                pub.update(_cs()._dates().date_spec(today, min(stated) if stated else None))
         if k == "ask_materials":
             asks = _join(v["asks"][:3]) or "what is missing"
             pub["detail"] = _one(asks, 120)
@@ -1047,10 +1060,10 @@ def choice_of(s: dict, v: dict, arg: str = "") -> tuple[str, str]:
     `<prefix>:<answer>[:<part id>]` in the kind's words."""
     w = v["words"]
     answer = w.deliver_choice if s["kind"] == "mark_delivered" else ANSWERS[s["kind"]]
+    if s["kind"] == "set_due":
+        return f"{w.prefix}:{answer}", s["params"].get("date") or arg  # the case's one date
     cid = f"{w.prefix}:{answer}" + (f":{s['part']['id']}" if s.get("part") else "")
-    if s["kind"] != "set_due":
-        return cid, ""
-    return cid, s["params"].get("date") or arg
+    return cid, ""
 
 
 # ── where it runs ─────────────────────────────────────────────────────
@@ -1341,13 +1354,12 @@ The cases:
 
 def on_home(case: dict, today: date) -> bool:
     """Home lists the case today (case_surface.home_items' rule, less its
-    card): new, overdue, undated or due within HOME_DAYS."""
+    card): every open case but a quiet one (dated, before its lead time),
+    unless it is overdue."""
     cs = _cs()
     if not cs.is_open(case):
         return False
-    f = cs.facts(case, today)
-    return bool(f["new"] or f["overdue"] or f["undated"]
-                or (f["next_due"] and (f["next_due"] - today).days <= HOME_DAYS))
+    return cs.stage(case, today) != "closed" and not cs.waits(case, today)
 
 
 def _hosted_item(prep: dict) -> dict:

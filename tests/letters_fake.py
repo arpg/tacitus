@@ -65,6 +65,16 @@ class FakeStore:
     def add_material(self, case_id, kind, ref):
         self.cases[case_id]["materials"].append({"kind": kind, "ref": ref})
 
+    def set_date(self, case_id, due):
+        """The case's one date: a destination with no date of its own is due by it."""
+        c = self.cases[case_id]
+        c["do_by"] = due
+        for d in c["destinations"]:
+            d.setdefault("own_due", d.get("due", ""))
+            d["due"] = d["own_due"] or due
+        self.events.append(("date", case_id, due))
+        return True
+
     def set_due(self, dest_id, due):
         _c, d = self._dest(dest_id)
         d["due"] = due

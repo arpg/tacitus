@@ -130,7 +130,9 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
             "ask": rec.get("ask") or "", "conversation_id": conv,
             "message_id": t.get("message_id") or "", "keep_level": keep_gate.label_level(t),
             "received": t.get("received") or "", "subject": t.get("subject") or "", "brief": None}
-    for n, e in enumerate(case_surface.briefing_entries(b)[:CAPS["C"]], 1):
+    # The weekly review is where a quiet case (dated, before its lead time)
+    # shows: by its date, with the day it comes back.
+    for n, e in enumerate(case_surface.briefing_entries(b, quiet=True)[:CAPS["C"]], 1):
         c = case_surface.candidate(e)
         due = _date(c.get("due"))
         c.update(status="open", days_left=(due - today).days if due else None)
@@ -298,6 +300,16 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
         out.extend(["", title] + (rows or ["• Nothing this week."]))
     section("🔴 Critical (action this week):", plan.get("critical") or [])
     section("🟡 Important (action soon):", plan.get("important") or [])
+    # The cases set for later (dated, before their lead time): only here,
+    # by the day each comes back (case_surface.waits).
+    shown = {p["ref"] for k in ("critical", "important") for p in plan.get(k) or []}
+    later = sorted((r for r, c in cands.items() if r not in shown and case_surface.is_case(c)
+                    and case_surface.entry_of(c).get("waits")),
+                   key=lambda r: (case_surface.entry_of(cands[r]).get("back_on") or "9999",
+                                  cands[r].get("due") or ""))
+    if later:
+        out.extend(["", ":calendar: Set for later (each comes back on its day):"]
+                   + [_line(cands[r], "") for r in later])
     # A work case's delivered parts are one line (case_surface).
     done_rows = case_surface.collapse_rows(closed, open_only=False)
     out.extend(["", "🟢 Completed this week:"]

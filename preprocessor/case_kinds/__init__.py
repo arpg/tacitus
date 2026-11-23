@@ -42,6 +42,10 @@ class Decision:
     no: tuple = ("No",)
     then: dict = field(default_factory=dict)
     qkind: str = "decide"
+    # The yes answers that carry the case's one date: the card offers each
+    # with the date the records state ("Yes, by Tue Dec 1") and with a date
+    # the owner picks; with no date stated, the yes asks for one.
+    dated: tuple = ("Yes",)
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,7 @@ class Kind:
     autonomy: dict = field(default_factory=dict)
     ladder: tuple = (7, 3, 1, 0, -1)          # days before the date (negative: after)
     loud: tuple = (1, 0, -1)
+    lead: int = 7                             # days before the case's date it comes back
     guide: str = ""                           # docs/ea/<guide>
     model_kinds: tuple = ()                   # the mail record's work.kind values
     trust_model: bool = False                 # the model's work field alone opens a case
@@ -208,8 +213,21 @@ def from_manifest(plugin: str, name: str, spec: dict) -> Kind | None:
                 delivered=str(words.get("delivered") or "delivered")[:20]
                 if _SLUG.match(str(words.get("delivered") or "delivered")) else "delivered",
                 decision=decision, rules=rules,
+                lead=_lead(spec.get("lead_days")),
                 detect_default=bool(spec.get("detect_default")),
                 guide=str(spec.get("guide") or ""), source=f"plugin:{plugin}")
+
+
+LEAD_MAX = 60
+
+
+def _lead(value, default: int = 7) -> int:
+    """A lead time in days (0 to LEAD_MAX), else `default`."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if 0 <= n <= LEAD_MAX else default
 
 
 # ── helpers every kind's detection shares (pure) ───────────────────────

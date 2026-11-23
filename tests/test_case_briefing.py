@@ -98,7 +98,7 @@ ANSWER = {"history": ["Rowan Vale asked for the letter and named Harbor Tech PhD
           "unknown": ["The records do not show a statement."],
           "steps": [{"kind": "draft", "part": "", "date": "", "why": "no draft yet"},
                     {"kind": "open_link", "part": "p1", "date": "", "why": "its portal"},
-                    {"kind": "set_due", "part": "p2", "date": "", "why": "no date"}]}
+                    {"kind": "set_due", "part": "", "date": "", "why": "no date"}]}
 
 
 def make_case(env, *, level="full", decide=True, drafted=False, person_wrote=True) -> str:
@@ -124,6 +124,13 @@ def make_case(env, *, level="full", decide=True, drafted=False, person_wrote=Tru
         L.record_draft(conn, cid, "/letters/rowan-vale/letter.md")
     conn.commit()
     return cid
+
+
+def dated(env, cid: str, days: int = 5) -> None:
+    """The case's one date, inside its lead time: its time came, so Home
+    lists it with Draft (a case with no date offers only its date)."""
+    env.cases.set_date(env.conn, cid, day(days))
+    env.conn.commit()
 
 
 def make_work(env, kind, who, email, title, part, *, due=None, link="", subkind="", decide=True, level="full"):
@@ -245,8 +252,9 @@ def test_a_new_case_offers_no_draft(env):
 def test_an_accepted_letter_offers_draft_dates_and_its_portal(env):
     cid = make_case(env)
     got = moves(env, cid)
-    assert got[0] == "draft" and "set_due p2" in got and "open_link p1" in got
-    assert "set_due p1" not in got                         # it has a date: the card's own button
+    # One date for the whole case while it has none: never a date per part.
+    assert got[0] == "draft" and "set_due" in got and "open_link p1" in got
+    assert not [m for m in got if m.startswith("set_due p")]
     assert "open_link p2" not in got and not [m for m in got if m.startswith("mark_delivered")]
 
 
@@ -260,7 +268,7 @@ def test_a_kept_case_gets_no_draft_no_ask_and_no_link(env):
     cid = make_case(env, level="facts")
     got = moves(env, cid)
     assert "draft" not in got and "ask_materials" not in got and not [m for m in got if m.startswith("open")]
-    assert "set_due p2" in got
+    assert "set_due" in got
 
 
 def test_check_step_refuses_what_the_case_does_not_allow(env):
@@ -275,10 +283,11 @@ def test_check_step_refuses_what_the_case_does_not_allow(env):
     assert check(kind="mark_delivered", part="p1")[0] is None          # no letter yet
     assert check(kind="open_link", part="p2")[0] is None               # no link
     assert check(kind="open_link", part="p9")[0] is None               # no such part
-    assert check(kind="set_due", part="p2")[0] == {"kind": "set_due", "params": {"part": "p2"}}
-    assert check(kind="set_due", part="p2", date=day(20))[1] == "a date the records do not state"
-    assert check(kind="set_due", part="p1")[0] is None                 # it has a date
-    assert check(kind="set_due", part="p2", date=day(-2))[1] == "date out of range"
+    # The case's one date: no part names it, and none may.
+    assert check(kind="set_due")[0] == {"kind": "set_due", "params": {}}
+    assert check(kind="set_due", date=day(20))[1] == "a date the records do not state"
+    assert check(kind="set_due", part="p2")[0] == {"kind": "set_due", "params": {}}  # a part is ignored
+    assert check(kind="set_due", date=day(-2))[1] == "date out of range"
 
 
 def test_a_new_date_the_records_state_may_be_set(env):
@@ -287,13 +296,13 @@ def test_a_new_date_the_records_state_may_be_set(env):
     set_brief(env, "task-own", [msg("m3", 3, "Rowan Vale <rowan.vale@example.org>",
                                     f"Rowan Vale says Pinecrest College MS wants it by {moved:%B} {moved.day}.")])
     prep = CB.prepare(one(env, cid), now=NOW)
-    got, why = CB.check_step({"kind": "set_due", "part": "p2", "date": moved.isoformat(), "why": ""},
+    got, why = CB.check_step({"kind": "set_due", "part": "", "date": moved.isoformat(), "why": ""},
                              allowed=prep["allowed"], known=D.Known(prep["packet"]), today=TODAY)
-    assert got == {"kind": "set_due", "params": {"part": "p2", "date": moved.isoformat()}}, why
+    assert got == {"kind": "set_due", "params": {"date": moved.isoformat()}}, why
     v = CB.view(one(env, cid), today=TODAY)
     [s] = CB.offered([dict(got, id="s1")], v, today=TODAY)
-    assert s["pub"]["label"] == f"Set the due date: {moved:%a}, {moved:%b} {moved.day}" and "input" not in s["pub"]
-    assert CB.choice_of(s, v) == ("letter:date:" + s["part"]["id"], moved.isoformat())
+    assert s["pub"]["label"] == f"Set the date: {moved:%a}, {moved:%b} {moved.day}" and "input" not in s["pub"]
+    assert CB.choice_of(s, v) == ("letter:date", moved.isoformat())      # the case's one date
 
 
 def test_the_answer_is_checked_against_the_packet(env):
@@ -337,12 +346,14 @@ def test_a_part_with_no_name_is_numbered_and_the_ask_names_what_is_missing(env):
                                     files=["Rowan_Vale_CV.pdf"])])
     x = one(env, cid)
     v = CB.view(x, today=TODAY)
-    assert v["parts"][-1]["name"] == "Destination 3"
+    # The store names a part its mail did not name: never an empty name.
+    assert v["parts"][-1]["name"] == "Place 3"
     text = CB.card(x, None, now=NOW, since=None)["text"]
-    assert "- Destination 3: no due date, to write, portal link" in text
+    assert "- Place 3: no due date, to write, portal link" in text
     assert "- A CV (Rowan_Vale_CV.pdf)." in text                 # one file, named once
     [s] = CB.offered([{"id": "s1", "kind": "ask_materials", "params": {}}], v, today=TODAY)
-    assert s["pub"]["detail"] == "a statement and the due date for 2 destinations"
+    # The date is the owner's one date for the case, never asked of the person.
+    assert s["pub"]["detail"] == "a statement"
 
 
 # ── a form and a review: the same briefing from their declarations ────
@@ -526,7 +537,7 @@ def test_the_card_lists_the_parts_what_came_in_and_what_is_missing(env):
     assert "The destinations\n- Harbor Tech PhD: due " in text and ", to write, portal link" in text
     assert "- Pinecrest College MS: no due date, to write, by email" in text
     assert "What came in\n- A CV (Rowan_Vale_CV.pdf)." in text
-    assert "Still missing\n- The letter.\n- A statement.\n- The due date for 1 destination." in text
+    assert "Still missing\n- The letter.\n- A statement.\n- The date." in text   # one date for the case
     assert got["steps"] == [] and PORTAL not in text
     plain(text)
     requests = CB.card(one(env, cid), None, now=NOW, since=None, places=False)["text"]
@@ -655,9 +666,12 @@ def test_a_failed_hosted_pass_leaves_the_local_briefing(env):
 
 
 def test_a_case_far_out_is_not_on_the_days_list(env):
+    # A case is off the day's list by its one date: quiet until its lead
+    # time (a case with no date is on Home for its date).
     cid = make_case(env)
     for d in one(env, cid)["case"]["parts"]:
         env.letters.set_due(env.conn, d["id"], day(40))
+    dated(env, cid, 40)
     env.conn.commit()
     assert CB.hosted_pass(store=env.store, call=lambda p: pytest.fail("no call"), now=NOW)["cases"] == 0
 
@@ -705,7 +719,7 @@ def test_the_home_item_shows_the_stored_briefing_and_its_steps(env):
     d = h.item(f"letter:{cid}")["deeper"]
     assert d["state"] == "ready" and not d.get("stale") and d["by"] == "local"
     assert d["text"].startswith("Now\n") and "What happened\n- Rowan Vale asked" in d["text"]
-    assert [s["label"] for s in d["steps"]] == ["Draft the letter", "Open the portal", "Set the due date",
+    assert [s["label"] for s in d["steps"]] == ["Draft the letter", "Open the portal", "Set the date",
                                                 "Continue in a conversation"]
     assert d["steps"][1]["href"] == PORTAL and d["steps"][2]["input"] == "date"
     plain(d["text"])
@@ -715,11 +729,11 @@ def test_a_step_runs_the_case_cards_own_answer(env):
     cid = make_case(env)
     CB.refresh(store=env.store, daily=None)
     h, fe, pressed = home(env)
-    p2 = one(env, cid)["case"]["parts"][1]["id"]
     ref = f"letter:{cid}"
     assert h.act(ref, "step:s1")[0]["ok"] and pressed[-1] == ("letter", cid, "draft", "", "")
     assert h.act(ref, "step:s3")[0] == {"ok": False, "said": "Pick the date first."} and len(pressed) == 1
-    assert h.act(ref, "step:s3", day(15))[0]["ok"] and pressed[-1] == ("letter", cid, "date", p2, day(15))
+    # The date step sets the case's one date: it names no part.
+    assert h.act(ref, "step:s3", day(15))[0]["ok"] and pressed[-1] == ("letter", cid, "date", "", day(15))
     assert h.act(ref, "step:s2")[0] == {"ok": True, "said": "Opening its link.", "goto": PORTAL}
     assert len(pressed) == 2
 
@@ -757,6 +771,7 @@ def test_a_step_home_does_not_list_runs_as_its_card_button(env):
 def test_a_press_while_the_store_waits_for_its_migration_says_so_plainly(env):
     import home_items as I
     cid = make_case(env)
+    dated(env, cid)
     CB.refresh(store=env.store, daily=None)
     h, fe, pressed = home(env)
 
@@ -769,6 +784,7 @@ def test_a_press_while_the_store_waits_for_its_migration_says_so_plainly(env):
 
 def test_any_other_fault_in_the_hook_is_not_taken_for_a_waiting_store(env):
     cid = make_case(env)
+    dated(env, cid)
     h, fe, pressed = home(env)
 
     def broken(*a):
