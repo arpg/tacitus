@@ -949,15 +949,47 @@ def _deeper_mod():
     return mod
 
 
-# A letter case's quick briefing is all its records hold (its destinations'
-# dates and states): no deeper briefing runs for it.
+# A letter case's briefing is case_briefing's: what was asked, its places,
+# what came in and what is missing, what changed since the owner last
+# looked, and its next steps, each the answer of a button on the case's
+# card. Without the module, its quick briefing is all there is.
 LETTER_DEEPER = {"state": "unavailable", "note": "Everything Tacitus knows about this letter is above."}
+
+
+def _case_mod():
+    try:
+        if __package__:
+            from . import case_briefing as mod
+        else:  # preprocessor/ on sys.path
+            import case_briefing as mod
+    except ImportError:
+        return None
+    return mod
+
+
+def _case_call(fn: str, fe, f: Found, it: dict, *args, **kw) -> dict | None:
+    """case_briefing's `fn` for a letter item, with its case; None without
+    the module, the case, or on a failure."""
+    mod = _case_mod()
+    if mod is None:
+        return None
+    try:
+        _ls, case = _letter(f)
+        if case is None:
+            return None
+        got = getattr(mod, fn)(fe, it["ref"], *args, item={k: v for k, v in it.items() if k != "deeper"},
+                               case=case, **kw)
+    except Exception as e:
+        log.warning("home: the case briefing's %s failed: %s", fn, e)
+        return None
+    return got if isinstance(got, dict) else None
 
 
 def deeper_state(fe, f: Found, it: dict) -> dict:
     """The item's `deeper` block (home_deeper.state), read at once."""
     if it.get("kind") == "letter":
-        return dict(LETTER_DEEPER)
+        got = _case_call("state", fe, f, it)
+        return got if got and got.get("state") else dict(LETTER_DEEPER)
     mod = _deeper_mod()
     if mod is None:
         return {"state": "unavailable"}
@@ -972,7 +1004,7 @@ def deeper_state(fe, f: Found, it: dict) -> dict:
 def deeper_start(fe, f: Found, it: dict) -> dict:
     """POST /api/home/deeper (home_deeper.start): {"ok", "state", "note"?}."""
     if it.get("kind") == "letter":
-        return {"ok": False, **LETTER_DEEPER}
+        return _case_call("start", fe, f, it) or {"ok": False, **LETTER_DEEPER}
     mod = _deeper_mod()
     if mod is None:
         return {"ok": False, "state": "unavailable"}
@@ -986,7 +1018,10 @@ def deeper_start(fe, f: Found, it: dict) -> dict:
 
 def deeper_step(fe, f: Found, it: dict, step_id: str, arg: str) -> dict:
     """A deeper step chosen (home_deeper.step): {"choice", "arg"} for one of
-    this module's choices, or a finished {"ok", "said", "goto"?}."""
+    this module's choices, or a finished {"ok", "said", "goto"?}. A letter
+    case's step names the answer of a button on its card, `move`."""
+    if it.get("kind") == "letter":
+        return _case_call("step", fe, f, it, step_id, arg=arg) or {"ok": False, "said": DEEPER_FAILED}
     mod = _deeper_mod()
     if mod is None:
         return {"ok": False, "said": NO_CHOICE}
@@ -1135,6 +1170,7 @@ class Acts:
         now_item = shape(f, src, fe=home.fe)
         if seen and seen != now_item["version"]:
             return {"ok": False, "said": CHANGED, "item": now_item}, None
+        move = False
         if choice.startswith("step:"):
             steps = {str(x.get("id") or "") for x in now_item["deeper"].get("steps") or [] if isinstance(x, dict)}
             if not choice[5:] or choice[5:] not in steps:
@@ -1146,8 +1182,12 @@ class Acts:
             choice, arg = str(got["choice"]), str(got.get("arg") or "")
             if choice == "draft" and arg:
                 choice = "say"
+            # a letter case's step names the answer of a button on its card
+            # (case_briefing checked it against the case's moves): it runs as
+            # that press, Home's choices or not
+            move = bool(got.get("move")) and f.item.get("kind") == "letter" and choice.startswith("letter:")
         offered = {c["id"] for c in now_item["choices"]}
-        if choice not in offered and not (choice == "say" and "draft" in offered):
+        if choice not in offered and not (choice == "say" and "draft" in offered) and not move:
             return {"ok": False, "said": NO_CHOICE, "item": now_item}, None
         if choice in DEFERRED:
             return self._defer(f, src, now_item, choice, arg), None

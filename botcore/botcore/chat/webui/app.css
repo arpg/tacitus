@@ -1079,8 +1079,9 @@ details.h-card[open] > summary::before { transform: rotate(90deg); }
 .h-brief { display: grid; gap: 4px; } .h-brief ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
 .h-then, .h-said { font-weight: 600; } .h-quiet { color: var(--muted); font-size: 14px; } .h-quiet .btn { margin-left: 8px; }
 .h-links, .h-undo { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; }
-.h-deeper:not(:empty) { padding-top: 10px; border-top: 1px solid var(--border); } .h-deeper .text > * + * { margin-top: 8px; }
-.h-deeper .text > p { font-weight: 600; } /* a section's name, its lines under it */
+.h-deeper:not(:empty) { padding-top: 10px; border-top: 1px solid var(--border); } .h-deeper .text > * + *, .req-brief .text > * + * { margin-top: 8px; }
+.h-deeper .text > p, .req-brief .text > p { font-weight: 600; } /* a section's name, its lines under it */
+.req-brief { margin-top: 10px; } .req-brief + .card { padding-top: 10px; border-top: 1px solid var(--border); } /* a case's briefing, then its card */
 .h-deeper + .h-choices { padding-top: 10px; border-top: 1px solid var(--border); } /* its steps, then the item's own choices */
 .h-fold { max-height: 9em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
 button.h-tally, button.h-row { width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; }

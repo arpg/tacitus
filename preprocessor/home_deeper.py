@@ -944,14 +944,16 @@ def _model_name(key: str) -> str:
         return hosted_name()
 
 
-def run_model(prompt: str, order: list[str]) -> dict:
+def run_model(prompt: str, order: list[str], *, local: Callable[[str], dict] | None = None,
+              hosted_call: Callable[[str], dict] | None = None) -> dict:
     """Try each model of `order` until one answers: {"ok", "text", "model",
     "via" (local | hosted), "usage", "note", "calls", "tries"}. The note
-    says so when the answer is not the first choice's."""
+    says so when the answer is not the first choice's. `local` and
+    `hosted_call` stand in for LOCAL and HOSTED (case_briefing's own calls)."""
     tries, calls = [], 0
     hosted = hosted_name()
     for i, via in enumerate(order):
-        r = (LOCAL if via == "local" else HOSTED)(prompt)
+        r = ((local or LOCAL) if via == "local" else (hosted_call or HOSTED))(prompt)
         calls += 0 if (via == "hosted" and r.get("reason") == "limit" and not r.get("usage")) else 1
         tries.append({"via": via, "ok": bool(r.get("ok")), "reason": r.get("reason") or ""})
         if r.get("ok"):
@@ -1406,7 +1408,8 @@ def spawn_hosted_pass(agent: str, run_id: str, briefing_path: str, *, popen=None
 def hosted_pass_for_run(agent: str, run_id: str, briefing_path: str) -> dict:
     """The CLI's hosted-pass: the list the run kept for Home
     (remote_briefing.home_handoff) and the briefing's data, then
-    hosted_pass, its record one line with the run id."""
+    hosted_pass, its record one line with the run id; then the cases on
+    Home's list (case_briefing.hosted_pass)."""
     rb = _mod("remote_briefing")
     view = rb.home_handoff(agent, run_id)
     if not view:
@@ -1415,8 +1418,13 @@ def hosted_pass_for_run(agent: str, run_id: str, briefing_path: str) -> dict:
         briefing = rb._load(briefing_path)
     except Exception:
         briefing = {}
-    return hosted_pass(view.get("items") or [], briefing=briefing if isinstance(briefing, dict) else {},
-                       record={"agent": agent, "run_id": run_id})
+    out = hosted_pass(view.get("items") or [], briefing=briefing if isinstance(briefing, dict) else {},
+                      record={"agent": agent, "run_id": run_id})
+    try:  # the cases on Home's list (a letter someone asked for): case_briefing's
+        out["cases"] = _mod("case_briefing").hosted_pass(record={"agent": agent, "run_id": run_id})
+    except Exception as e:
+        out["cases"] = {"ok": False, "reason": str(e)[:120]}
+    return out
 
 
 def _ask_hosted_batch(prompt: str) -> dict:
@@ -1968,8 +1976,8 @@ def prewarm(fe, left: list[dict] | None) -> int:
             return 0
         for x in (left or [])[:PREWARM_TOP]:
             ref = str(x.get("ref") or x.get("id") or "")
-            if not ref or x.get("kind") == "request":
-                continue
+            if not ref or x.get("kind") in ("request", "letter"):
+                continue  # a card's own block; a case's briefing is case_briefing's refresh
             item = {"ref": ref, "kind": x.get("kind"), "title": x.get("title"), "kept": x.get("kept") or ""}
             got = start(fe, ref, item, prewarm=True)
             n += got.get("state") == "working"

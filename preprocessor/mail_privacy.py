@@ -966,6 +966,13 @@ def tick(*, graph=None, chat=None, now: datetime | None = None) -> dict:
             out["home_briefings"] = home_deeper.refresh()
         except Exception as e:
             out["home_briefings"] = {"error": str(e)[:200]}
+        # A case (a letter someone asked for) whose mail, state, dates or
+        # materials changed gets its briefing again (case_briefing.refresh).
+        try:
+            import case_briefing
+            out["case_briefings"] = case_briefing.refresh()
+        except Exception as e:
+            out["case_briefings"] = {"error": str(e)[:200]}
     try:
         import ghost_week
         tw = ghost_week.tripwire(now=now, cfg=cfg)
