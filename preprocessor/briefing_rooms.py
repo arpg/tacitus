@@ -141,9 +141,9 @@ def placement(item: dict, idx: dict, conn, *, matcher=None) -> dict:
     lid = item.get("ledger_id") or ""
     if lid and idx["rows"].get(lid):
         return {"projects": idx["rows"][lid][:MAX_PROJECTS], "by": "link", "hits": []}
-    if item.get("kind") == "letter":
-        # A letter case (letter_surface) goes where its destinations' rows
-        # are linked, and nowhere on words: a person's name is no project.
+    if item.get("kind") in ("letter", "case"):
+        # A work case (case_surface) goes where its parts' rows are
+        # linked, and nowhere on words: a person's name is no project.
         linked = [p for i in item.get("letter_rows") or [] for p in idx["rows"].get(i) or []]
         return {"projects": list(dict.fromkeys(linked))[:MAX_PROJECTS],
                 "by": "link" if linked else "none", "hits": []}
@@ -222,8 +222,8 @@ def also_open(pid: str, open_rows: list[dict], shown: set[str], conn, *,
     items left out, at most ALSO_OPEN; their ids go into `ids`."""
     idx = idx if idx is not None else index(conn)
     out = []
-    import letter_surface
-    for o in letter_surface.collapse_rows(open_rows):
+    import case_surface
+    for o in case_surface.collapse_rows(open_rows):
         lid = o.get("id") or ""
         if not lid or lid in shown:
             continue
@@ -315,7 +315,8 @@ def render(heading: str, entries: list[dict], others: list[str], clean) -> str:
     lines = [f"*{conversation_name(entries, clean)}*"]
     for e in _in_order(entries):
         sec = e["section"]
-        head = SECTIONS[sec].format(place=_card_place()) if sec == "draft" else SECTIONS[sec]
+        head = SECTIONS[sec].format(place=_card_place()) if sec == "draft" else \
+            (e.get("label") or SECTIONS[sec]) if sec == "letters" else SECTIONS[sec]
         lines.append(f"{head}: {e['line']}")
     if others:
         lines += ["", f"Also open here ({len(others)}): "

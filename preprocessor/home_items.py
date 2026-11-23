@@ -93,7 +93,7 @@ import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 from pathlib import Path
 from urllib.parse import quote
@@ -207,11 +207,15 @@ class Hooks:
     letter(case id, answer, destination id, words) -> {"ok", "said", "channel"?, "id"?}
         a letter case's answer, as a press on its card in Action requests
         runs it (letter_surface.answer, its turn on a new line there).
+    case(case id, answer, part id, words) -> {"ok", "said", "channel"?, "id"?}
+        the same for a case of any other kind (a review, a form, a
+        report: case_surface.answer).
     """
     draft: Callable[[str, str, str], dict] | None = None
     not_needed: Callable[[str, str], dict] | None = None
     outlook: Callable[[str], str] | None = None
     letter: Callable[[str, str, str, str], dict] | None = None
+    case: Callable[[str, str, str, str], dict] | None = None
 
 
 # ── finding the item ────────────────────────────────────────────────
@@ -753,14 +757,23 @@ def pending_rows() -> dict[str, str]:
             if isinstance(v, dict) and v.get("lid") and v.get("op") in DEFERRED}
 
 
-def _letter(f: Found):
-    """(letter_surface, the case a `letter` item stands for) or (module, None)."""
+# The item kinds that stand for a work case: a letter, or a case of any
+# other kind (case_surface).
+CASE_ITEMS = ("letter", "case")
+
+
+def _case(f: Found):
+    """(case_surface, the case a `letter` or `case` item stands for) or
+    (module, None)."""
     if __package__:
-        from . import letter_surface as ls
+        from . import case_surface as cs
     else:
-        import letter_surface as ls
+        import case_surface as cs
     cid = str(f.item.get("_case") or "")
-    return ls, (ls.find(ls.load_cases(), cid) if cid else None)
+    if not cid:
+        return cs, None
+    kinds = ["letter"] if f.item.get("kind") == "letter" else cs.other_kinds()
+    return cs, cs.find(cs.load_cases(kinds=kinds), cid)
 
 
 def brief(f: Found, src) -> dict:
@@ -769,9 +782,15 @@ def brief(f: Found, src) -> dict:
     out = {"what": "", "asked": "", "due": "", "standing": [], "next": ""}
     if f.keep:
         return out
-    if f.item.get("kind") == "letter":
-        ls, case = _letter(f)
-        return ls.home_brief(case, _today(src)) if case else out
+    if f.item.get("kind") in CASE_ITEMS:
+        cs, case = _case(f)
+        if not case:
+            return out
+        try:
+            news = cs.news(case, src.rows or {}, now=datetime.fromtimestamp(float(src.now), timezone.utc))
+        except Exception:
+            news = []
+        return cs.home_brief(case, _today(src), news=news)
     hs = _hs()
     kind = f.item.get("kind")
     today = _today(src)
@@ -858,11 +877,11 @@ def choices(f: Found, src) -> list[dict]:
         return [dict(OPEN)] if f.item.get("href") else []
     if kind == "closed":
         return [dict(REOPEN)] if f.lid and not f.keep else []
-    if kind == "letter":
-        # a letter case's own answers (letter_surface.home_choices): no mail
+    if kind in CASE_ITEMS:
+        # a work case's own answers (case_surface.home_choices): no mail
         # text in them, so a kept case has them too, in fixed words
-        ls, case = _letter(f)
-        return ls.home_choices(case, today, f.keep or "full") if case else []
+        cs, case = _case(f)
+        return cs.home_choices(case, today, f.keep or "full") if case else []
     acts = _open_row(f)
     if f.keep:  # keep_gate's line alone: open it in Outlook, or settle it here
         return ([dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []) + \
@@ -953,7 +972,10 @@ def _deeper_mod():
 # what came in and what is missing, what changed since the owner last
 # looked, and its next steps, each the answer of a button on the case's
 # card. Without the module, its quick briefing is all there is.
+# Any other kind of work case has no deeper briefing yet: its quick
+# briefing is all its records hold (its parts' dates and states).
 LETTER_DEEPER = {"state": "unavailable", "note": "Everything Tacitus knows about this letter is above."}
+CASE_DEEPER = {"state": "unavailable", "note": "Everything Tacitus knows about it is above."}
 
 
 def _case_mod():
@@ -974,7 +996,7 @@ def _case_call(fn: str, fe, f: Found, it: dict, *args, **kw) -> dict | None:
     if mod is None:
         return None
     try:
-        _ls, case = _letter(f)
+        _cs, case = _case(f)
         if case is None:
             return None
         got = getattr(mod, fn)(fe, it["ref"], *args, item={k: v for k, v in it.items() if k != "deeper"},
@@ -990,6 +1012,8 @@ def deeper_state(fe, f: Found, it: dict) -> dict:
     if it.get("kind") == "letter":
         got = _case_call("state", fe, f, it)
         return got if got and got.get("state") else dict(LETTER_DEEPER)
+    if it.get("kind") in CASE_ITEMS:
+        return dict(CASE_DEEPER)
     mod = _deeper_mod()
     if mod is None:
         return {"state": "unavailable"}
@@ -1005,6 +1029,8 @@ def deeper_start(fe, f: Found, it: dict) -> dict:
     """POST /api/home/deeper (home_deeper.start): {"ok", "state", "note"?}."""
     if it.get("kind") == "letter":
         return _case_call("start", fe, f, it) or {"ok": False, **LETTER_DEEPER}
+    if it.get("kind") in CASE_ITEMS:
+        return {"ok": False, **CASE_DEEPER}
     mod = _deeper_mod()
     if mod is None:
         return {"ok": False, "state": "unavailable"}
@@ -1022,6 +1048,8 @@ def deeper_step(fe, f: Found, it: dict, step_id: str, arg: str) -> dict:
     case's step names the answer of a button on its card, `move`."""
     if it.get("kind") == "letter":
         return _case_call("step", fe, f, it, step_id, arg=arg) or {"ok": False, "said": DEEPER_FAILED}
+    if it.get("kind") in CASE_ITEMS:
+        return {"ok": False, "said": NO_CHOICE}   # no deeper briefing, so no step of one
     mod = _deeper_mod()
     if mod is None:
         return {"ok": False, "said": NO_CHOICE}
@@ -1216,16 +1244,18 @@ class Acts:
             return {"ok": ok, "said": "Opened again. It is back on your list." if ok
                     else "Tacitus could not open it again. Try again in a minute."}, None
         words = one_line(arg)
-        if choice.startswith("letter:"):
-            ls, case = _letter(f)
-            answer, dest = ls.home_choice(choice)
+        if choice.startswith(("letter:", "case:")):
+            cs, case = _case(f)
+            kind = str(f.item.get("kind") or "")
+            answer, dest = cs.home_choice(choice, (kind,))
             if case is None or not answer:
                 return {"ok": False, "said": GONE}, None
             if answer == "date" and not words:
                 return {"ok": False, "said": "Write the date first."}, None
-            if hooks.letter is None:
+            hook = hooks.letter if kind == "letter" else hooks.case
+            if hook is None:
                 return {"ok": False, "said": "Tacitus cannot do that from here."}, None
-            got = hooks.letter(str(case.get("id")), answer, dest, words) or {}
+            got = hook(str(case.get("id")), answer, dest, words) or {}
             out = {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or "Nothing was done."}
             route = _route(fe, str(got.get("channel") or ""), str(got.get("id") or "")) \
                 if got.get("channel") else ""

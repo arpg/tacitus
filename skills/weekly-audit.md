@@ -111,13 +111,14 @@ Look across the full week's context log for patterns:
 - Re-prioritize based on this week's findings
 - Archive completed items older than 30 days
 
-### 6.3. Letter cases
+### 6.3. Work cases
 
-`letter_cases` has one entry per letter the user writes, with all its
-destinations. In Critical or Important, a case is one bullet: its
-`line` as it is. A row with a `letter` field is a destination of a
-case: never a bullet of its own, never a close because of a reply.
-Under Completed, a case's submitted destinations are one line.
+`letter_cases` has one entry per letter the user writes, and
+`work_cases` one per review, form or report the user owes, each with
+all its parts. In Critical or Important, a case is one bullet: its
+`line` as it is. A row with a `letter` or `work_case` field is a part of
+a case: never a bullet of its own, never a close because of a reply.
+Under Completed, a case's delivered parts are one line.
 
 ### 6.4. Project hygiene (the PARA pass)
 

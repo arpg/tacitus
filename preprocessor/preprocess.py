@@ -533,14 +533,15 @@ def _clock_time_in(text: str) -> str:
     return re.sub(r"\s+", "", m.group(1)).lower() if m else ""
 
 
-def _letter_view(open_obligations: list) -> dict:
-    """The letter cases the briefing shows (letter_surface.briefing_view),
-    {} without the store or on any failure: the briefing goes on as if
-    there were none."""
+def _case_view(open_obligations: list, mail=None) -> dict:
+    """The work cases the briefing shows, letters and every other kind
+    (case_surface.briefing_view; `mail`, the run's new inbox messages,
+    gives each case its news), {} without the store or on any failure:
+    the briefing goes on as if there were none."""
     try:
-        return _letter_surface.briefing_view(open_obligations)
+        return _case_surface.briefing_view(open_obligations, mail=mail)
     except Exception as e:
-        print(f"  Letter cases skipped: {str(e)[:160]}", file=sys.stderr)
+        print(f"  Work cases skipped: {str(e)[:160]}", file=sys.stderr)
         return {}
 
 
@@ -2152,7 +2153,7 @@ def compute_merged_availability(
 # Obligations ledger management (SQLite via ledger.py)
 # -------------------------------------------------------------------
 import ledger as _ledger_mod
-import letter_surface as _letter_surface
+import case_surface as _case_surface
 import ea_config as _ea_config
 import scheduled_sends as _scheduled_sends_mod
 
@@ -2997,14 +2998,15 @@ def run_full_daily(force_full: bool = False) -> dict:
     except Exception as e:
         print(f"  Merge marks skipped: {e}", file=sys.stderr)
 
-    # Letter cases (letter_surface): one item per case. Its destinations'
-    # rows and their mail never rank or list on their own.
-    letter_view = _letter_view(open_obligations)
+    # Work cases (case_surface): one item per case, letters and every
+    # other kind. Its parts' rows and their mail never rank or list on
+    # their own; a new message on its threads is the case's news.
+    case_view = _case_view(open_obligations, mail=new_inbox)
     # Deterministic priority queue: ranking happens HERE, in code, so the
     # briefing leads with what needs doing instead of enumerating.
     today_top, everything_else = build_today_top(
-        *_letter_surface.without(letter_view, needs_resp_delta, dropped_delta, deadlines,
-                                 pending_rsvps, open_obligations), load_vip_senders())
+        *_case_surface.without(case_view, needs_resp_delta, dropped_delta, deadlines,
+                               pending_rsvps, open_obligations), load_vip_senders())
     if today_top:
         print(f"  Priority queue: {len(today_top)} today-top item(s), "
               f"{len(everything_else)} in the digest", file=sys.stderr)
@@ -3119,7 +3121,7 @@ def run_full_daily(force_full: bool = False) -> dict:
         "recent_teams_dms": teams_summary,
     }
 
-    return _letter_surface.apply_briefing(briefing, letter_view)
+    return _case_surface.apply_briefing(briefing, case_view)
 
 
 def run_scheduling_check() -> dict:
@@ -3397,7 +3399,7 @@ def run_full_weekly() -> dict:
         "pending_rsvps": pending_rsvps[:15],
     }
 
-    return _letter_surface.apply_briefing(briefing, _letter_view(open_obligations))
+    return _case_surface.apply_briefing(briefing, _case_view(open_obligations))
 
 
 def run_list_digest() -> dict:

@@ -69,7 +69,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
-import letter_surface  # noqa: E402
+import case_surface  # noqa: E402
 
 REVIEW_LOG = "briefing-reviews.jsonl"
 LATEST = "briefing-review-latest.json"
@@ -95,7 +95,7 @@ SECTION_NAMES = {
     "due": "the date banner at the top", "followup": "a Follow-up due line",
     "since": "Since this morning", "pending": "Pending your response",
     "critical": "Critical", "important": "Important", "also": "Also open here (a room post)",
-    "letters": "Letters you are writing (one line per letter case)",
+    "letters": "Letters and other work he owes (one line per case: a letter, a review, a form, a report)",
 }
 # Highest first: of two items on one row, the one in the earlier section stays.
 SECTION_RANK = ("top", "needs", "escalated", "critical", "since", "flex", "important",
@@ -145,7 +145,7 @@ Rules:
 - His own words (a `quote`, an `owner_said`) outrank the assistant's notes.
 - An item's `placement` is its own: `no_project` keeps it out of every room, `linked_to` keeps it in those rooms, and `owner_moved` is his move. Never move an item against it.
 - When the records do not settle it, keep the item.
-- An item with `letter_case` is one letter he writes for a person, with all its destinations. It is done only when every destination is submitted, and a reply in a thread is never a submission: never drop it and never rewrite its line. You may move it.
+- An item with `letter_case` is one letter he writes for a person, with all its destinations; one with `work_case` is one review, form or report he owes, with all its parts. It is done only when every destination or part is delivered (its `rule` says how), and a reply in a thread is never a delivery: never drop it and never rewrite its line. You may move it.
 - `why` is one short sentence for him, in plain words.
 - `notes` is at most 3 short sentences about the post as a whole; [] when there is nothing to say.
 
@@ -243,10 +243,10 @@ def collect_items(lists: dict, cands: dict, *, follow_ups=(), room_posts=()) -> 
                           "kept": keep_gate.kept(c.get("keep_level")),
                           "rooms": rooms_of.get(ref, []),
                           "owner_said": [d for d in c.get("owner_said") or [] if isinstance(d, dict)]})
-            case = letter_surface.review_record(c)
+            case = case_surface.review_record(c)
             if case:
-                # One letter case with all its destinations: no reply makes it done.
-                items[-1]["letter_case"] = case
+                # One work case with all its parts: no reply makes it done.
+                items[-1][case_surface.review_key(c)] = case
             by_ref[ref] = items[-1]
     for n, f in enumerate(follow_ups or [], 1):
         if isinstance(f, dict) and f.get("id"):
@@ -632,10 +632,11 @@ def item_record(it: dict, ledger: dict, *, level: str, projects: list[str], draf
         # Placement is the owner's or a room's own fact, not mail: it goes
         # at every keep level.
         out["placement"] = view
-    if it.get("letter_case"):
-        # Names, destinations, dates and states only, at the case's own
-        # keep level (letter_surface.entry): never the letter or materials.
-        out["letter_case"] = it["letter_case"]
+    for key in ("letter_case", "work_case"):
+        if it.get(key):
+            # Names, parts, dates and states only, at the case's own keep
+            # level (case_surface.entry): never the work or its materials.
+            out[key] = it[key]
     if not lid:
         out["row"] = None
         said = _owner_said_view(it, out)
@@ -921,7 +922,7 @@ def check_verdicts(obj: dict, packet: dict, *, agent: str, items: list[dict] | N
         if act not in ACTIONS:
             no(v, "unknown action")
             continue
-        against = letter_surface.review_refusal(rec, act)
+        against = case_surface.review_refusal(rec, act)
         if against:
             no(v, against)
             continue
