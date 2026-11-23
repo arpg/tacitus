@@ -38,6 +38,22 @@
       "tier": "ask-first",
       "note": "Draft a letter someone asked the owner to write, ahead of its date, without the owner asking in that turn. The owner reviews it as a file; nothing is sent. Promotable to do-and-tell. docs/ea/letters.md."
     },
+    "draft_review": {
+      "tier": "ask-first",
+      "note": "Draft the report for a review the owner was asked to do (a paper, a proposal, a contract), from his points, without the owner asking in that turn. His recommendation, scores and comments for the editor stay his. Nothing is sent. Promotable to do-and-tell. docs/ea/reviews.md."
+    },
+    "fill_form": {
+      "tier": "ask-first",
+      "note": "Fill in a form the owner must return (a disclosure, a survey, a registration) from his records, without the owner asking in that turn. A signature, an attestation or a fact about him stays his question; he submits it. Promotable to do-and-tell. docs/ea/forms.md."
+    },
+    "draft_report": {
+      "tier": "ask-first",
+      "note": "Draft a report, a section or a deck the owner owes by a date, without the owner asking in that turn. Nothing is sent. Promotable to do-and-tell. docs/ea/reports.md."
+    },
+    "deliver_case_work": {
+      "tier": "button-required",
+      "note": "Return a review, submit a form or deliver a report: an email goes through the Send button, a portal or web form through the owner's own click or its confirmation card. Never promotable."
+    },
     "prep_reimbursement_email": {
       "tier": "ask-first",
       "note": "Compile receipts, draft the email to the department's reimbursement address, show in chat for approval."

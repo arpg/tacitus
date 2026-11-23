@@ -12,10 +12,11 @@ For each card the front end names, read-only:
 - for an event card, the start of the staged event its button carries
   (`payload_of`, the bot's own read of the staged payload, which leaves it
   in place): the request's `starts`;
-- for a letter case's card (a `case` in a value, letter_surface), the
-  nearest due date of the case's open destinations, beside its rows', and
-  the case's briefing (case_briefing.request_views: the same briefing as
-  its Home item, less the places its card lists), as `briefing`.
+- for a work case's card (a `case` in a value, case_surface: a letter,
+  a review, a form, a report), the nearest due date of the case's open
+  parts, beside its rows'; for a letter case also its briefing
+  (case_briefing.request_views: the same briefing as its Home item, less
+  the places its card lists), as `briefing`.
 
 A store that cannot be read gives nothing; the blocks then show no
 project and no deadline.
@@ -106,27 +107,27 @@ def _case_ids(card: Any) -> list[str]:
 
 
 def _case_dues(keyed: dict) -> dict[str, str]:
-    """{case id: the nearest due date of its open destinations} for the
-    letter cases the cards name; {} when none does or the store is out of
+    """{case id: the nearest due date of its open parts} for the work
+    cases the cards name; {} when none does or the store is out of
     reach."""
     want = {c for card, _i, _v in keyed.values() for c in _case_ids(card)}
     if not want:
         return {}
     try:
         try:
-            import letter_surface as _ls
+            import case_surface as _cs
         except ModuleNotFoundError:
-            from preprocessor import letter_surface as _ls
+            from preprocessor import case_surface as _cs
         out = {}
-        for case in _ls.load_cases():
+        for case in _cs.load_cases():
             cid = str(case.get("id") or "")
             if cid in want:
-                due = next((str(d.get("due"))[:10] for d in _ls.open_dests(case) if d.get("due")), "")
+                due = next((str(d.get("due"))[:10] for d in _cs.open_parts(case) if d.get("due")), "")
                 if due:
                     out[cid] = due
         return out
     except Exception as e:
-        log.warning("requests: the letter cases could not be read: %s", e)
+        log.warning("requests: the work cases could not be read: %s", e)
         return {}
 
 

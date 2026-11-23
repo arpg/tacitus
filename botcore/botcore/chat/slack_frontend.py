@@ -409,9 +409,9 @@ def _render_room_picker(card: ConfirmationCard) -> list[dict]:
 
 
 def _render_letter(card: ConfirmationCard) -> list[dict]:
-    """A letter case: title, lines and fields as a plain card, the buttons,
-    and the menu of the other destinations after them (a "Submitted
-    another one" pick)."""
+    """A work case (a letter, a review, a form, a report): title, lines
+    and fields as a plain card, the buttons, and the menu of the other
+    parts after them (a "Submitted another one" pick)."""
     blocks = _title_and_lines(card)
     if card.fields:
         blocks.append(_fields_section(card.fields))
@@ -449,6 +449,8 @@ RENDERERS = {
     "replies": _render_plain,
     "letter_ask": _render_plain,
     "letter": _render_letter,
+    "case_ask": _render_plain,
+    "case": _render_letter,
     "room_picker": _render_room_picker,
     "room": _render_room_picker,
 }

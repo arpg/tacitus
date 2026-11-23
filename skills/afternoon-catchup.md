@@ -89,13 +89,16 @@ If any of these are true, include a nudge in the update:
   ":sunrise: Early start tomorrow: [event] at [time]"
 - Friday afternoon: ":clipboard: Weekend preview: [Saturday/Sunday events]"
 
-### 4.4. Letter cases
+### 4.4. Work cases
 
-`letter_cases` has one entry per letter the user writes. Name a case
-only when its next date is today, tomorrow or past: print its `line` as
-it is, once, under `:memo: *Letters due*`. Never one line per portal
-mail, never as a reply owed. A row with a `letter` field is a
-destination of a case: never list it on its own.
+`letter_cases` has one entry per letter the user writes; `work_cases`
+one per review, form or report the user owes. Name a case only when its
+next date is today, tomorrow or past: print its `line` as it is, once,
+under one heading: `:memo: *Letters due*` when all are letters, the
+kind's own ("Reviews due", "Forms due", "Reports due") when all are one
+kind, else `:memo: *Work due*`. Never one line per portal mail, never as
+a reply owed. A row with a `letter` or `work_case` field is a part of a
+case: never list it on its own.
 
 ### 4.5. Work the reply queue
 

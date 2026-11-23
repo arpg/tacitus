@@ -174,7 +174,8 @@ before acting on its topic.
   calendar-view` and `google_calendar_client.py get-events` per Google
   account; check both. Free slots: `scheduling_engine.py` only.
 - *Letters* (`letters.md`): one decision per request, never a reply
-  draft; tracked to submission.
+  draft; tracked to submission. The same for `reviews.md`, `forms.md`
+  and `reports.md`.
 - *Poll filling* (`polls.md`, When2Meet, Doodle): ask-first.
 - *Reimbursement & receipts* (`reimbursement.md`): ask-first; receipts
   are in the ledger, never re-scan the inbox.
@@ -275,8 +276,8 @@ python3 /home/ea-bot/ea-system/preprocessor/log_missed_closure.py \
   --ledger-id <id> --user-message "<the user's exact words>" --source chat --quiet
 ```
 
-It appends one line (signals fired, missed evidence, a suggested rule)
-to `~/.ea/logs/missed-closures.log`, the closure_scrubber backlog. Never
+It appends one line to `~/.ea/logs/missed-closures.log`, the
+closure_scrubber backlog. Never
 skip it, even for an item the data would have closed anyway.
 
 ## Safety rules

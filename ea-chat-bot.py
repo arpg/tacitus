@@ -5410,46 +5410,69 @@ if "preprocessor.web_thread_state" in sys.modules:
 
 
 # ---------------------------------------------------------------------------
-# Letter cases: the new-case decision, one case block per open case, and the
-# loud rungs of the date ladder (letter_surface.py)
+# Work cases: the new-case decision, one case block per open case, the
+# loud rungs of the date ladder and a new message on a case's thread
+# (case_surface.py; letters through letter_surface.py)
 # ---------------------------------------------------------------------------
-# letters.py keeps one case per person the owner was asked to write for.
-# The router posts in the owner's DM (Action requests on the web chat) the
-# new case's one decision ("Will you write it?": Yes, Yes and ask for
-# materials, No) and, once he said yes, one live block per open case with
-# its destinations, dates and states. A loud rung (the day before a
-# destination's date, the day itself, the day after) posts the block again,
-# its old card retired: a new card pushes and tops the list. A press runs
-# letter_surface.answer (builder B's letters_work decides what it does);
-# a turn it asks for runs in the card's own thread, as Draft it does on a
-# Replies row. Every button names the case's rows as `rows`, never
-# `ledger_id`, so the web chat's Mark done never closes a destination. No
-# confirmation token is involved: no letter card sends anything.
+# letters.py keeps one case per person the owner was asked to write for;
+# cases.py keeps every other kind (a review, a form, a report). The router
+# posts in the owner's DM (Action requests on the web chat) a new case's
+# one decision (a letter's "Will you write it?": Yes, Yes and ask for
+# materials, No; a review's "Will you do this review?") and, once he said
+# yes, one live block per open case with its parts, dates and states. A
+# loud rung (the day before a part's date, the day itself, the day after)
+# posts the block again, its old card retired: a new card pushes and tops
+# the list. So does a new message from the other side on one of the
+# case's threads (case rows are no replies owed, so nothing else would
+# show it). A press runs the surface's answer (letters_work decides a
+# letter's); a turn it asks for runs in the card's own thread, as Draft it
+# does on a Replies row. Every button names the case's rows as `rows`,
+# never `ledger_id`, so the web chat's Mark done never closes a part. No
+# confirmation token is involved: no case card sends anything.
 _LETTER_CARDS = _private_state("letter-cards.json")
+_CASE_CARDS = _private_state("case-cards.json")
 LETTER_CHECK_S = 300
 _LAST_LETTER_CHECK = [0.0]
 LETTER_CARD_GONE = ":information_source: This letter case changed since the card. Nothing was done."
+CASE_CARD_GONE = ":information_source: This changed since the card. Nothing was done."
 
 
-def _load_letter_cards() -> dict:
+def _load_cards_file(path) -> dict:
     try:
-        data = json.loads(_LETTER_CARDS.read_text())
+        data = json.loads(path.read_text())
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
-def _save_letter_cards(data: dict) -> None:
+def _save_cards_file(path, data: dict) -> None:
     cutoff = time.time() - 60 * 86400
     data["sent"] = {k: v for k, v in (data.get("sent") or {}).items() if float(v or 0) > cutoff}
     try:
-        _atomic.write_json(_LETTER_CARDS, data, mode=0o600)
+        _atomic.write_json(path, data, mode=0o600)
     except Exception as e:
-        log.warning(f"letter card store failed: {e}")
+        log.warning(f"case card store failed: {e}")
+
+
+def _load_letter_cards() -> dict:
+    return _load_cards_file(_LETTER_CARDS)
+
+
+def _save_letter_cards(data: dict) -> None:
+    _save_cards_file(_LETTER_CARDS, data)
+
+
+def _load_case_cards() -> dict:
+    return _load_cards_file(_CASE_CARDS)
+
+
+def _save_case_cards(data: dict) -> None:
+    _save_cards_file(_CASE_CARDS, data)
 
 
 def _letter_card(spec: dict) -> "_chat.ConfirmationCard":
-    """A letter_surface card spec as the frontend's card."""
+    """A case_surface card spec (a letter's or any kind's) as the
+    frontend's card."""
     inert = _chat.card_text.inert
     actions = [_chat.CardAction(aid, label, value, style, word, ask=ask)
                for aid, label, value, style, word, ask in spec["actions"]]
@@ -5465,56 +5488,86 @@ def _letter_card(spec: dict) -> "_chat.ConfirmationCard":
         fallback_text="\n".join([spec["title"]] + lines))
 
 
+def _case_rows() -> dict:
+    """The open ledger rows by id ({} when they cannot be read)."""
+    from preprocessor import ledger as _lg
+    try:
+        return {r.get("id"): r for r in _lg.get_open_entries() if r.get("id")}
+    except Exception:
+        return {}
+
+
 def _letter_levels(cases: list) -> dict:
     """{case id: keep level}, the destinations' rows checked against the
     mail's records (keep_gate, failing closed)."""
-    from preprocessor import ledger as _lg
     from preprocessor import letter_surface as _ls
-    try:
-        rows = {r.get("id"): r for r in _lg.get_open_entries() if r.get("id")}
-    except Exception:
-        rows = {}
+    rows = _case_rows()
     return {str(c.get("id")): _ls.level(c, rows) for c in cases}
 
 
+def _case_levels(cases: list) -> dict:
+    """{case id: keep level} for the cases of every other kind."""
+    from preprocessor import case_surface as _cs
+    rows = _case_rows()
+    return {str(c.get("id")): _cs.level(c, rows) for c in cases}
+
+
 def _post_letter_cards(force: bool = False) -> int:
-    """Router tick: post the cards letter_surface.card_plan asks for, mark
-    the quiet rungs, retire the cards of cases that are no longer open.
-    Returns the count of cards posted."""
+    """Router tick: post the cards card_plan asks for, for the letters and
+    for every other kind, mark the quiet rungs, retire the cards of cases
+    that are no longer open. Returns the count of cards posted."""
     now = time.time()
     if not force and now - _LAST_LETTER_CHECK[0] < LETTER_CHECK_S:
         return 0
     _LAST_LETTER_CHECK[0] = now
+    from preprocessor import case_surface as _cs
     from preprocessor import letter_surface as _ls
-    cases = _ls.load_cases()
-    data = _load_letter_cards()
+    posted = _post_kind_cards(_ls, _ls.load_cases(), _load_letter_cards, _save_letter_cards,
+                              _letter_levels, now, ":information_source: This letter case is closed now.")
+    others = _cs.other_kinds()
+    if others:
+        posted += _post_kind_cards(_cs, _cs.load_cases(kinds=others), _load_case_cards,
+                                   _save_case_cards, _case_levels, now, ":information_source: This is closed now.")
+    posted += _post_which_cards(_cs, now)
+    if posted:
+        log.info(f"Case cards posted: {posted}")
+    return posted
+
+
+def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, closed: str) -> int:
+    """One store's tick: `surface` is letter_surface (the letters) or
+    case_surface (every other kind); `load` and `save` its card record;
+    `closed` the status line of a retired card."""
+    data = load()
     cards, sent = data.setdefault("cards", {}), data.setdefault("sent", {})
     for cid, rec in cards.items():
         if rec.get("live") and rec.get("card"):
             row = _CARDS.by_ref(rec.get("channel") or "", rec["card"])
             if row is not None and row.get("status") != "live":
                 rec["live"] = False  # answered, expired or replaced elsewhere
-    today = _ls.today_local()
-    plan = _ls.card_plan(cases, cards, today, sent)
+    today = surface.today_local()
+    live_blocks = [c for c in cases if (cards.get(str(c.get("id") or "")) or {}).get("live")
+                   and (cards.get(str(c.get("id") or "")) or {}).get("kind") == "case"]
+    news = surface.news_marks(live_blocks, _case_rows()) if live_blocks else {}
+    plan = surface.card_plan(cases, cards, today, sent, news)
     if not plan:
         return 0
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
         return 0
-    levels = _letter_levels(cases) if any(p["what"] in ("ask", "case", "remind", "join")
-                                          for p in plan) else {}
+    levels = levels_of(cases) if any(p["what"] in ("ask", "case", "remind", "join", "news")
+                                     for p in plan) else {}
     posted = 0
     for p in plan:
         cid, what = p["case"], p["what"]
         rec = cards.get(cid) or {}
-        if what in ("retire", "remind") and rec.get("live") and rec.get("card"):
+        if what in ("retire", "remind", "news") and rec.get("live") and rec.get("card"):
             try:
                 _replace_buttons_with_status(
                     rec.get("channel") or dm_channel, rec["card"],
-                    ":information_source: This letter case is closed now." if what == "retire"
-                    else ":arrow_down: A newer card for this letter is in the list.")
+                    closed if what == "retire" else ":arrow_down: A newer card for this is in the list.")
             except Exception as e:
-                log.warning(f"letter card {cid}: not retired: {e}")
+                log.warning(f"case card {cid}: not retired: {e}")
             rec["live"] = False
         if what == "retire":
             cards[cid] = rec
@@ -5522,54 +5575,98 @@ def _post_letter_cards(force: bool = False) -> int:
         if what == "mark":
             sent.update({k: now for k in p.get("keys") or []})
             continue
-        case = _ls.find(cases, cid)
+        case = surface.find(cases, cid)
         if case is None:
             continue
         lv = levels.get(cid, "local")
         if what == "join":
-            q = next((x for x in _ls.questions(case, "join") if str(x.get("id")) == p["question"]), None)
+            q = next((x for x in surface.questions(case, "join") if str(x.get("id")) == p["question"]), None)
             if q is None:
                 continue
             try:
-                ref = _post_card(dm_channel, _letter_card(_ls.join_spec(case, q, lv)))
+                ref = _post_card(dm_channel, _letter_card(surface.join_spec(case, q, lv)))
             except Exception as e:
-                log.warning(f"letter question {p['question']}: not posted: {e}")
+                log.warning(f"case question {p['question']}: not posted: {e}")
                 continue
             posted += 1
             cards[p["key"]] = {"kind": "join", "live": True, "card": getattr(ref, "id", "") or "",
                                "channel": getattr(ref, "channel", "") or dm_channel, "posted": now}
             continue
+        fresh = news.get(cid) or {}
         if what == "ask" or p.get("kind") == "ask":
-            spec = _ls.decision_spec(case, today, lv)
+            spec = surface.decision_spec(case, today, lv)
         else:
-            reminder = _ls.reminder_text(case, p.get("items") or [], today, lv) if what == "remind" else ""
-            spec = _ls.case_spec(case, today, lv, reminder=reminder)
+            reminder = surface.reminder_text(case, p.get("items") or [], today, lv) if what == "remind" else ""
+            spec = surface.case_spec(case, today, lv, reminder=reminder,
+                                     news=fresh.get("items") if what == "news" else None)
         try:
             ref = _post_card(dm_channel, _letter_card(spec))
         except Exception as e:
-            log.warning(f"letter card {cid}: not posted: {e}")
+            log.warning(f"case card {cid}: not posted: {e}")
             continue
         posted += 1
-        cards[cid] = {"kind": "ask" if spec["kind"] == "letter_ask" else "case", "live": True,
+        cards[cid] = {"kind": "ask" if spec["kind"].endswith("_ask") else "case", "live": True,
                       "card": getattr(ref, "id", "") or "",
                       "channel": getattr(ref, "channel", "") or dm_channel, "posted": now}
+        if fresh.get("at"):
+            cards[cid]["news_at"] = fresh["at"]  # this message is on the card now
         sent.update({k: now for k in p.get("keys") or []})
-    _save_letter_cards(data)
-    if posted:
-        log.info(f"Letter cards posted: {posted}")
+    save(data)
+    return posted
+
+
+def _post_which_cards(surface, now: float) -> int:
+    """The "which one was it?" questions (a delivery notice that matched no
+    part for sure): one card each, asked once; the card of an answered
+    question gives way."""
+    questions = surface.part_questions()
+    data = _load_case_cards()
+    cards = data.setdefault("cards", {})
+    plan = surface.which_plan(questions, cards)
+    if not plan:
+        return 0
+    dm_channel = _resolve_dm_channel()
+    if not dm_channel:
+        return 0
+    posted = 0
+    for p in plan:
+        key = p["case"]
+        rec = cards.get(key) or {}
+        if p["what"] == "retire":
+            if rec.get("card"):
+                try:
+                    _replace_buttons_with_status(rec.get("channel") or dm_channel, rec["card"],
+                                                 ":information_source: This is answered now.")
+                except Exception as e:
+                    log.warning(f"question card {key}: not retired: {e}")
+            rec["live"] = False
+            cards[key] = rec
+            continue
+        q = next((x for x in questions if str(x.get("id")) == p["question"]), None)
+        if q is None:
+            continue
+        try:
+            ref = _post_card(dm_channel, _letter_card(surface.which_spec(q)))
+        except Exception as e:
+            log.warning(f"question card {key}: not posted: {e}")
+            continue
+        posted += 1
+        cards[key] = {"kind": "which", "live": True, "card": getattr(ref, "id", "") or "",
+                      "channel": getattr(ref, "channel", "") or dm_channel, "posted": now}
+    _save_case_cards(data)
     return posted
 
 
 def _letter_turn(prompt: str, channel: str, thread: str, user_id: str, case_id: str,
                  said: str) -> str:
-    """One EA turn for a letter answer, in the card's thread (a new line in
+    """One EA turn for a case answer, in the card's thread (a new line in
     the DM with none): a line that says what it does, then the turn in a
     side session of that thread. Returns the line's id, "" when it failed."""
     try:
         posted = FRONTEND.post(channel=channel, thread_ts=thread or None,
                                text=f":hourglass_flowing_sand: {said}")
     except Exception as e:
-        log.warning(f"letter turn status post failed: {e}")
+        log.warning(f"case turn status post failed: {e}")
         return ""
     ts = posted.id
     from preprocessor import slack_sessions as _sessions
@@ -5580,17 +5677,19 @@ def _letter_turn(prompt: str, channel: str, thread: str, user_id: str, case_id: 
     return ts
 
 
-def _home_letter(case_id: str, answer: str, dest: str = "", words: str = "") -> dict:
-    """Home's choice on a letter item, as a press on its card runs it:
+def _home_kind(surface, cases: list, case_id: str, answer: str, part: str, words: str,
+               question_kind: str) -> dict:
+    """Home's choice on a case item, as a press on its card runs it:
     {"ok", "said", "channel"?, "id"?} (the line that opens its turn, when
     it has one). The case's cards follow at once."""
-    from preprocessor import letter_surface as _ls
-    case = _ls.find(_ls.load_cases(), case_id)
-    if case is None or (dest and not any(str(d.get("id")) == dest for d in _ls.open_dests(case))):
-        return {"ok": False, "said": "This letter changed. Nothing was done."}
-    q = next(iter(_ls.questions(case, "write")), None)
-    got = _ls.answer(case, answer, dest=dest, text=words,
-                     question=str((q or {}).get("id") or "") if answer in ("yes", "yes_ask", "no") else "")
+    case = surface.find(cases, case_id)
+    if case is None or (part and not any(str(d.get("id")) == part for d in surface.open_parts(case))):
+        return {"ok": False, "said": "This changed. Nothing was done." if question_kind != "write"
+                else "This letter changed. Nothing was done."}
+    q = next(iter(surface.questions(case, question_kind)), None) if question_kind else \
+        surface.decision_question(case)
+    got = surface.answer(case, answer, dest=part, text=words,
+                         question=str((q or {}).get("id") or "") if answer in ("yes", "yes_ask", "no") else "")
     out = {"ok": bool(got.get("ok")), "said": str(got.get("said") or "")}
     dm = _resolve_dm_channel()
     if got.get("turn") and dm and OWNER_SLACK_USER_ID:
@@ -5600,29 +5699,36 @@ def _home_letter(case_id: str, answer: str, dest: str = "", words: str = "") -> 
     try:
         _post_letter_cards(force=True)
     except Exception as e:
-        log.warning(f"letter cards after a Home choice: {e}")
+        log.warning(f"case cards after a Home choice: {e}")
     return out
 
 
-@app.action(re.compile(r"^letter_(?:yes|yes_ask|no|draft|submitted|date|decline|join_same|join_other)$"))
-def handle_letter(ev: "_chat.ActionEvent"):
-    """A press on a letter card: the case must still be open, and a
-    submission must name one of its open destinations. The answer is
-    letter_surface.answer's; its turn, when it has one, runs in the card's
-    thread. The card gives way to a status line, and the next tick posts
-    the case's block again while the case is open."""
-    if not _verify_button_user(ev):
-        return
+def _home_letter(case_id: str, answer: str, dest: str = "", words: str = "") -> dict:
+    """Home's choice on a letter item (letter_surface.answer)."""
     from preprocessor import letter_surface as _ls
+    return _home_kind(_ls, _ls.load_cases(), case_id, answer, dest, words, "write")
+
+
+def _home_case(case_id: str, answer: str, part: str = "", words: str = "") -> dict:
+    """Home's choice on a case item of any other kind (case_surface.answer)."""
+    from preprocessor import case_surface as _cs
+    return _home_kind(_cs, _cs.load_cases(kinds=_cs.other_kinds()), case_id, answer, part, words, "")
+
+
+def _press_case(ev: "_chat.ActionEvent", surface, cases: list, choice: str, gone: str,
+                load, save) -> None:
+    """A press on a case card: the case must still be open, and a delivery
+    must name one of its open parts. The answer is the surface's; its
+    turn, when it has one, runs in the card's thread. The card gives way
+    to a status line, and the next tick posts the case's block again
+    while the case is open."""
     channel, card_id = ev.card.channel, ev.card.id
     v = ev.value if isinstance(ev.value, dict) else {}
-    choice = _ls.ACTION_CHOICE.get(ev.action_id, "")
-    cases = _ls.load_cases()
-    dest = str(v.get("dest") or ev.selected or "")
-    case = _ls.find(cases, str(v.get("case") or "")) or next(
-        (c for c in cases if any(str(d.get("id")) == dest for d in _ls.open_dests(c))), None)
-    if case is None or (dest and not any(str(d.get("id")) == dest for d in _ls.open_dests(case))):
-        _replace_buttons_with_status(channel, card_id, LETTER_CARD_GONE)
+    part = str(v.get("dest") or v.get("part") or ev.selected or "")
+    case = surface.find(cases, str(v.get("case") or "")) or next(
+        (c for c in cases if any(str(d.get("id")) == part for d in surface.open_parts(c))), None)
+    if case is None or (part and not any(str(d.get("id")) == part for d in surface.open_parts(case))):
+        _replace_buttons_with_status(channel, card_id, gone)
         return
     _replace_buttons_with_status(channel, card_id, ":hourglass_flowing_sand: Working on it...")
     words = _chat.action_text(getattr(ev, "text", ""))
@@ -5630,9 +5736,9 @@ def handle_letter(ev: "_chat.ActionEvent"):
 
     def run() -> None:
         try:
-            got = _ls.answer(case, choice, dest=dest, text=words, question=str(v.get("question") or ""))
+            got = surface.answer(case, choice, dest=part, text=words, question=str(v.get("question") or ""))
         except Exception as e:
-            log.warning(f"letter answer {choice} on {case.get('id')}: {e}")
+            log.warning(f"case answer {choice} on {case.get('id')}: {e}")
             got = {"ok": False, "said": "I could not do that. Ask me in Ask Tacitus."}
         said = _chat.card_text.one_line(str(got.get("said") or ""), 200) or "Done."
         if got.get("turn") and not _letter_turn(str(got["turn"]), channel, thread, ev.user_id,
@@ -5640,16 +5746,62 @@ def handle_letter(ev: "_chat.ActionEvent"):
             said = "I could not start it. Ask me in Ask Tacitus."
         icon = ":white_check_mark:" if got.get("ok") else ":warning:"
         _replace_buttons_with_status(channel, card_id, f"{icon} {_chat.card_text.inert(said, 0)}")
-        data = _load_letter_cards()
+        data = load()
         for rec in (data.get("cards") or {}).values():
             if rec.get("card") == card_id:
                 rec["live"] = False
-        _save_letter_cards(data)
+        save(data)
         try:
             _post_letter_cards(force=True)
         except Exception as e:
-            log.warning(f"letter cards after an answer: {e}")
+            log.warning(f"case cards after an answer: {e}")
     threading.Thread(target=run, daemon=True).start()
+
+
+@app.action(re.compile(r"^letter_(?:yes|yes_ask|no|draft|submitted|date|decline|join_same|join_other)$"))
+def handle_letter(ev: "_chat.ActionEvent"):
+    """A press on a letter card (letter_surface.answer)."""
+    if not _verify_button_user(ev):
+        return
+    from preprocessor import letter_surface as _ls
+    _press_case(ev, _ls, _ls.load_cases(), _ls.ACTION_CHOICE.get(ev.action_id, ""), LETTER_CARD_GONE,
+                _load_letter_cards, _save_letter_cards)
+
+
+@app.action("case_which")
+def handle_case_which(ev: "_chat.ActionEvent"):
+    """A pick on a "which one was it?" card: the store records the part
+    named as delivered, or nothing for None of these."""
+    if not _verify_button_user(ev):
+        return
+    from preprocessor import case_surface as _cs
+    channel, card_id = ev.card.channel, ev.card.id
+    v = ev.value if isinstance(ev.value, dict) else {}
+    qid = str(v.get("question") or "")
+    pick = v.get("pick") if v.get("pick") is not None else ev.selected
+    q = next((x for x in _cs.part_questions() if str(x.get("id")) == qid), None) if qid else None
+    if q is None:
+        _replace_buttons_with_status(channel, card_id, CASE_CARD_GONE)
+        return
+    got = _cs.answer_which(q, pick)
+    icon = ":white_check_mark:" if got.get("ok") else ":warning:"
+    _replace_buttons_with_status(channel, card_id, f"{icon} {_chat.card_text.inert(str(got.get('said') or ''), 0)}")
+    data = _load_case_cards()
+    rec = (data.get("cards") or {}).get(f"q:{qid}")
+    if rec:
+        rec["live"] = False
+        _save_case_cards(data)
+
+
+@app.action(re.compile(r"^case_(?:yes|yes_ask|no|draft|delivered|date|decline|join_same|join_other)$"))
+def handle_case(ev: "_chat.ActionEvent"):
+    """A press on a card of a review, a form, a report or any other kind
+    of work case (case_surface.answer)."""
+    if not _verify_button_user(ev):
+        return
+    from preprocessor import case_surface as _cs
+    _press_case(ev, _cs, _cs.load_cases(kinds=_cs.other_kinds()), _cs.action_choice(ev.action_id),
+                CASE_CARD_GONE, _load_case_cards, _save_case_cards)
 
 
 # ---------------------------------------------------------------------------
@@ -6932,6 +7084,7 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         _home_of.hooks.not_needed = _home_not_needed
         _home_of.hooks.outlook = _home_outlook
         _home_of.hooks.letter = _home_letter
+        _home_of.hooks.case = _home_case
 
 
 def _toggle_quoted(ev: "_chat.ActionEvent", show: bool):
@@ -15575,7 +15728,7 @@ def resident_router_loop():
             try:
                 _post_letter_cards()
             except Exception as e:
-                log.warning(f"letter cards failed: {e}")
+                log.warning(f"case cards failed: {e}")
             try:
                 if _reply_taps_only():
                     _reply_watch_tick()

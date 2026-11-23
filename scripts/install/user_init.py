@@ -755,6 +755,18 @@ CONSERVATIVE_TIERS = {
         "tier": "ask-first",
         "note": "Draft a letter someone asked you to write, after asking.",
     },
+    "draft_review": {
+        "tier": "ask-first",
+        "note": "Draft a review's report from your points, after asking.",
+    },
+    "fill_form": {
+        "tier": "ask-first",
+        "note": "Fill in a form from your records, after asking.",
+    },
+    "draft_report": {
+        "tier": "ask-first",
+        "note": "Draft a report you owe, after asking.",
+    },
     "prep_reimbursement_email": {
         "tier": "ask-first",
         "note": "Compile receipts, draft email, show in Slack for approval.",

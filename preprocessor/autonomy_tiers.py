@@ -39,6 +39,18 @@ DEFAULT_TASKS = {
     "draft_letter": {"tier": "ask-first",
                      "note": "Draft a letter someone asked the owner to write, ahead of its date, "
                              "without the owner asking in that turn (docs/ea/letters.md)."},
+    "draft_review": {"tier": "ask-first",
+                     "note": "Draft a review's report from the owner's points, ahead of its date. "
+                             "His recommendation and scores stay his (docs/ea/reviews.md)."},
+    "fill_form": {"tier": "ask-first",
+                  "note": "Fill in a form from the owner's records. A signature or a fact about him "
+                          "stays his; he submits it (docs/ea/forms.md)."},
+    "draft_report": {"tier": "ask-first",
+                     "note": "Draft a report or a section the owner owes, ahead of its date "
+                             "(docs/ea/reports.md)."},
+    "deliver_case_work": {"tier": "button-required",
+                          "note": "Return a review, submit a form or deliver a report: the Send "
+                                  "button, or the owner's click on the portal or the form card."},
 }
 SOURCES = ("chat", "edit")
 SANDBOX_ERRNOS = (errno.EACCES, errno.EPERM, errno.EROFS)

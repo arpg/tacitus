@@ -695,22 +695,26 @@ def left(src: Sources) -> list[dict]:
                         "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
                         "mins": MINUTES["item"], "ask": f'About "{title}": ', "_lid": ref,
                         "_conv": str((row or {}).get("conversation_id") or "")})
-    out = _letters_left(out, src)
+    out = _cases_left(out, src)
     rank = {"overdue": 0, "soon": 1, "calm": 2}
-    kinds = {"request": 0, "question": 1, "reply": 2, "item": 3, "letter": 3}
+    kinds = {"request": 0, "question": 1, "reply": 2, "item": 3, "letter": 3, "case": 3}
     out.sort(key=lambda x: (rank.get(x["urgency"], 2), kinds[x["kind"]], x["due"] or float("inf")))
     return out[:LEFT_MAX]
 
 
-def _letters_left(out: list[dict], src: Sources) -> list[dict]:
-    """One item per letter case, kind `letter`, in place of its rows,
-    threads and cards (letter_surface.home_left); `out` as it is without
-    the store."""
+def _cases_left(out: list[dict], src: Sources) -> list[dict]:
+    """One item per work case in place of its rows, threads and cards
+    (case_surface.home_left): kind `letter` for a letter, kind `case` for
+    a review, a form, a report; `out` as it is without the store. A
+    test's Sources may carry the cases (`cases`, or `letters`)."""
     try:
-        import letter_surface
+        import case_surface
     except ModuleNotFoundError:  # imported as preprocessor.home_screen
-        from preprocessor import letter_surface
-    return letter_surface.home_left(out, src, cases=getattr(src, "letters", None))
+        from preprocessor import case_surface
+    given = getattr(src, "cases", None)
+    if given is None:
+        given = getattr(src, "letters", None)
+    return case_surface.home_left(out, src, cases=given)
 
 
 def question(src: Sources) -> dict | None:

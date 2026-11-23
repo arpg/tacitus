@@ -39,6 +39,7 @@ ACTIONS = {
     "publish": "Publish", "close": "Close item", "closed": "Closed for you",
     "replies": "Reply needed", "room": "Pick a room", "invite": "Answer an invite",
     "letter_ask": "Letter request", "letter": "Letter to write",
+    "case_ask": "Work request", "case": "Work to do",
 }
 # The labelled fields each part reads, first found wins.
 WHO = ("To", "Attendees", "Organizer", "From")

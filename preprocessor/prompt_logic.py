@@ -68,6 +68,11 @@ TOPIC_FILES = {
     # Letters someone asked the owner to write (recommendation, reference,
     # nomination, support); the module keeps its old name.
     "lor": ["letters.md"],
+    # The other kinds of work case (case_surface, cases.py): a review to
+    # return, a form to fill in, a report owed by a date.
+    "reviews": ["reviews.md"],
+    "forms": ["forms.md"],
+    "reports": ["reports.md"],
     "polls": ["polls.md"],
     "reimbursement": ["reimbursement.md"],
     "gmail": ["gmail.md"],
@@ -191,6 +196,21 @@ MODULE_KEYWORDS: dict[str, set[str]] = {
             "letter of support", "support letter", "character reference", "reference for",
             "letter case", "letters_work", "letters.py", "the letter for", "a letter for",
             "write the letter", "draft the letter", "write a letter for", "letter for"},
+    # A review the owner was asked to do (docs/ea/reviews.md). A bare
+    # "review" is a document review (docreview); these name the work.
+    "reviews": {"referee", "review invitation", "invitation to review", "invited to review",
+                "invites you to review", "asked me to review", "asks me to review",
+                "review the paper", "review the manuscript", "review the proposal",
+                "review a paper", "review a manuscript", "review a proposal",
+                "will you do this review", "review request", "draft the report",
+                "draft_review", "--kind review", "reviews.md", "review case"},
+    "forms": {"fill in the form", "fill out the form", "fill in this form", "fill out this form",
+              "fill in the survey", "fill out the survey", "sign the form", "signature page",
+              "disclosure form", "compliance training", "required training", "e-signature",
+              "docusign", "will you fill it in", "fill_form", "--kind form", "forms.md",
+              "form case"},
+    "reports": {"progress report", "annual report", "final report", "interim report",
+                "draft_report", "--kind report", "reports.md", "report case"},
     "snooze": {"snooze", "remind me later", "follow up later", "schedule send",
                "scheduled send", "deferred send", "remind me about this",
                "reminder", "remind me", "hold off"},
@@ -236,10 +256,31 @@ MODULE_KEYWORDS: dict[str, set[str]] = {
                  "quad chart"},
 }
 
+# The modules of the work cases other than letters (case_surface): each
+# loads for its words in the message or in the thread it answers.
+CASE_MODULES = ("reviews", "forms", "reports")
+
 # Regex patterns for modules where substring matching is too fragile.
 # These catch cases like "fill out the Caleb PhD defense poll" where
 # "fill" and "poll" are separated by intervening words.
 MODULE_PATTERNS: dict[str, list[re.Pattern]] = {
+    # A case's own line, as the briefing and its cards write it, names the
+    # kind: "Paper review for Pat Lee", "Form for the payroll office: due
+    # Fri", "Report for the program office: 1 of 2 delivered".
+    "reviews": [
+        re.compile(r"\b(?:paper|proposal|contract|thesis|draft|application) review for\b"),
+        re.compile(r"\breview for [^:\n]{1,80}: (?:report |asked |\d+ of \d+ returned)"),
+        re.compile(r"\b(?:invit\w*|asked|asks|asking) (?:me |you |him )?to (?:review|referee)\b"),
+    ],
+    "forms": [
+        re.compile(r"\bform for [^:\n]{1,80}: (?:due|was due|asked|no due date|\d+ of \d+ submitted)"),
+        re.compile(r"\b(?:fill (?:in|out)|complete|sign) (?:the |this |a |my )?(?:\w+ )?"
+                   r"(?:form|disclosure|questionnaire|attestation)\b"),
+    ],
+    "reports": [
+        re.compile(r"\breport for [^:\n]{1,80}: (?:due|was due|asked|no due date|\d+ of \d+ delivered)"),
+        re.compile(r"\b(?:progress|annual|final|interim|quarterly) report\b"),
+    ],
     "scheduling": [
         re.compile(r"\bschedule\b.{0,30}\bwith\b"),   # "schedule [anything] with [person]"
         re.compile(r"\bmeeting\b.{0,20}\bwith\b"),    # "meeting with [person]"
@@ -393,6 +434,15 @@ def detect_needed_modules(msg: str, context: str = "") -> set[str]:
     if context and "lor" not in needed and any(kw in context.lower() for kw in MODULE_KEYWORDS["lor"]):
         needed.add("lor")
         keyword_matched.add("lor")
+    # A message in a work case's thread (its card, its briefing line) is
+    # work on that case: "yes, and draft it from my notes" there needs the
+    # kind's guide.
+    for module in CASE_MODULES:
+        if context and module not in needed and (
+                any(kw in context.lower() for kw in MODULE_KEYWORDS[module])
+                or any(p.search(context.lower()) for p in MODULE_PATTERNS[module])):
+            needed.add(module)
+            keyword_matched.add(module)
     if (context and "scheduling" not in needed
             and ("drafting" in needed or _TIME_FOLLOWUP.search(lower))
             and _scheduling_thread(context.lower())):
@@ -916,7 +966,7 @@ def needs_mcp(msg: str, needed_modules: set[str],
         return True
 
     # Tasks with clear targets are self-contained via Bash tools
-    if needed_modules & {"scheduling", "polls", "snooze", "lor"}:
+    if needed_modules & {"scheduling", "polls", "snooze", "lor", *CASE_MODULES}:
         return False
 
     # Thread replies: still enable MCP if the message references Gmail
