@@ -162,7 +162,8 @@ def test_a_day_out_of_range_never_goes_and_the_bots_refusal_shows_in_its_own_wor
     # The bot's own check holds a day the page did not check (the stub's, as the bot's web_action does).
     said = page.evaluate("""([ch, id]) => call('POST', `/cards/${enc(ch)}/${enc(id)}/actions`,
         { action_id: 'letter_yes_date', text: 'next Friday' }).catch((e) => e.message)""", [m["channel"], m["id"]])
-    assert said == f"Pick a date between {FIRST.isoformat()} and {LAST.isoformat()}."
+    last = f"{LAST:%a %b} {LAST.day}" + (f", {LAST.year}" if LAST.year != FIRST.year else "")
+    assert said == f"Pick a day from {FIRST:%a %b} {FIRST.day} to {last}."
     assert [e for e in errors if "status of 400" not in e] == [], errors  # the browser's own line for each refusal
 
 

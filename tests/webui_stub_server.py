@@ -1197,12 +1197,17 @@ class Stub:
     def refusal(self, m: dict, body: dict) -> str:
         """The bot's words for a press it refuses before the card's handler
         runs, else "": a date action takes an ISO day within its `min` and
-        `max` as its line (Wire shape 1 of the quiet-cases brief)."""
+        `max` as its line, checked by the bot's own web_frontend._picked_day."""
+        import sys
+        sys.path.insert(0, str(WEBUI.parents[2]))
+        from botcore.chat import web_frontend as wf
         aid = str(body.get("action_id") or "")
         act = next((a for a in (m.get("card") or {}).get("actions") or [] if a.get("id") == aid), {})
-        day, text = act.get("date") or {}, str(body.get("text") or "")
-        if day and not (re.fullmatch(r"\d{4}-\d\d-\d\d", text) and day["min"] <= text <= day["max"]):
-            return f"Pick a date between {day['min']} and {day['max']}."
+        try:
+            if act.get("date"):
+                wf._picked_day(str(body.get("text") or ""), act["date"])
+        except wf._HttpError as e:
+            return e.message
         return self.click_refusals.get(aid, "")
 
     def click(self, channel: str, msg_id: str, body: dict) -> bool | str:
