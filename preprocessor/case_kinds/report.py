@@ -14,6 +14,7 @@ KIND = Kind(
                       then={"Yes, ask for materials": "ask_materials"}),
     material_kinds=("document", "instructions", "template", "other"),
     ladder=(14, 7, 3, 1, 0, -1), guide="reports.md", model_kinds=("report",),
+    autonomy={"draft": "ask-first", "deliver": "ask-first"},
     response_mode="document",
     rules=Rules(
         request=r"\b(?:(?:annual|final|interim|progress|project|technical|quarterly|monthly)\s+"
@@ -26,5 +27,5 @@ KIND = Kind(
                 r"(?:the |your )?(?:annual|final|interim|progress|project) report)\b",
         exclude=r"\b(?:expense report|incident report|bug report|grade report|credit report|"
                 r"report (?:a|an|the) (?:problem|issue|bug)|reported by|your students?'?s?)\b",
-        item=r"\b(?:award|grant|contract|project)\s+(?:id:?\s*|no\.?\s*|number\s*|#\s*)?"
+        item=r"\b(?:award|grant|contract|project)\s+(?:id\s*:?\s*|no\.?\s*|number\s*|#\s*)?"
              r"([A-Za-z0-9][\w.-]*\d[\w-]*)"))

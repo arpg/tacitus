@@ -13,6 +13,7 @@ KIND = Kind(
     decision=Decision(question="Will you do this review?"),
     material_kinds=("document", "form", "instructions", "other"),
     ladder=(14, 7, 3, 1, 0, -1), guide="reviews.md", model_kinds=("review",),
+    autonomy={"draft": "ask-first", "deliver": "ask-first"},
     rules=Rules(
         request=r"\b(?:invit\w+ to (?:serve as an? )?(?:review|referee)|review(?:er)? invitation|"
                 r"(?:request|invitation) to (?:review|referee)|(?:complete|submit|return) (?:the |your |"
@@ -31,5 +32,5 @@ KIND = Kind(
                 r"review (?:meeting|session|panel discussion)|"
                 # A notice to another reviewer the owner is copied on.
                 r"(?:remind\w*|ask\w*|invit\w*|request\w*)\s+(?:dr|prof|professor|mr|ms|mrs)\.?\s+\w+)\b",
-        item=r"\b(?:manuscript|paper|submission|proposal)\s+(?:id:?\s*|no\.?\s*|number\s*|#\s*)?"
+        item=r"\b(?:manuscript|paper|submission|proposal)\s+(?:id\s*:?\s*|no\.?\s*|number\s*|#\s*)?"
              r"([A-Za-z0-9][\w.-]*\d[\w-]*)"))

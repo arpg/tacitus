@@ -566,6 +566,30 @@ with three answers (Yes / Yes, ask for materials / No). A case keeps the
 strictest keep level of its mail; `view` and `summary_line` name no one
 below `summary`.
 
+A letter case is one kind of work case (`cases.py`): work someone asks
+the owner for that ends with something delivered, not with a reply. One
+store (`cases`, `case_parts`, `case_materials`, `case_questions`,
+`case_aliases`, `case_events` in the ledger database) and one machine run
+every kind; a kind is a declaration in `case_kinds/` (letter, review,
+form, report) or a plugin manifest's `case_kinds` data: its words, its
+first decision, its delivery word and signals, its detection rules, its
+tiers, ladder and guide. `letters.py` is the letter kind's API over the
+store. A row of a case of any kind carries `letter` or `work_case`
+metadata, and every reader asks `cases.is_case_row`; closure asks
+`cases.signal_allowed` (the owner's word, the kind's delivery, decline or
+case-done signal, a repeat, a send of a part that goes by email). Intake
+(`preprocess.ingest_letters`) runs every kind whose detection is on
+(letter and form by default; `ea-config.json` `case_detection` turns a
+kind on or off); a kind that is off is opened in chat (`cases.py open`).
+A confirmation that matches no part for sure asks the owner which part
+once (a `part` question) and remembers the answer. The local model's
+record carries a `work` field (kind, role, counterpart, item, due) beside
+`letter`; it fills facts the rules leave out and sets the record's
+response mode from the kind. The letter tables of the first letter
+release move into the store with the owner's `cases.py migrate --apply`;
+until then they are read through temporary views and the store takes no
+writes.
+
 The bot puts the same queue in front of the owner once a day
 (`_post_reply_queue`, a router tick that runs with or without the
 resident): from 08:00 local and outside quiet hours it reads `ledger.py

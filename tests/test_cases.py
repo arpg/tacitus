@@ -574,3 +574,12 @@ def test_a_new_message_on_a_cases_thread_shows_on_the_case_once(tmp_path, monkey
         assert "from" not in cases.view(cases.case(conn, c["id"]))["messages"][0]
     finally:
         conn.close()
+
+
+def test_a_meeting_request_is_never_a_case_and_a_kept_record_fails_closed():
+    rec = _sign("m-s", "Room booking form")
+    rec["result"]["scheduling"] = "request"
+    assert cases.detect(rec, kinds_=FORMS) is None
+    assert cases.record_level({"keep_from_frontier": "applicant"}) == "local"
+    assert cases.record_level({"keep_level": "facts"}) == "facts"
+    assert cases.record_level({}, "summary") == "summary" and cases.record_level({}) == "full"

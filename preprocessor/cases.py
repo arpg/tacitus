@@ -1759,6 +1759,8 @@ def rule_detect(k: Kind, rec: dict) -> dict | None:
     conf_kind = str(res.get("confidential_kind") or "")
     if conf_kind and conf_kind in rules.blocked_kinds:
         return None
+    if str(res.get("scheduling") or "none") not in ("none", ""):
+        return None  # a meeting time is the scheduling lane's
     if rules.exclude and rules.rx("exclude").search(every):
         return None
     role = ""
@@ -2110,6 +2112,18 @@ def _ingest_confirmation(conn, k: Kind, found: dict, *, sender: str, conversatio
     return {"action": "unmatched", "why": "no person named and no single part"}
 
 
+def record_level(rec: dict, given: str | None = None) -> str:
+    """The keep level a mail gives its case: the level the gate gave it,
+    else the record's own, else `local` when the record says it is kept
+    with no level (failing closed), else full."""
+    if given:
+        return given
+    if rec.get("keep_level"):
+        return str(rec["keep_level"])
+    kept = rec.get("keep_from_frontier") or rec.get("keep_from_anthropic")
+    return "local" if kept else "full"
+
+
 def ingest(records: list[dict], *, rows_by_message: dict | None = None,
            levels: dict | None = None, db_path: Path | None = None, actor: str = "intake",
            now: datetime | None = None, kinds_: list[str] | None = None) -> list[dict]:
@@ -2130,6 +2144,8 @@ def ingest(records: list[dict], *, rows_by_message: dict | None = None,
         except ModuleNotFoundError:  # imported as preprocessor.<mod>
             from preprocessor.case_kinds import letter as _letter
         senders = _letter._plugin_senders()
+        if kinds_ is None:
+            kinds_ = [n for n, k in kinds().items() if detection_on(k)]
         for rec in sorted(records, key=lambda r: str(r.get("received") or "")):
             found = detect(rec, kinds_=kinds_, plugin_senders=senders)
             if not found or found["role"] != "confirmation":
@@ -2145,7 +2161,8 @@ def ingest(records: list[dict], *, rows_by_message: dict | None = None,
                                     (f'%"message": "{mid}"%',)).fetchone():
                 continue
             res = ingest_record(conn, rec, ledger_id=rows_by_message.get(mid, ""),
-                                keep_level=levels.get(mid, "full"), found=found, actor=actor)
+                                keep_level=record_level(rec, levels.get(mid)), found=found,
+                                actor=actor)
             if res.get("action") != "none":
                 _event(conn, res.get("case") or "", "mail", part_id=res.get("part") or "",
                        actor=actor, evidence={"message": mid, "role": found["role"],
