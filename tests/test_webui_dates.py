@@ -47,11 +47,19 @@ def decision(stub, proposed=PROPOSED):
     pick = {"id": "letter_yes_date", "label": ":calendar: Yes, by another date" if proposed else ":calendar: Yes, by a date",
             "style": "" if proposed else "primary", "word": "date", "value": CASE, "ask": "The date",
             "date": dict(rng, **({"proposed": proposed.isoformat()} if proposed else {}))}
-    return _request(stub, "A letter request. Will you write it?", kind="letter_ask", no_default=True, body="",
-                    fields=[{"label": "From", "value": "Rowan Vale"}, {"label": "Subject", "value": "Letter for Rowan Vale"}],
-                    lines=["Letter for Rowan Vale.", "1. Harbor Tech PhD: due " + words(PROPOSED) + "."],
-                    actions=[*yes, pick, {"id": "letter_no", "label": ":no_entry_sign: No", "style": "", "word": "no",
-                                          "value": CASE, "ask": "", "date": {}}])
+    return card(stub, ":memo: *A letter request.* Will you write it?", kind="letter_ask", no_default=True,
+                fields=[{"label": "From", "value": "Rowan Vale"}, {"label": "Subject", "value": "Letter for Rowan Vale"}],
+                lines=["Letter for Rowan Vale.", "1. Harbor Tech PhD: due " + words(PROPOSED) + "."],
+                actions=[*yes, pick, {"id": "letter_no", "label": ":no_entry_sign: No", "style": "", "word": "no",
+                                      "value": CASE, "ask": "", "date": {}}])
+
+
+def card(stub, title, **kw):
+    """A card in Action requests with its title as the bot writes it (no lock added)."""
+    return stub.add(W.DM, "", kind="card", event="card", card={
+        "kind": "send", "title": title, "fields": [], "lines": [], "body": "", "quoted": "", "actions": [],
+        "select": None, "block_id": "", "footer": "", "fallback_text": title, "thread_ts": "", "ea_channel": W.MAIN,
+        "content_fingerprint": "", "no_default": False, **kw})
 
 
 def started(app, **kw):
@@ -190,6 +198,32 @@ def test_a_redraw_keeps_the_open_day_control_its_day_and_a_failed_press_keeps_th
     card.locator(".day-pick .btn.primary").click()
     wait_for(lambda: stub.clicks)
     assert stub.clicks[0]["text"] == later.isoformat()
+    assert not errors, errors
+
+
+def test_the_lock_marks_only_a_card_whose_press_passes_the_confirmation_gate(app):
+    """The lock is the mark of a button-gated action (a send, a meeting, a
+    publish, a plugin's or the browser's write). A letter's decision, a
+    Replies card or a close proposal sends nothing: each keeps its own
+    leading emoji, and a lock in its title is dropped."""
+    from playwright.sync_api import expect
+    page, stub, errors = started(app, context=CLOCK)
+    act = [{"id": "go", "label": "Go", "value": "v", "style": "primary", "word": "go", "ask": "", "date": {}}]
+    gated = {k: card(stub, f":lock: *A {k} card*", kind=k, actions=act) for k in
+             ("send", "bulk", "schedule", "event", "event_update", "event_delete", "plugin", "publish", "browser")}
+    own = {"letter_ask": decision(stub), "replies": card(stub, ":inbox_tray: *Replies*", kind="replies", actions=act),
+           "close": card(stub, ":lock: *Close these?*", kind="close", actions=act)}
+    page.evaluate("location.hash = '#/stream%3A7'")
+    for kind, m in {**gated, **own}.items():
+        block = page.locator(f'.req[data-id="{m["id"]}"]')
+        block.locator(".req-head").click()
+        title = block.locator(".card-title")
+        expect(title).to_be_visible()
+        expect(title.locator(".emoji[aria-label='lock']")).to_have_count(1 if kind in gated else 0)
+    expect(page.locator(f'.req[data-id="{own["letter_ask"]["id"]}"] .card-title .emoji').first).to_have_attribute(
+        "aria-label", "memo")  # its own icon
+    expect(page.locator(f'.req[data-id="{own["replies"]["id"]}"] .card-title .emoji').first).to_have_attribute(
+        "aria-label", "inbox_tray")
     assert not errors, errors
 
 

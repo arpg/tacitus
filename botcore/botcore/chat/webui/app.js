@@ -776,12 +776,15 @@ function openModal(trigger, view) {
 const noCards = () => (T.rec && T.rec.hosted ? 'Approve this in Tacitus on your phone: this computer'
   : 'Approve this in Tacitus on your computer: this phone') + ' does not press card buttons unless you allow it there.';
 
+// The lock marks a card whose press passes the bot's confirmation gate (its token or its stale-card check: a send, a
+// meeting, a publish, a plugin's or the browser's write); any other card keeps its own leading emoji.
+const GATED = new Set(['send', 'bulk', 'schedule', 'event', 'event_update', 'event_delete', 'plugin', 'publish', 'browser']);
 function renderCard(msg) {
   const c = msg.card || {};
   const box = h('div', { class: 'card', 'data-kind': c.kind || '' });
   const title = String(c.title || '').replace(/^\s*:(?:lock|locked):\s*/, '');
   const head = cardText(title || 'Confirm', 'card-title');
-  head.prepend(emojiNode('lock'), ' ');
+  if (GATED.has(c.kind)) head.prepend(emojiNode('lock'), ' ');
   box.append(head);
   if ((c.fields || []).length) {
     const dl = h('dl', { class: 'card-fields' });
