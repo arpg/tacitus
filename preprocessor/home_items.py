@@ -996,7 +996,7 @@ def _case_call(fn: str, fe, f: Found, it: dict, *args, **kw) -> dict | None:
     if mod is None:
         return None
     try:
-        _ls, case = _letter(f)
+        _cs, case = _case(f)
         if case is None:
             return None
         got = getattr(mod, fn)(fe, it["ref"], *args, item={k: v for k, v in it.items() if k != "deeper"},

@@ -705,6 +705,11 @@ def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch):
     assert got == {"ok": True, "said": "Marked as returned."} and ("rv-1", "delivered", "rp1", "") in called
     got, _after = h.act("case:rv-1", "done")
     assert got["ok"] is False
+    # no deeper briefing for a `case` item yet: a start and a step say so, cleanly
+    assert h.deeper("case:rv-1") == {"ok": False, "state": "unavailable",
+                                     "note": "Everything Tacitus knows about it is above."}
+    got, _after = h.act("case:rv-1", "step:s1")
+    assert got["ok"] is False and got["said"] == I.NO_CHOICE
 
 
 # ── the pre-send review, rooms, rows ──────────────────────────────────
