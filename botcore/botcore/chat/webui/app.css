@@ -263,7 +263,7 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .answer-ctl legend { padding: 0; margin-bottom: 6px; font-weight: 600; }
 .answer-picks { display: flex; flex-wrap: wrap; gap: 8px; }
 .answer-pick { min-height: 44px; white-space: normal; text-align: left; }
-.answer-pick[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text);
+.answer-pick[aria-pressed="true"], .card-actions .btn[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text);
   box-shadow: inset 0 0 0 1px var(--accent); }
 .answer-ctl .card-ask { min-height: 44px; width: 100%; }
 .answer-ctl .btn.primary { min-height: 44px; justify-self: start; }
@@ -487,6 +487,9 @@ th { background: var(--code-bg); font-weight: 600; }
 }
 .card-note { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .card-note:empty { display: none; }
+/* The day control: the native date field and Use with the day in words on one row where they fit, the hint under them. */
+.day-pick .card-ask { flex: 1 1 10em; max-width: 18em; min-height: 44px; } .day-use { flex: 0 0 auto; min-height: 44px; }
+.day-hint { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: 13px; } .day-hint:empty { display: none; }
 .card-footer { color: var(--muted); font-size: 12px; margin-top: 10px; }
 /* a status line is a quiet note in the middle of the thread */
 .msg.kind-status { text-align: center; }

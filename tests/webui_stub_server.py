@@ -12,6 +12,10 @@ what happens next.
 
 A post gets an echo (an eyes reaction, a bot reply, a check); a card
 click is recorded in `clicks` and the card turns into a status line. A
+press of an action that asks for a day (its `date`: min, max, proposed)
+takes an ISO day within the range as its line, as the bot's check does;
+any other is refused with 400 and the bot's words, recorded in
+`refused_clicks`, as is a press `click_refusals[action id]` names. A
 post that asks for a room ("open a room for X") gets a new room, named
 from X, announced with a `channel` event, as the bot's reply says. An
 upload takes one `file` part or several, as the bot does: the first
@@ -429,6 +433,10 @@ class Stub:
         self.events: list[tuple[int, str, dict]] = []
         self.files: dict[str, tuple[str, str, bytes]] = {}
         self.clicks: list[dict] = []
+        # Each press the bot refused, as web_action refuses one: (action id, its body, the words). A day out of a
+        # date action's range is refused, as the bot's check does; `click_refusals[action id]` refuses any other.
+        self.refused_clicks: list[tuple] = []
+        self.click_refusals: dict[str, str] = {}
         self.modal_views: dict[str, dict] = {}  # action id -> the window its click opens
         self.modal_saves: list[dict] = []       # each window saved: its trigger and values
         self.posts: list[dict] = []
@@ -447,6 +455,8 @@ class Stub:
         self.requests_gets = 0
         self.reply_flow = False  # a Replies row answered goes as the bot's web path goes (reply_answered)
         self.reply_delay = 0.6
+        self.reply_hold = threading.Event()  # cleared, the draft waits until a test sets it again
+        self.reply_hold.set()
         self.request_context: dict[str, dict] = {}  # message id -> {"project", "due", "starts"}
         self.tags: dict[str, str] = {}  # message id -> the tag it was posted under (a Replies row)
         self.names: dict[str, str] = {}  # thread key -> the name the owner gave it
@@ -1159,13 +1169,16 @@ class Stub:
 
     def reply_answered(self, m: dict, body: dict) -> None:
         """The bot's web path for a Replies row answered (`reply_flow`): the
-        card says the reply is being written; `reply_delay` seconds later
-        the draft's Send request is posted and the row's card links to it."""
+        card says the reply is being written; `reply_delay` seconds later,
+        and once `reply_hold` is set (a test that looks at the writing state
+        clears it first, so a slow page cannot miss that state), the draft's
+        Send request is posted and the row's card links to it."""
         said = (body.get("text") or (body.get("value") or {}).get("choice") or "").strip().rstrip(".")
         self.change(m, "status", kind="status",
                     text=":hourglass_flowing_sand: Writing the reply" + (f": {said}." if said else "."))
 
         def drafted():
+            self.reply_hold.wait(10)
             q = (m.get("card") or {}).get("question") or {}
             card = self.add(DM, "", kind="card", event="card", card={
                 "kind": "send", "title": ":lock: *Send this reply?*",
@@ -1181,10 +1194,26 @@ class Stub:
                         f"[open it](/chat/#/{DM.replace(':', '%3A')}/{card['thread_key']}/{card['id']})")
         threading.Timer(self.reply_delay, drafted).start()
 
-    def click(self, channel: str, msg_id: str, body: dict) -> bool:
+    def refusal(self, m: dict, body: dict) -> str:
+        """The bot's words for a press it refuses before the card's handler
+        runs, else "": a date action takes an ISO day within its `min` and
+        `max` as its line (Wire shape 1 of the quiet-cases brief)."""
+        aid = str(body.get("action_id") or "")
+        act = next((a for a in (m.get("card") or {}).get("actions") or [] if a.get("id") == aid), {})
+        day, text = act.get("date") or {}, str(body.get("text") or "")
+        if day and not (re.fullmatch(r"\d{4}-\d\d-\d\d", text) and day["min"] <= text <= day["max"]):
+            return f"Pick a date between {day['min']} and {day['max']}."
+        return self.click_refusals.get(aid, "")
+
+    def click(self, channel: str, msg_id: str, body: dict) -> bool | str:
+        """True for a press the stub takes, the bot's words for one it refuses, False for no such card."""
         m = self.find(channel, msg_id)
         if not m or m["kind"] != "card":
             return False
+        said = self.refusal(m, body)
+        if said:
+            self.refused_clicks.append((body.get("action_id"), body, said))
+            return said
         self.clicks.append({"channel": channel, "id": msg_id, **body})
         if self.reply_flow and (m.get("card") or {}).get("kind") == "replies" and (
                 body.get("action_id", "").startswith("reply_choice_") or body.get("text")):
@@ -1578,7 +1607,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         if len(parts) == 4 and parts[0] == "cards" and parts[3] == "actions":
             body = json.loads(self._body() or b"{}")
-            if s.click(parts[1], parts[2], body):
+            got = s.click(parts[1], parts[2], body)
+            if isinstance(got, str):
+                return self._json(400, {"error": got})
+            if got:
                 return self._json(200, {"ok": True, "trigger": "web:" + str(body.get("action_id"))})
             return self._json(404, {"error": "no such card"})
         return self._json(404, {"error": "not found"})

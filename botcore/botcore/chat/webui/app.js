@@ -668,15 +668,53 @@ async function act(msg, body, box) {
     // A button that opens a window (Edit) answers it here once Tacitus has it.
     const w = r && r.trigger ? await call('GET', `/modals/${enc(r.trigger)}`) : null;
     if (w && w.modal) { note.textContent = ''; openModal(r.trigger, w.modal); }
-  } catch (e) {
-    note.textContent = e.status === 403 && T.relay ? noCards() : `Not sent: ${e.message}`;
+  } catch (e) { // a refusal the bot words (a day out of its range) in its own words
+    note.textContent = e.status === 403 && T.relay ? noCards() : e.status === 400 ? e.message : `Not sent: ${e.message}`;
   } finally {
     controls.forEach((c) => { c.disabled = false; });
   }
 }
 
+// A label's words without its emoji; one with no name (empty, or "Submitted: " with the name missing) is never drawn.
+const labelWords = (a) => oneLine(stripInert(a.label || '').replace(/^\s*:[a-z0-9_+-]+:\s*/, ''), 80);
+const named = (a) => /[^\s:]/.test(labelWords(a)) && !/:$/.test(labelWords(a));
+
+// A day to pick, the one control wherever Tacitus asks for a date (a card action's `date`: proposed, min, max; a Home
+// choice or step with `input: "date"`; a window's `datepicker`): a native date field within min and max at the proposed
+// day, and the button that sends it says the day in words; no free text. The day and a card's open control are kept by
+// place (S.days), so a redraw draws them as they were. A window's field has no Use: its Save sends, the words under it.
+Object.assign(S, { days: new Map() });
+const isDay = (a) => Boolean(a && a.date && a.date.min);
+const dayOk = (v, o) => /^\d{4}-\d\d-\d\d$/.test(v || '') && !(o.min && v < o.min) && !(o.max && v > o.max);
+const dayState = (key, o) => S.days.get(key) || S.days.set(key, { value: dayOk(o.proposed, o) ? o.proposed : '' }).get(key);
+const dayWords = (iso, [y, m, d] = iso.split('-').map(Number)) => new Date(y, m - 1, d).toLocaleDateString('en-US', {
+  weekday: 'short', month: 'short', day: 'numeric', ...(y !== new Date().getFullYear() ? { year: 'numeric' } : {}) }).replace(',', '');
+function dayPick(key, o, send) {
+  const st = dayState(key, o), use = send && h('button', { type: 'button', class: 'btn primary day-use', onclick: () => go() });
+  const f = h('input', { type: 'date', class: 'card-ask', min: o.min, max: o.max, value: st.value, 'aria-label': o.ask || 'The date',
+    enterkeyhint: 'done', oninput: () => sync(), onkeydown: (e) => { if (e.key === 'Enter' && !e.isComposing && use) { e.preventDefault(); go(); } } });
+  const hint = h('p', { class: 'day-hint', 'aria-live': 'polite' });
+  const sync = () => {
+    const ok = dayOk(st.value = f.value, o), words = ok ? dayWords(f.value) : '';
+    if (use) Object.assign(use, { textContent: ok ? `Use ${words}` : 'Use this date', disabled: !ok || cardsOff() });
+    hint.textContent = ok ? (use ? '' : words) : f.value && o.min && o.max ? `Pick a day from ${dayWords(o.min)} to ${dayWords(o.max)}.` : 'Pick a day.';
+  };
+  const go = () => { if (use && !use.disabled) Promise.resolve(send(f.value)).then(sync); };
+  sync();
+  return h('div', { class: 'card-actions day-pick', role: 'group', 'aria-label': o.label || 'Pick a day' }, f, use, hint);
+}
+// A card's date action: its button opens and shuts the day control under the buttons; Use sends the day as its line.
+function dayAction(key, a, btn, send) {
+  const st = dayState(key, a.date), part = dayPick(key, { ...a.date, ask: a.ask, label: labelWords(a) }, send);
+  const show = () => { part.hidden = !st.open; btn.setAttribute('aria-expanded', String(Boolean(st.open))); };
+  btn.setAttribute('aria-controls', part.id = `day-${key.replace(/\s/g, '')}`);
+  btn.addEventListener('click', () => { st.open = !st.open; show(); if (st.open) part.querySelector('input').focus(); });
+  show();
+  return part;
+}
+
 // A window a card button opened, in Slack's view shape: its text lines and
-// its inputs (text, or a choice); Save sends the inputs back to Tacitus.
+// its inputs (text, a choice, or a day); Save sends the inputs back to Tacitus.
 function openModal(trigger, view) {
   let dlg = $('modal');
   if (!dlg) {
@@ -697,6 +735,11 @@ function openModal(trigger, view) {
         const at = el.initial_option ? el.initial_option.value : '';
         input = h('select', { id }, b.optional ? h('option', { value: '' }, '') : null,
           (el.options || []).map((o) => h('option', { value: o.value, selected: o.value === at }, txt(o.text))));
+      } else if (el.type === 'datepicker') { // the day control, sent by Save
+        const part = dayPick(`${trigger}/${id}`, { proposed: el.initial_date, ask: txt(b.label) }, null);
+        form.append(h('label', { for: id }, txt(b.label)), part);
+        fields.push([b.block_id, el.action_id, Object.assign(part.querySelector('input'), { id })]);
+        continue;
       } else {
         input = h(el.multiline ? 'textarea' : 'input', { id, maxlength: 3000, rows: el.multiline ? 12 : null });
         input.value = el.initial_value || '';
@@ -762,29 +805,34 @@ function renderCard(msg) {
       h('option', { value: '', disabled: true, selected: true }, oneLine(s.placeholder || 'Choose', 80)));
     for (const o of s.options) {
       const [label, value] = Array.isArray(o) ? o : [o.label, o.value];
-      sel.append(h('option', { value: String(value ?? '') }, oneLine(stripInert(label), 80)));
+      if (named({ label })) sel.append(h('option', { value: String(value ?? '') }, oneLine(stripInert(label), 80)));
     }
     sel.addEventListener('change', () => act(msg, { action_id: s.id, selected: sel.value }, box));
     row.append(sel);
   }
   // An action with `ask` takes one line of the owner's words: the field is
-  // above the buttons, and an empty one is a plain press.
-  const ask = (c.actions || []).find((a) => a.ask);
+  // above the buttons, and an empty one is a plain press. One that asks for
+  // a day opens the day control under the buttons instead (dayAction).
+  const acts = (c.actions || []).filter(named), ask = acts.find((a) => a.ask && !isDay(a)), days = [];
   const words = ask && oneLine(ask.ask, 60).replace(/^./, (ch) => ch.toUpperCase());
   const line = ask && h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
     'aria-label': words, placeholder: `${words} (optional)` });
-  const press = (a) => act(msg, { action_id: a.id, value: a.value ?? '', ...(a.ask ? { text: line.value.trim() } : {}) }, box);
+  const press = (a, text = a.ask && line ? line.value.trim() : null) => act(msg, { action_id: a.id, value: a.value ?? '',
+    ...(text != null ? { text } : {}) }, box);
   if (line) row.append(line), line.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) press(ask); });
   const prim = primaryId(c, !c.no_default);
   const canc = cancelId(c);
-  for (const a of c.actions || []) {
+  for (const a of acts) {
     const cls = a.id === prim ? 'btn primary' : a.id === canc ? 'btn plain' : 'btn';
     const btn = h('button', { type: 'button', class: cls + (a.style === 'danger' ? ' danger' : ''), 'data-action': a.id });
-    inline(oneLine(a.label || a.word || a.id, 80, true), true, btn);
-    btn.addEventListener('click', () => press(a));
+    inline(oneLine(a.label, 80, true), true, btn);
+    if (isDay(a)) days.push(dayAction(`${msg.id}/${a.id}`, a, btn, (day) => press(a, day)));
+    else btn.addEventListener('click', () => press(a));
     row.append(btn);
   }
-  if (row.firstChild) box.append(row);
+  // A press that did not work: the bot's words in the card, which keeps its place.
+  if (c.failed) box.append(h('p', { class: 'answer-failed', role: 'alert' }, oneLine(c.failed, 300)));
+  if (row.firstChild) box.append(row, ...days);
   // A phone the bot does not let confirm cards (paired on the relay's own
   // origin) sees the buttons but cannot press them.
   const locked = Boolean(row.firstChild && S.me && S.me.card_actions === false);
@@ -1130,11 +1178,16 @@ function caseBrief(r) {
 // the reply. Each press is one of the card's own actions on the card's own route; Skip and Not needed stay quiet below.
 // A Home item that waits on an answer draws its choices here too, each press sent its own way (`send`).
 function answerCard(msg, send = (body, box) => act(msg, body, box)) {
-  const c = msg.card, q = c.question;
-  const picks = (c.actions || []).filter((a) => a.pick || /^reply_choice_/.test(a.id)), ask = (c.actions || []).find((a) => a.ask);
-  const rest = (c.actions || []).filter((a) => a !== ask && !picks.includes(a));
+  const c = msg.card, q = c.question, acts = (c.actions || []).filter(named), words = labelWords;
+  const picks = acts.filter((a) => (a.pick || /^reply_choice_/.test(a.id)) && !isDay(a)), ask = acts.find((a) => a.ask && !isDay(a));
+  const rest = acts.filter((a) => a !== ask && !picks.includes(a)), days = [];
   const box = h('div', { class: 'card answer', 'data-kind': c.kind || '' });
-  const words = (a) => oneLine(stripInert(a.label || a.word || a.id).replace(/^\s*:[a-z0-9_+-]+:\s*/, ''), 80);
+  const more = rest.map((a) => { // quiet, below; one that asks for a day opens the day control
+    const b = h('button', { type: 'button', class: 'btn plain small' + (a.style === 'danger' ? ' danger' : ''), 'data-action': a.id }, words(a));
+    if (isDay(a)) days.push(dayAction(`${msg.id}/${a.id}`, a, b, (day) => send({ action_id: a.id, value: a.value ?? '', text: day }, box)));
+    else b.addEventListener('click', () => send({ action_id: a.id, value: a.value ?? '' }, box));
+    return b;
+  });
   let chosen = picks.find((a) => words(a) === q.answer) || null;
   const field = ask ? h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
     'aria-label': 'Your answer', placeholder: picks.length ? 'Or type your answer' : 'Type your answer' }) : null;
@@ -1162,9 +1215,7 @@ function answerCard(msg, send = (body, box) => act(msg, body, box)) {
     q.failed ? h('p', { class: 'answer-failed', role: 'alert' }, 'The draft did not start. Your answer is kept: tap Try again.') : null,
     h('fieldset', { class: 'card-actions answer-ctl' }, h('legend', {}, 'Your answer'),
       chips.length ? h('div', { class: 'answer-picks', role: 'group', 'aria-label': 'Quick answers' }, chips) : null, field, go),
-    rest.length ? h('div', { class: 'card-actions answer-more' }, rest.map((a) => h('button', { type: 'button',
-      class: 'btn plain small' + (a.style === 'danger' ? ' danger' : ''), 'data-action': a.id,
-      onclick: () => send({ action_id: a.id, value: a.value ?? '' }, box) }, words(a)))) : null,
+    more.length ? h('div', { class: 'card-actions answer-more' }, more) : null, ...days,
     h('div', { class: 'card-note', 'aria-live': 'polite' }, locked ? noCards() : null)].filter(Boolean));
   if (locked) box.querySelectorAll('button, input').forEach((x) => { x.disabled = true; });
   sync();
@@ -1497,7 +1548,7 @@ function choiceRow(it, x) {
     return answerCard({ card: { question: { go: x.choices.some((c) => c.id === 'not_needed') ? '' : 'Answer' }, actions: acts } },
       ({ action_id: id, text }) => choose(it, x.choices.find((c) => c.id === id), text));
   }
-  return [h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next step' }, x.choices.map((c) => choiceBtn(it, c, x))),
+  return [h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next step' }, x.choices.filter(named).map((c) => choiceBtn(it, c, x))),
     cardsOff() ? h('p', { class: 'card-note' }, noCards()) : null];
 }
 // A choice that only leads where the item names (its block, Outlook) is a link, as a step that opens a page (a case's
@@ -1515,22 +1566,23 @@ function choiceBtn(it, c, x) {
     'aria-expanded': c.input ? String(Boolean(S.homeIn && S.homeIn.ref === ref && S.homeIn.id === c.id)) : null },
   c.label, c.detail ? [' ', h('span', { class: 'h-detail' }, c.detail)] : null);
 }
-// Later's days, or one line of the owner's words (what the reply says), its own button acting with it.
+// Later's days, the day control (a date choice, Later's Pick a date), or one line of the owner's words (what the reply
+// says), its own button acting with it.
 function inputRow(it, m) {
   const ref = refOf(it), go = (arg) => homeAct(it, m.id, arg), btn = (label, onclick) => h('button', { type: 'button', class: 'btn', onclick }, label);
   if (m.mode === 'later') {
     return h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Later' }, (m.options || [{ arg: 'tomorrow', label: 'Tomorrow' },
       { arg: 'monday', label: 'Monday' }, { arg: 'date', label: 'Pick a date' }]).map((o) => btn(o.label, () => (o.arg !== 'date' ? go(o.arg)
-      : (Object.assign(m, { mode: 'date', min: o.min, max: o.max }), drawItem(ref), itemLi(ref).querySelector(`[data-key="${CSS.escape(ref)}/in"]`).focus())))));
+      : (Object.assign(m, { mode: 'date', min: o.min, max: o.max }), drawItem(ref), itemLi(ref).querySelector('.day-pick input').focus())))));
   }
-  const day = m.mode === 'date', f = h('input', { class: 'card-ask', type: day ? 'date' : 'text', maxlength: 300, autocomplete: 'off',
-    'data-key': `${ref}/in`, 'aria-label': day ? 'The date' : m.label, placeholder: day ? null : 'What should it say?', enterkeyhint: 'done',
-    min: day ? m.min || new Date(Date.now() + 864e5).toLocaleDateString('en-CA') : null, max: day ? m.max : null });
+  if (m.mode === 'date') return dayPick(`${ref}/${m.id}`, { ...m, min: m.min || new Date(Date.now() + 864e5).toLocaleDateString('en-CA') }, go);
+  const f = h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', 'data-key': `${ref}/in`, 'aria-label': m.label,
+    placeholder: 'What should it say?', enterkeyhint: 'done' });
   f.value = m.text;
   const ok = () => f.value.trim() && go(f.value.trim());
   f.addEventListener('input', () => { m.text = f.value; });
   f.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ok(); } });
-  return h('div', { class: 'card-actions' }, f, h('button', { type: 'button', class: 'btn primary', onclick: ok }, day ? 'Use this date' : 'Draft it'));
+  return h('div', { class: 'card-actions' }, f, h('button', { type: 'button', class: 'btn primary', onclick: ok }, 'Draft it'));
 }
 // The deeper briefing: its text (folded past a few lines, with Show more), its next steps as buttons (the last one
 // Continue in a conversation), which model wrote it only where Settings shows agent and model details; while a newer
@@ -1548,7 +1600,7 @@ function deeperPart(it, d, m) {
     by ? h('p', { class: 'h-quiet' }, [by, d.at && when(d.at)].filter(Boolean).join(' · ')) : null,
     note ? h('p', { class: 'h-quiet' }, note, d.state === 'failed' ? h('button', { type: 'button', class: 'btn small',
       onclick: () => deeper(ref) }, 'Try again') : null) : null,
-    done && (d.steps || []).length ? h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next steps' }, d.steps.map((st) =>
+    done && (d.steps || []).length ? h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next steps' }, d.steps.filter(named).map((st) =>
       choiceBtn(it, { ...st, id: `step:${st.id}`, style: st.id === 'continue' ? 'plain' : st.style }, x))) : null, m ? inputRow(it, m) : null];
 }
 
@@ -1556,7 +1608,8 @@ function deeperPart(it, d, m) {
 function choose(it, c, arg) {
   const ref = refOf(it);
   if (c.input && arg == null) {
-    S.homeIn = S.homeIn && S.homeIn.id === c.id ? null : { ref, id: c.id, mode: c.input, label: c.label, options: c.options, text: '' };
+    S.homeIn = S.homeIn && S.homeIn.id === c.id ? null : { ...c, ref, mode: c.input, text: '' }; // a day's: min, max, proposed
+    S.days.delete(`${ref}/${c.id}`); // a day control opens at its proposed day
     drawItem(ref);
     const li = itemLi(ref), own = li.querySelector(`[data-key="${CSS.escape(`${ref}/${c.id}`)}"]`);
     li.querySelectorAll('.h-body [aria-expanded]').forEach((el) => el.setAttribute('aria-expanded', String(el === own && Boolean(S.homeIn))));
