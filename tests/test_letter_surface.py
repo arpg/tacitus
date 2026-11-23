@@ -923,7 +923,10 @@ def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch):
     assert it["brief"]["due"] == "Next due tomorrow."
     assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:submitted:av4", "letter:submitted:av5",
                                                 "letter:submitted:av6", "open"]
-    assert it["deeper"]["state"] == "unavailable"
+    # its briefing is case_briefing's; with no ledger to read its rows, the
+    # case shows from itself alone and fails closed (no name, no place)
+    assert it["deeper"]["state"] in ("ready", "none") and "What was asked" in it["deeper"]["text"]
+    assert "Avery" not in it["deeper"]["text"]
     called = []
 
     class FE:

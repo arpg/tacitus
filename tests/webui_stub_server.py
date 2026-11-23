@@ -109,7 +109,16 @@ recorded in `item_gets`, after `item_delay` seconds), POST /api/home/act
 can come first), POST /api/home/undo (`undos`) and POST /api/home/deeper
 (`deeper_posts`). The ledger's command lines it would run are recorded in
 `ledger_runs`, never run; a draft posts a status line in Action requests,
-a conversation is the stub's own post. home_deeper's part is a stand-in
+a conversation is the stub's own post. A letter case (`letters`, the made-up
+cases letter_surface.load_cases gives; the test's sources carry the same
+list as `letters`) is an item of kind `letter` whose briefing is
+case_briefing's own (state, start, step, its code-built lines and its
+steps through the case card's answers) over the case as made, with no
+ledger: its stored briefing is `case_stored` (None: none yet; a start
+writes `case_answer` through case_briefing's check), and a step's answer
+is pressed through Home's `hooks.letter`, recorded in `letter_presses`.
+Action requests' blocks carry `request_context[id]["briefing"]` as the bot
+puts a case's briefing on its block. home_deeper's part is a stand-in
 with no model (Stub._Deeper): an item's briefing is home_deeper.render's
 text with its steps through home_deeper.offered, written ahead of the tap
 unless `deeper_stored` is False, with the moment's lines first and
@@ -352,6 +361,10 @@ class Stub:
         self.deeper_stale = False  # True: the stored one is older than its thread (the app asks for a new one)
         self.deepers: dict[str, dict] = {}  # each item's, as home_deeper keeps its job
         self.home_meta: dict[str, dict] = {}  # Home's own store (WebStore.home_get / home_set)
+        self.letters: list[dict] = []  # letter cases (made-up), as letter_surface.load_cases gives them
+        self.case_stored: dict | None = None  # a case's stored briefing (case_briefing's record)
+        self.case_answer: dict | None = None  # the model's answer a start writes
+        self.letter_presses: list[tuple] = []  # Home's hooks.letter: (case, answer, place, words)
         self.real = self._real_home(home_src) if home_src else None
         self.home_src = home_src
         if self.real is not None and home is None:
@@ -705,15 +718,48 @@ class Stub:
         import home_screen as H
         import web_thread_state as wts
         self._deeper_result = None
-        self._put_back = [(I, "_deeper_mod", I._deeper_mod), (wts, "RUN", wts.RUN)]
+        import case_briefing as CB
+        import letter_surface as LS
+        dd = D()
+        self._put_back = [(I, "_deeper_mod", I._deeper_mod), (wts, "RUN", wts.RUN),
+                          (LS, "load_cases", LS.load_cases), (CB, "_case_of", CB._case_of), (CB, "Store", CB.Store),
+                          (CB, "LOCAL", CB.LOCAL), (CB, "_log", CB._log), (dd, "local_ready", dd.local_ready)]
         deeper = Stub._Deeper(self)
         I._deeper_mod = lambda: deeper
+        LS.load_cases = lambda conn=None, open_only=True: list(self.letters)
+        CB._case_of = lambda case_id, case: {"case": case, "rows": {}, "events": [], "version": "v1",
+                                             "level": case.get("keep_level") or "full"}
+        CB.Store = lambda path=None: Stub._CaseStore(self)
+        CB.LOCAL = lambda prompt: {"ok": True, "text": json.dumps(self.case_answer or {}), "usage": {}, "reason": ""}
+        CB._log = lambda rec: None
+        dd.local_ready = lambda cfg=None: True
         wts.RUN = lambda script, *args: self.ledger_runs.append((script, *args)) or {"ok": True, "_exit": 0}
         self.clock_offset = 0.0  # the bot's clock against this one's, in seconds
         home = H.Home(Stub._FE(self), clock=lambda: time.time() + self.clock_offset, sources=src, background=False)
         home.hooks.draft, home.hooks.not_needed, home.hooks.outlook = self._draft, lambda rid, note: {"ok": True}, \
             (lambda conv: f"https://outlook.example.com/mail/{conv}")
+        home.hooks.letter = lambda cid, answer, dest, words: self.letter_presses.append((cid, answer, dest, words)) or \
+            {"ok": True, "said": "Tacitus is on it. Its card is in Action requests."}
         return home
+
+    class _CaseStore:
+        """case_briefing's store for the stub: the one stored briefing
+        (`case_stored`) at the case's version, and no looks."""
+
+        def __init__(self, stub):
+            self.stub = stub
+
+        def get(self, cid):
+            return json.loads(json.dumps(self.stub.case_stored)) if self.stub.case_stored else None
+
+        def put(self, cid, rec):
+            self.stub.case_stored = json.loads(json.dumps(rec))
+
+        def look(self, cid, now):
+            return None
+
+        def since(self, cid):
+            return None
 
     def real_payload(self) -> dict:
         """Home as the bot builds it now, less the choices that wait for an Undo."""
@@ -838,7 +884,8 @@ class Stub:
                 ctx = self.request_context.get(m["id"], {})
                 busy = ar.working(m, time.time())
                 j = {**self.view(m), "waiting": live, "working": busy, **ar.block(m),
-                     **ar.urgency(m, live, ctx), "project": ctx.get("project", "")}
+                     **ar.urgency(m, live, ctx), "project": ctx.get("project", ""),
+                     **({"briefing": ctx["briefing"]} if ctx.get("briefing") else {})}
                 nxt = ar.next_request(m, DM)
                 if nxt and self.find(DM, nxt):
                     j["next"] = nxt
@@ -1356,6 +1403,8 @@ class Handler(BaseHTTPRequestHandler):
                 s.undos.append(body)
                 out = s.real.undo(body.get("token", ""))
             else:
+                if str(body.get("ref") or "").startswith("letter:"):
+                    s.deeper_posts.append(body["ref"])  # case_briefing's start (home_deeper's stand-in records its own)
                 out = s.real.deeper(body.get("ref", ""))
             self._json(200, out) if out else self._json(404, {"ok": False, "said": "This is not on your list any more."})
             return after() if after else None

@@ -670,7 +670,7 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 | Part | Source |
 |---|---|
 | Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. An item kept from hosted models is its fixed words alone (Kept mail, below). A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
-| Letters | one item per letter case, kind `letter` (`letter_surface.home_left`, the one hook in `left`): a new case ("Letter request", its decision card in Action requests as its `href`), a case overdue, due within 14 days or with no date; its destinations' rows, threads and cards are not listed on their own. A case further out stays on the briefing's Letters list. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's three answers, else Draft the letter (a line of words), Submitted per destination (the three nearest), Set the due date (a line) and Open it in Action requests; no Done, Not needed or Later, and no deeper briefing (its dates and states are all its records hold). A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
+| Letters | one item per letter case, kind `letter` (`letter_surface.home_left`, the one hook in `left`): a new case ("Letter request", its decision card in Action requests as its `href`), a case overdue, due within 14 days or with no date; its destinations' rows, threads and cards are not listed on their own. A case further out stays on the briefing's Letters list. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's three answers, else Draft the letter (a line of words), Submitted per destination (the three nearest), Set the due date (a line) and Open it in Action requests; no Done, Not needed or Later. Its deeper briefing is the briefing on a case (below). A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
 | So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or, while the owner is in a meeting, after the busy stretch (meetings less than 10 minutes apart are one: "You are busy until 1:30. Then you have 50 minutes before your 2:20."), and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
@@ -838,6 +838,77 @@ Tacitus does not know, and two or three next steps.
   `--dry-run` counts them.
 - *The event.* The `home-item` event (`{"ref"}`) goes out when a tap's job
   starts and when it ends. An app that shows the item open reads it again.
+
+**The briefing on a case** (`preprocessor/case_briefing.py`). A case is
+one piece of work someone asked the owner for that ends with something
+delivered (a letter someone asked him to write is the first kind). Its
+Home item and its block in Action requests show one briefing:
+
+- *Code's lines, read when the card is read.* Now: the nearest date with
+  the days left, an overdue place first, and his next free time before
+  it. Since you last looked: each new message from them with its gist
+  (from Summary up), a moved date, a file that came in, a place marked
+  submitted, counted from his last look before this visit (`Store.look`:
+  opening the Home item is a look; a visit ends after 30 minutes; Action
+  requests reads and never counts as a look). What was asked: the kind,
+  for whom, when, whether the person asked directly or each place by its
+  own mail, his answer, their last message. The places: each place's date,
+  state and how the letter goes in, one line each, the finished ones in one
+  line. What came in: the materials by kind, with file names from Summary
+  up (the case's own and the files on the person's mail). Still missing:
+  the letter, a material its kind wants (`letters_work.materials_plan`), a
+  date, how to submit. Facts are never stored, so they are never stale.
+- *The model's part, stored.* What happened, what is at stake by the
+  nearest date, what Tacitus does not know, and two or three next steps.
+  It is checked as a row's briefing is (`home_deeper.checked`): a number,
+  a day, a month or a name the packet does not hold reads "Tacitus could
+  not check this."
+- *The steps* are chosen only from the moves the case allows now
+  (`allowed_moves`) and checked in code (`check_step`): draft the letter
+  (once he said yes, never on a kept case), ask for what is missing (when
+  something is and there is an address; he confirms, and the draft waits
+  for Send), set a place's due date (a date the records state, else he
+  picks it), mark a place submitted (only where its letter exists; he
+  confirms), open a place's portal (a link from Summary up; nothing is
+  posted), say no (he confirms; the reply that says no waits for Send).
+  A step runs the same path as the matching button on the case's card:
+  `home_items` posts it as the letter choice `letter:<answer>[:<place>]`
+  through `Hooks.letter`, even where Home's own choices do not list it
+  (Decline, Yes and ask for materials on an accepted case, a place past
+  the third), and the bot's handler checks the case and the place again.
+  A step of a briefing older than the case is refused.
+- *The packet* holds the kind, the person (from Facts up), the places by
+  number (their names from Summary up) with dates in words, states and
+  methods, the materials by kind (file names from Summary up), what is
+  missing, the case's events in code's words, the last messages' gists
+  from the case's mail records (from Summary up), the owner's rules and the
+  moves. It never holds a file's contents (the letter, a statement, a CV),
+  a rating or a form answer, a link (a portal link can carry a key) or an
+  address. File names and kinds are enough to say what came in and what is
+  missing; nothing in the briefing needs more.
+- *Stored and refreshed* as row briefings are, in its own table of the
+  same owner-private file (`case_briefings`, with `case_seen` for the
+  looks), keyed by the case version (`case_briefing.version`: the case,
+  its places, its materials, its open questions, its events and its mail's
+  latest records; never the clock) and the keep level. The mail tick
+  writes the stale ones on the owner's own model, two a tick and 40 a day
+  (`refresh`); the briefing run's hosted pass rewrites the cases on Home's
+  list at Summary and Full (`hosted_pass`, one call for them all); a tap
+  writes one only when none is stored or it is stale. A kept case runs on
+  the owner's own model alone (a level that cannot be read is Local), gets
+  no draft, no ask and no conversation, and with no local model shows its
+  facts and says so. A closed case loses its briefing.
+- *In Action requests* the case's card carries the same briefing, less the
+  places, what came in and what is missing (the card lists them), as
+  `briefing` on its block (`web_requests.context`): the app shows it above
+  the card's buttons under "What Tacitus knows", folded past a few lines,
+  and Show more unfolds it in place, the card's field and its words as
+  they were.
+
+    case_briefing.py packet --case <id>        the packet, read-only
+    case_briefing.py refresh [--limit N] [--dry-run]
+    case_briefing.py sample --case <id> ...    a dry run on the owner's own
+                                               model; nothing stored
 
 **The briefing.** On the web chat alone (Slack and a shadow keep the
 post), with the web block's `home.briefing` "home" (the default), the
@@ -1007,7 +1078,9 @@ first item's card. The card shows, in this order: the quick briefing
 (`what`, `asked`, `due`, `standing` as a list, `next`); the deeper
 briefing when it was there and current as the card opened (its text,
 folded past a few lines behind Show more, then its next steps as
-buttons, and the model that wrote it only where Settings shows agent and
+buttons (a step that opens a page, a case's portal, is a link that posts
+nothing; one with `confirm` asks first; one with `input: "date"` asks for
+the day), and the model that wrote it only where Settings shows agent and
 model details); the item's own choices (a choice that only leads
 somewhere the item names, Open it in Action requests or Open in Outlook,
 is a link to `goto`; a question with answers draws them with the decision
@@ -1181,8 +1254,9 @@ and what the place does changed.
   device the bot does not let press cards sees them greyed out, as
   anywhere. Under the card come the bot's lines in its thread (an Edit
   question's pointer, Draft it's progress) and a link to the conversation
-  it came from. Opening it reads its thread. The body scrolls with the
-  page. An answered request opens to its status line, with no button.
+  it came from. A case's card has its briefing above it (Home, "The
+  briefing on a case"). Opening it reads its thread. The body scrolls with
+  the page. An answered request opens to its status line, with no button.
   The bot's pointer (`#/<dm>/<thread>/<message>`) opens Action requests
   with that request open, never a thread view.
 - **A question answered in place.** A card that carries `question`

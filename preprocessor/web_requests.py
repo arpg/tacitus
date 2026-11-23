@@ -13,7 +13,9 @@ For each card the front end names, read-only:
   (`payload_of`, the bot's own read of the staged payload, which leaves it
   in place): the request's `starts`;
 - for a letter case's card (a `case` in a value, letter_surface), the
-  nearest due date of the case's open destinations, beside its rows'.
+  nearest due date of the case's open destinations, beside its rows', and
+  the case's briefing (case_briefing.request_views: the same briefing as
+  its Home item, less the places its card lists), as `briefing`.
 
 A store that cannot be read gives nothing; the blocks then show no
 project and no deadline.
@@ -128,10 +130,27 @@ def _case_dues(keyed: dict) -> dict[str, str]:
         return {}
 
 
+def _case_briefings(keyed: dict) -> dict[str, dict]:
+    """{case id: briefing} for the cases the cards name; {} when none does
+    or the briefings are out of reach."""
+    want = {c for card, _i, _v in keyed.values() for c in _case_ids(card)}
+    if not want:
+        return {}
+    try:
+        try:
+            import case_briefing as _cb
+        except ModuleNotFoundError:
+            from preprocessor import case_briefing as _cb
+        return _cb.request_views(want)
+    except Exception as e:
+        log.warning("requests: the case briefings could not be read: %s", e)
+        return {}
+
+
 def context(items: list[dict], *, payload_of: Callable[[dict], Any] | None = None,
             db_path: Path | None = None) -> dict[str, dict]:
-    """{item id: {"project", "due", "starts"}} for the items the front end
-    names ({"id", "card"}); an item with nothing known is left out."""
+    """{item id: {"project", "due", "starts", "briefing"}} for the items the
+    front end names ({"id", "card"}); an item with nothing known is left out."""
     keyed = {str(it.get("id")): (it.get("card") or {}, *_keys(it.get("card"))) for it in items or []}
     all_ids = sorted({i for _c, ids, _v in keyed.values() for i in ids})
     all_convs = sorted({c for _c, _i, convs in keyed.values() for c in convs})
@@ -144,6 +163,7 @@ def context(items: list[dict], *, payload_of: Callable[[dict], Any] | None = Non
     except Exception as e:
         log.warning("requests: the ledger could not be read: %s", e)
     cases = _case_dues(keyed)
+    briefs = _case_briefings(keyed)
     out: dict[str, dict] = {}
     for mid, (card, ids, convs) in keyed.items():
         mine = [r for r in rows if r["id"] in ids or (r["conversation_id"] and r["conversation_id"] in convs)]
@@ -162,8 +182,9 @@ def context(items: list[dict], *, payload_of: Callable[[dict], Any] | None = Non
                 if isinstance(got, dict) and (got.get("new_start") or got.get("start")):
                     starts = str(got.get("new_start") or got.get("start"))
                     break
+        brief = next((briefs[c] for c in _case_ids(card) if briefs.get(c)), None)
         info = {k: v for k, v in (("project", project), ("due", due[0] if due else ""),
-                                  ("starts", starts)) if v}
+                                  ("starts", starts), ("briefing", brief)) if v}
         if info:
             out[mid] = info
     return out

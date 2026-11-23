@@ -371,6 +371,8 @@ NEEDS_CAP = 200
 # Action requests: the answered requests one list carries at most (every
 # waiting one goes), and the most one call may ask.
 REQUESTS_LIMIT = 40
+# The longest briefing a case's block carries (the host's plain text).
+BRIEFING_CHARS = 6000
 REQUESTS_CAP = 200
 # The drawer's Recent list: the conversations it asks for, and the most one
 # request may ask.
@@ -3092,8 +3094,9 @@ class WebFrontend(ChatFrontend):
         (WebStore.requests) of the DM, each with its folded words
         (action_requests.block), its `project` (the host's, else the room its
         conversation is in) and its urgency (action_requests.urgency, from the
-        host's deadline and event start); waiting ones by urgency, then newest
-        first. {"waiting": [], "done": [], "as_of"} with no DM."""
+        host's deadline and event start), and a case card's `briefing` (the
+        host's, plain text); waiting ones by urgency, then newest first.
+        {"waiting": [], "done": [], "as_of"} with no DM."""
         dm = next((c["id"] for c in self.store.channels() if c["kind"] == "dm"), "")
         if not dm:
             return {"waiting": [], "done": [], "as_of": self.store.max_event_seq()}
@@ -3114,6 +3117,11 @@ class WebFrontend(ChatFrontend):
             origin = j.get("origin") or {}
             room = str(origin.get("name") or "").removeprefix("ea-") if origin.get("kind") == "room" else ""
             j["project"] = card_text.one_line(str(mine.get("project") or room), 60)
+            brief = mine.get("briefing")
+            if isinstance(brief, dict) and isinstance(brief.get("text"), str) and brief["text"].strip():
+                # a case's briefing (the host's), shown above its card as plain text
+                j["briefing"] = {"text": brief["text"][:BRIEFING_CHARS],
+                                 **{k: brief[k] for k in ("by", "at", "stale") if brief.get(k) is not None}}
         out["waiting"] = _requests.order(out["waiting"])
         return out
 

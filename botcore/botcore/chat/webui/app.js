@@ -1032,7 +1032,7 @@ function renderThreads() {
 // edge by urgency with a word for Soon and Overdue. A tap opens it in place to the card as it is, with the same
 // buttons, the same route and the same rules; folded, it has no button. The answered ones fold to one line each under
 // a shut Earlier part. The bot sends every word of the folded block; an old card with none shows its title.
-Object.assign(S, { reqs: null, reqOpen: new Set() });
+Object.assign(S, { reqs: null, reqOpen: new Set(), reqMore: new Set() });
 const URGENT = { overdue: 'Overdue', soon: 'Soon' };
 
 async function loadRequests() {
@@ -1108,10 +1108,20 @@ function reqBody(r) {
   // Only the lines the bot says are this request's own (a thread several requests share shows each its own).
   const lines = (r.lines || []).map((m) => h('div', { class: 'req-line' }, markdown(m.text)));
   const from = r.origin ? h('a', { class: 'req-from', href: hashFor(r.origin.channel, r.origin.thread_key) }, 'Open the conversation') : null;
-  if (r.kind === 'card' && r.card) return [(r.card.question || {}).text ? answerCard(r) : renderCard(r), ...lines, from];
+  if (r.kind === 'card' && r.card) return [r.briefing ? caseBrief(r) : null, (r.card.question || {}).text ? answerCard(r) : renderCard(r), ...lines, from];
   if (r.kind === 'status') return [r.working ? null : cardText(r.text, 'card status'), ...lines, from]; // at work: its head says so
   return [h('div', { class: 'text' }, markdown(r.text || '')), r.file ? renderFile(r.file) : null, ...lines,
     h('a', { class: 'req-from', href: hashFor(r.channel, r.thread_key) }, 'Open it')];
+}
+
+// A case's briefing (the bot's, written ahead) above its card, folded past a few lines; Show more unfolds it in place.
+function caseBrief(r) {
+  const t = String(r.briefing.text || ''), more = S.reqMore.has(r.id), long = t.length > 320 || t.split('\n').length > 8;
+  const flip = (e) => { const on = !S.reqMore.has(r.id), b = e.currentTarget;
+    if (on) S.reqMore.add(r.id); else S.reqMore.delete(r.id);
+    b.previousSibling.classList.toggle('h-fold', !on); b.textContent = on ? 'Show less' : 'Show more'; b.setAttribute('aria-expanded', String(on)); };
+  return h('div', { class: 'req-brief' }, h('p', { class: 'h-label' }, 'What Tacitus knows'), h('div', { class: `text${long && !more ? ' h-fold' : ''}` },
+    markdown(t)), long ? h('button', { type: 'button', class: 'btn plain small', 'aria-expanded': String(more), onclick: flip }, more ? 'Show less' : 'Show more') : null);
 }
 
 // A question for the owner (a Replies row that waits on a decision, or Tacitus's one more question about it): the
@@ -1490,11 +1500,16 @@ function choiceRow(it, x) {
   return [h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next step' }, x.choices.map((c) => choiceBtn(it, c, x))),
     cardsOff() ? h('p', { class: 'card-note' }, noCards()) : null];
 }
-// A choice that only leads where the item names (its block, Outlook) is a link; the rest are buttons, a step's with its words.
+// A choice that only leads where the item names (its block, Outlook) is a link, as a step that opens a page (a case's
+// portal) is; the rest are buttons, a step's with its words.
 function choiceBtn(it, c, x) {
   const ref = refOf(it), cls = `btn${{ primary: ' primary', danger: ' danger', plain: ' plain' }[c.style] || ''}`;
   if (['open', 'outlook'].includes(c.id) && x.goto) {
     return h('a', { class: cls, href: x.goto, ...(/^https:/.test(x.goto) ? { target: '_blank', rel: 'noopener noreferrer' } : {}) }, c.label);
+  }
+  if (/^https:\/\/[^\s<>|]+$/.test(c.href || '')) {
+    return h('a', { class: cls, href: c.href, target: '_blank', rel: 'noopener noreferrer', 'data-key': `${ref}/${c.id}` }, c.label,
+      c.detail ? [' ', h('span', { class: 'h-detail' }, c.detail)] : null);
   }
   return h('button', { type: 'button', class: cls, 'data-key': `${ref}/${c.id}`, disabled: cardsOff(), onclick: () => choose(it, c),
     'aria-expanded': c.input ? String(Boolean(S.homeIn && S.homeIn.ref === ref && S.homeIn.id === c.id)) : null },
