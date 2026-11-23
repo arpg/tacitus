@@ -109,14 +109,16 @@ recorded in `item_gets`, after `item_delay` seconds), POST /api/home/act
 can come first), POST /api/home/undo (`undos`) and POST /api/home/deeper
 (`deeper_posts`). The ledger's command lines it would run are recorded in
 `ledger_runs`, never run; a draft posts a status line in Action requests,
-a conversation is the stub's own post. A letter case (`letters`, the made-up
-cases letter_surface.load_cases gives; the test's sources carry the same
-list as `letters`) is an item of kind `letter` whose briefing is
-case_briefing's own (state, start, step, its code-built lines and its
-steps through the case card's answers) over the case as made, with no
-ledger: its stored briefing is `case_stored` (None: none yet; a start
-writes `case_answer` through case_briefing's check), and a step's answer
-is pressed through Home's `hooks.letter`, recorded in `letter_presses`.
+a conversation is the stub's own post. A work case (`letters`, the made-up
+letter cases letter_surface.load_cases gives; `work`, cases of any other
+kind in the store's shape, as case_surface.load_cases gives them) is an
+item of kind `letter` or `case` whose briefing is case_briefing's own
+(state, start, step, its code-built lines and its steps through the case
+card's answers) over the case as made, with no ledger: its stored
+briefing is `case_stored` (None: none yet; a start writes `case_answer`
+through case_briefing's check), and a step's answer is pressed through
+Home's `hooks.letter` (recorded in `letter_presses`) or `hooks.case`
+(`case_presses`).
 Action requests' blocks carry `request_context[id]["briefing"]` as the bot
 puts a case's briefing on its block. home_deeper's part is a stand-in
 with no model (Stub._Deeper): an item's briefing is home_deeper.render's
@@ -365,6 +367,8 @@ class Stub:
         self.case_stored: dict | None = None  # a case's stored briefing (case_briefing's record)
         self.case_answer: dict | None = None  # the model's answer a start writes
         self.letter_presses: list[tuple] = []  # Home's hooks.letter: (case, answer, place, words)
+        self.work: list[dict] = []  # cases of other kinds (made-up), in the store's shape
+        self.case_presses: list[tuple] = []  # Home's hooks.case: (case, answer, part, words)
         self.real = self._real_home(home_src) if home_src else None
         self.home_src = home_src
         if self.real is not None and home is None:
@@ -719,16 +723,25 @@ class Stub:
         import web_thread_state as wts
         self._deeper_result = None
         import case_briefing as CB
+        import case_surface as CS
         import letter_surface as LS
         dd = D()
         self._put_back = [(I, "_deeper_mod", I._deeper_mod), (wts, "RUN", wts.RUN),
-                          (LS, "load_cases", LS.load_cases), (CB, "_case_of", CB._case_of), (CB, "Store", CB.Store),
+                          (LS, "load_cases", LS.load_cases), (CS, "load_cases", CS.load_cases),
+                          (CB, "_case_of", CB._case_of), (CB, "Store", CB.Store),
                           (CB, "LOCAL", CB.LOCAL), (CB, "_log", CB._log), (dd, "local_ready", dd.local_ready)]
         deeper = Stub._Deeper(self)
         I._deeper_mod = lambda: deeper
         LS.load_cases = lambda conn=None, open_only=True: list(self.letters)
-        CB._case_of = lambda case_id, case: {"case": case, "rows": {}, "events": [], "version": "v1",
-                                             "level": case.get("keep_level") or "full"}
+
+        def cases_of(conn=None, *, open_only=True, kinds=None):
+            pool = [dict(c, case_kind="letter") for c in self.letters] + \
+                [dict(c, case_kind=c.get("kind")) for c in self.work]
+            return [c for c in pool if not kinds or c["case_kind"] in kinds]
+        CS.load_cases = cases_of
+        CB._case_of = lambda case_id, case: None if case is None else {
+            "case": CB.general(case), "rows": {}, "events": [], "version": "v1",
+            "level": case.get("keep_level") or "full"}
         CB.Store = lambda path=None: Stub._CaseStore(self)
         CB.LOCAL = lambda prompt: {"ok": True, "text": json.dumps(self.case_answer or {}), "usage": {}, "reason": ""}
         CB._log = lambda rec: None
@@ -739,6 +752,8 @@ class Stub:
         home.hooks.draft, home.hooks.not_needed, home.hooks.outlook = self._draft, lambda rid, note: {"ok": True}, \
             (lambda conv: f"https://outlook.example.com/mail/{conv}")
         home.hooks.letter = lambda cid, answer, dest, words: self.letter_presses.append((cid, answer, dest, words)) or \
+            {"ok": True, "said": "Tacitus is on it. Its card is in Action requests."}
+        home.hooks.case = lambda cid, answer, part, words: self.case_presses.append((cid, answer, part, words)) or \
             {"ok": True, "said": "Tacitus is on it. Its card is in Action requests."}
         return home
 

@@ -14,9 +14,13 @@ For each card the front end names, read-only:
   in place): the request's `starts`;
 - for a work case's card (a `case` in a value, case_surface: a letter,
   a review, a form, a report), the nearest due date of the case's open
-  parts, beside its rows'; for a letter case also its briefing
-  (case_briefing.request_views: the same briefing as its Home item, less
-  the places its card lists), as `briefing`.
+  parts, beside its rows', and its briefing (case_briefing.request_views:
+  the same briefing as its Home item, less the parts its card lists), as
+  `briefing`.
+
+`looked` is the other way: the owner opened a request's block (the app's
+read of its thread), and a work case's card in it counts as his look at
+the case (case_briefing.look), as an open on Home does.
 
 A store that cannot be read gives nothing; the blocks then show no
 project and no deadline.
@@ -146,6 +150,24 @@ def _case_briefings(keyed: dict) -> dict[str, dict]:
     except Exception as e:
         log.warning("requests: the case briefings could not be read: %s", e)
         return {}
+
+
+def looked(cards: list[Any]) -> int:
+    """The owner opened a block whose cards these are: each work case they
+    name gets his look (case_briefing.look). How many; 0 when none names a
+    case or the briefings' store is out of reach (logged)."""
+    want = [c for card in cards or [] for c in _case_ids(card)]
+    if not want:
+        return 0
+    try:
+        try:
+            import case_briefing as _cb
+        except ModuleNotFoundError:
+            from preprocessor import case_briefing as _cb
+        return _cb.look(want)
+    except Exception as e:
+        log.warning("requests: the owner's look at a case was not kept: %s", e)
+        return 0
 
 
 def context(items: list[dict], *, payload_of: Callable[[dict], Any] | None = None,

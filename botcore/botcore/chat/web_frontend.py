@@ -3035,6 +3035,9 @@ class WebFrontend(ChatFrontend):
         # host without one, or one that fails, gives the blocks no project
         # and no deadline.
         self.request_context: Callable[[list[dict]], dict] | None = None
+        # The owner opened a thread (the read route): the host's own note of
+        # it, as (channel, thread key); a failure is logged, the read stands.
+        self.thread_opened: Callable[[str, str], Any] | None = None
         # The status light (docs/webchat.md, Status light): an object the
         # host sets before start(), with summary() -> dict (the level, the
         # conditions in plain words and what cleared), details(id) -> dict
@@ -5514,6 +5517,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                          or upto < 0):
                     raise _HttpError(400, "upto is the seq of a message")
                 self._json(200, store.mark_thread_read(segs[1], key, upto))
+                if fe.thread_opened is not None:
+                    try:
+                        fe.thread_opened(segs[1], key)
+                    except Exception as e:
+                        log.warning("web chat: the host's note of an opened thread failed: %s", e)
                 return None
             if n == 4 and segs[0] == "messages" and segs[3] == "react":
                 emoji = self._read_json().get("emoji")
