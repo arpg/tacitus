@@ -968,14 +968,22 @@ def _deeper_mod():
     return mod
 
 
-# A letter case's briefing is case_briefing's: what was asked, its places,
-# what came in and what is missing, what changed since the owner last
-# looked, and its next steps, each the answer of a button on the case's
-# card. Without the module, its quick briefing is all there is.
-# Any other kind of work case has no deeper briefing yet: its quick
-# briefing is all its records hold (its parts' dates and states).
+# A work case's briefing (a letter, a review, a form, a report) is
+# case_briefing's: what was asked, its parts, what came in and what is
+# missing, what changed since the owner last looked, and its next steps,
+# each the answer of a button on the case's card. Without the module, its
+# quick briefing is all there is.
 LETTER_DEEPER = {"state": "unavailable", "note": "Everything Tacitus knows about this letter is above."}
 CASE_DEEPER = {"state": "unavailable", "note": "Everything Tacitus knows about it is above."}
+CASE_FAILED = "Tacitus could not read this briefing. Try again in a minute."
+# A press while the case store waits for its owner's migration step: the
+# words a press on the case's card shows (ea-chat-bot's _press_case).
+MIGRATION_SAID = "I could not do that. Ask me in Ask Tacitus."
+
+
+def _case_none(it: dict) -> dict:
+    """A case item's block with no briefing module."""
+    return dict(LETTER_DEEPER if it.get("kind") == "letter" else CASE_DEEPER)
 
 
 def _case_mod():
@@ -990,30 +998,34 @@ def _case_mod():
 
 
 def _case_call(fn: str, fe, f: Found, it: dict, *args, **kw) -> dict | None:
-    """case_briefing's `fn` for a letter item, with its case; None without
-    the module, the case, or on a failure."""
+    """case_briefing's `fn` for a case item (kind `letter` or `case`) by
+    its case id (the surface's case goes along for a store out of reach);
+    None without the module. A failure here is a fault in code, never a
+    state of the case: it is logged with its trace and comes back as
+    {"failed": True}, which the card shows as a failure."""
     mod = _case_mod()
     if mod is None:
         return None
     try:
         _cs, case = _case(f)
-        if case is None:
-            return None
         got = getattr(mod, fn)(fe, it["ref"], *args, item={k: v for k, v in it.items() if k != "deeper"},
-                               case=case, **kw)
-    except Exception as e:
-        log.warning("home: the case briefing's %s failed: %s", fn, e)
-        return None
-    return got if isinstance(got, dict) else None
+                               case=case, case_id=str(f.item.get("_case") or ""), **kw)
+    except Exception:
+        log.exception("home: the case briefing's %s failed on %s", fn, it.get("ref"))
+        return {"failed": True}
+    if not isinstance(got, dict):
+        log.error("home: the case briefing's %s gave %r on %s", fn, type(got).__name__, it.get("ref"))
+        return {"failed": True}
+    return got
 
 
 def deeper_state(fe, f: Found, it: dict) -> dict:
     """The item's `deeper` block (home_deeper.state), read at once."""
-    if it.get("kind") == "letter":
-        got = _case_call("state", fe, f, it)
-        return got if got and got.get("state") else dict(LETTER_DEEPER)
     if it.get("kind") in CASE_ITEMS:
-        return dict(CASE_DEEPER)
+        got = _case_call("state", fe, f, it)
+        if got is None:
+            return _case_none(it)
+        return got if got.get("state") else {"state": "failed", "note": CASE_FAILED}
     mod = _deeper_mod()
     if mod is None:
         return {"state": "unavailable"}
@@ -1027,10 +1039,11 @@ def deeper_state(fe, f: Found, it: dict) -> dict:
 
 def deeper_start(fe, f: Found, it: dict) -> dict:
     """POST /api/home/deeper (home_deeper.start): {"ok", "state", "note"?}."""
-    if it.get("kind") == "letter":
-        return _case_call("start", fe, f, it) or {"ok": False, **LETTER_DEEPER}
     if it.get("kind") in CASE_ITEMS:
-        return {"ok": False, **CASE_DEEPER}
+        got = _case_call("start", fe, f, it)
+        if got is None:
+            return {"ok": False, **_case_none(it)}
+        return {"ok": False, "state": "failed", "note": CASE_FAILED} if got.get("failed") else got
     mod = _deeper_mod()
     if mod is None:
         return {"ok": False, "state": "unavailable"}
@@ -1044,12 +1057,13 @@ def deeper_start(fe, f: Found, it: dict) -> dict:
 
 def deeper_step(fe, f: Found, it: dict, step_id: str, arg: str) -> dict:
     """A deeper step chosen (home_deeper.step): {"choice", "arg"} for one of
-    this module's choices, or a finished {"ok", "said", "goto"?}. A letter
+    this module's choices, or a finished {"ok", "said", "goto"?}. A work
     case's step names the answer of a button on its card, `move`."""
-    if it.get("kind") == "letter":
-        return _case_call("step", fe, f, it, step_id, arg=arg) or {"ok": False, "said": DEEPER_FAILED}
     if it.get("kind") in CASE_ITEMS:
-        return {"ok": False, "said": NO_CHOICE}   # no deeper briefing, so no step of one
+        got = _case_call("step", fe, f, it, step_id, arg=arg)
+        if got is None:
+            return {"ok": False, "said": NO_CHOICE}   # no briefing, so no step of one
+        return {"ok": False, "said": DEEPER_FAILED} if got.get("failed") else got
     mod = _deeper_mod()
     if mod is None:
         return {"ok": False, "said": NO_CHOICE}
@@ -1210,10 +1224,11 @@ class Acts:
             choice, arg = str(got["choice"]), str(got.get("arg") or "")
             if choice == "draft" and arg:
                 choice = "say"
-            # a letter case's step names the answer of a button on its card
+            # a work case's step names the answer of a button on its card
             # (case_briefing checked it against the case's moves): it runs as
             # that press, Home's choices or not
-            move = bool(got.get("move")) and f.item.get("kind") == "letter" and choice.startswith("letter:")
+            move = bool(got.get("move")) and f.item.get("kind") in CASE_ITEMS and \
+                choice.startswith(f"{f.item.get('kind')}:")
         offered = {c["id"] for c in now_item["choices"]}
         if choice not in offered and not (choice == "say" and "draft" in offered) and not move:
             return {"ok": False, "said": NO_CHOICE, "item": now_item}, None
@@ -1255,7 +1270,17 @@ class Acts:
             hook = hooks.letter if kind == "letter" else hooks.case
             if hook is None:
                 return {"ok": False, "said": "Tacitus cannot do that from here."}, None
-            got = hook(str(case.get("id")), answer, dest, words) or {}
+            try:
+                got = hook(str(case.get("id")), answer, dest, words) or {}
+            except Exception as e:
+                # by its name: the store is imported as `cases` and as
+                # `preprocessor.cases`, two classes of one name
+                if type(e).__name__ != "MigrationPending":
+                    raise
+                # the store waits for its owner's one step (cases.py migrate
+                # --apply): as a press on the card says, nothing was done
+                log.warning("home: %s on %s waits for the store's migration: %s", choice, case.get("id"), e)
+                return {"ok": False, "said": MIGRATION_SAID}, None
             out = {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or "Nothing was done."}
             route = _route(fe, str(got.get("channel") or ""), str(got.get("id") or "")) \
                 if got.get("channel") else ""

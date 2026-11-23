@@ -1,17 +1,19 @@
 """The briefing on a case in the web app, as a person sees it
 (docs/webchat.md, Home, "The briefing on a case"): a letter item opens
 with its stored briefing above the choices (the moment's lines, what was
-asked, its places, what came in and what is missing, then the model's
-part, folded with Show more), its next steps as buttons that press the
-case card's own answers (one asks for a date, one asks first, its portal
-a link that posts nothing); with none stored, the facts show at once and
-the rest comes in below, moving nothing; and in Action requests the same
-briefing sits above the case's card, folded, unfolding in place with the
-owner's words kept, at the phone and desktop widths.
+asked, its destinations, what came in and what is missing, then the
+model's part, folded with Show more), its next steps as buttons that press
+the case card's own answers (one asks for a date, one asks first, its
+portal a link that posts nothing); a form (a `case` item) the same in its
+own words; with none stored, the facts show at once and the rest comes in
+below, moving nothing; and in Action requests the same briefing sits above
+the case's card, folded, unfolding in place with the owner's words kept,
+at the phone and desktop widths.
 
-The bot's own code answers (tests/webui_stub_server.py, `home_src` and
-`letters`): Home, the item, the act and case_briefing's state, start and
-step over a made-up case with no ledger; only the model is a stand-in.
+The bot's own code answers (tests/webui_stub_server.py, `home_src`,
+`letters` and `work`): Home, the item, the act and case_briefing's state,
+start and step over made-up cases with no ledger; only the model is a
+stand-in.
 Made-up data only."""
 from __future__ import annotations
 
@@ -38,6 +40,9 @@ PHONE = {"viewport": {"width": 390, "height": 844},
 SIZES = pytest.mark.parametrize("size", ["phone", "desktop"])
 CID = "lc-made-up-1"
 REF = f"letter:{CID}"
+FID = "case-form-made-up-1"
+FREF = f"case:{FID}"
+FORM_LINK = "https://forms.example.edu/annual/zz1"
 PORTAL = "https://apply.example.com/ref/abc123"
 SECTIONS = {"history": ["Rowan Vale asked for the letter and named Harbor Tech PhD.",
                         "Harbor Tech PhD sent its portal link."],
@@ -72,12 +77,30 @@ def stored(steps=None) -> dict:
             "text": W.D().render(SECTIONS), "steps": steps if steps is not None else STEPS}
 
 
-def case_app(app, *, stored_briefing=True, steps=None, **kw):
-    """The app on Home with the made-up case listed as a letter item."""
+def a_form() -> dict:
+    """A disclosure form a made-up office asked for, due in four days on a
+    form site, in the store's shape."""
+    return {"id": FID, "kind": "form", "subkind": "disclosure", "counterpart_name": "Compliance Office",
+            "counterpart_email": "compliance@example.edu", "title": "Annual disclosure", "status": "open",
+            "decision": "accepted", "opened": day(-2) + "T09:00:00Z", "closed_at": "", "materials": [],
+            "base_doc": "", "notes": "", "aliases": [], "keep_level": "full", "case_ledger_id": "",
+            "questions": [], "messages": [],
+            "parts": [{"id": "part-f1", "case": FID, "name": "Annual disclosure", "due": day(4), "method": "portal",
+                       "link": FORM_LINK, "state": "accepted", "ledger_id": "", "conversation_id": "",
+                       "sender": "", "draft": "", "delivered_at": "", "evidence": ""}]}
+
+
+def case_app(app, *, stored_briefing=True, steps=None, drafted=False, work=(), **kw):
+    """The app on Home with the made-up letter listed as a letter item (its
+    first destination drafted where `drafted`) and `work` as case items."""
     from playwright.sync_api import expect
     kw.setdefault("context", CLOCK)
     page, stub, errors = app(home_src=lambda tz="": F.sources("normal", dm=W.DM, main=W.MAIN), **kw)
-    stub.letters = [a_case()]
+    case = a_case()
+    if drafted:
+        case["destinations"][0]["state"] = "drafted"
+    stub.letters = [case]
+    stub.work = list(work)
     stub.case_stored = stored(steps) if stored_briefing else None
     stub.case_answer = dict(SECTIONS, steps=[{"kind": "draft", "part": "", "date": "", "why": ""},
                                              {"kind": "set_due", "part": "p2", "date": "", "why": ""}])
@@ -111,7 +134,7 @@ def test_a_letter_item_opens_with_its_briefing_above_the_choices(app, size):
     text = deeper.locator(".text")
     expect(text).to_contain_text("What happened")
     assert order(block) == ["brief", "deeper", "choices", "links"]       # ready as it opened: above the choices
-    expect(text.locator("> p")).to_have_text(["Now", "What was asked", "The places", "What came in", "Still missing",
+    expect(text.locator("> p")).to_have_text(["Now", "What was asked", "The destinations", "What came in", "Still missing",
                                               "What happened", "What is at stake", "What Tacitus does not know"])
     expect(text.locator("li").first).to_have_text(re.compile(r"^Next due .*, in 6 days: Harbor Tech PhD\.$"))
     expect(text).to_contain_text("Pinecrest College MS: no due date, to write, by email")
@@ -163,22 +186,23 @@ def test_a_step_presses_the_case_cards_own_answer(app):
 
 
 def test_a_step_that_asks_first_needs_the_owners_yes(app):
-    """Say no to this letter is the card's Decline: it asks first, and a No
-    to the question presses nothing."""
+    """Mark it submitted is the card's Submitted for that destination: it
+    asks first, and a No to the question presses nothing."""
     from playwright.sync_api import expect
-    page, stub, errors = case_app(app, steps=[{"id": "s1", "kind": "decline", "params": {}}])
+    page, stub, errors = case_app(app, steps=[{"id": "s1", "kind": "mark_delivered", "params": {"part": "p1"}}],
+                                  drafted=True)
     block = opened(page)
-    step = block.locator(".h-deeper").get_by_role("button", name="Say no to this letter")
+    step = block.locator(".h-deeper").get_by_role("button", name="Mark it submitted Harbor Tech PhD")
     asked = []
     page.once("dialog", lambda d: (asked.append(d.message), d.dismiss()))
     step.click()
     wait_for(lambda: asked)
-    assert asked[0].startswith("Say no to this letter? Its places close.")
+    assert asked[0] == "Mark Harbor Tech PhD as submitted? Only do this once it went in."
     settled(page)
     assert stub.letter_presses == [] and stub.acts == []
     page.once("dialog", lambda d: d.accept())
     step.click()
-    wait_for(lambda: stub.letter_presses == [(CID, "decline", "", "")])
+    wait_for(lambda: stub.letter_presses == [(CID, "submitted", "ld-p1", "")])
     expect(block.locator(".h-note")).to_have_text("Tacitus is on it. Its card is in Action requests.")
     assert not errors, errors
 
@@ -188,7 +212,7 @@ def test_with_nothing_stored_the_facts_show_and_the_rest_comes_in_below(app):
     page, stub, errors = case_app(app, stored_briefing=False)
     block = opened(page)
     deeper = block.locator(".h-deeper")
-    expect(deeper.locator(".text")).to_contain_text("The places")
+    expect(deeper.locator(".text")).to_contain_text("The destinations")
     thumb = [b.bounding_box() for b in block.locator(".h-choices .btn").all()]
     wait_for(lambda: stub.deeper_posts == [REF])                           # asked for on the open
     expect(deeper.locator(".text")).to_contain_text("What happened")       # written, then read again
@@ -199,6 +223,31 @@ def test_with_nothing_stored_the_facts_show_and_the_rest_comes_in_below(app):
     settled(page)
     assert [b.bounding_box() for b in block.locator(".h-choices .btn").all()] == thumb
     assert stub.case_stored["by"] == "local" and [s["kind"] for s in stub.case_stored["steps"]] == ["draft", "set_due"]
+    assert not errors, errors
+
+
+def test_a_form_item_gets_the_same_briefing_in_its_own_words(app):
+    """A `case` item (a form) opens with the briefing a letter gets, in the
+    form's words, and its step presses the case card's own answer."""
+    from playwright.sync_api import expect
+    page, stub, errors = case_app(app, work=[a_form()], steps=[{"id": "s1", "kind": "draft", "params": {}},
+                                                               {"id": "s2", "kind": "open_link",
+                                                                "params": {"part": "p1"}}])
+    stub.case_stored["text"] = W.D().render({"history": ["The compliance office asked for the annual disclosure."],
+                                             "stakes": ["The disclosure is due by its date."], "unknown": []})
+    block = opened(page, FREF)
+    text = block.locator(".h-deeper .text")
+    expect(text).to_contain_text("The forms")
+    expect(text).to_contain_text("Annual disclosure: due ")
+    expect(text).to_contain_text("The answers.")
+    expect(text).not_to_contain_text("letter")
+    steps = block.locator(".h-deeper [role='group'] > *")
+    expect(steps).to_have_text(["Fill it in", "Open the link Annual disclosure", "Continue in a conversation"])
+    expect(block.locator(".h-deeper").get_by_role("link", name="Open the link Annual disclosure")).to_have_attribute(
+        "href", FORM_LINK)
+    block.locator(".h-deeper").get_by_role("button", name="Fill it in").click()
+    wait_for(lambda: stub.case_presses == [(FID, "draft", "", "")])
+    assert stub.letter_presses == []
     assert not errors, errors
 
 

@@ -912,11 +912,18 @@ def _live_case(days: int = 1):
     return c
 
 
-def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch):
+def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch, tmp_path):
     sys.path.insert(0, str(ROOT / "tests"))
+    import home_deeper
     import home_fixtures as F
     import home_items as I
     import home_screen as H
+    import ledger
+    # no ledger and no local model: the briefing's own fallback, whatever
+    # another test left at the ledger's usual place
+    monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "no-ledger.db")
+    monkeypatch.setattr(home_deeper, "_store_path", lambda: tmp_path / "home-briefings.sqlite")
+    monkeypatch.setattr(home_deeper, "local_ready", lambda cfg=None: False)
     case = _live_case()
     monkeypatch.setattr(L, "load_cases", lambda conn=None, open_only=True: [case])
     src = F.sources()
@@ -927,10 +934,10 @@ def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch):
     assert it["brief"]["due"] == "Next due tomorrow."
     assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:submitted:av4", "letter:submitted:av5",
                                                 "letter:submitted:av6", "open"]
-    # its briefing is case_briefing's; with no ledger to read its rows, the
-    # case shows from itself alone and fails closed (no name, no place)
-    assert it["deeper"]["state"] in ("ready", "none") and "What was asked" in it["deeper"]["text"]
-    assert "Avery" not in it["deeper"]["text"]
+    # its briefing is case_briefing's; with no store to read, the case shows
+    # from itself alone and fails closed (no name, no place)
+    assert it["deeper"]["state"] == "ready" and "What was asked" in it["deeper"]["text"]
+    assert "Avery" not in it["deeper"]["text"] and it["deeper"]["note"] == home_deeper.NOTE_KEPT_NO_LOCAL
     called = []
 
     class FE:

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """The briefing on a case: one piece of work someone asked the owner for
 that ends with something delivered, not with a reply (docs/webchat.md,
-Home, "The briefing on a case"). Letters are the first kind
-(letters.py); the reading of a case goes through one adapter (below), so
-the general case store's kinds take its place without code here.
+Home, "The briefing on a case"): a letter, a review, a form, a report, or
+a kind a plugin declares. Nothing here is written for one kind: the case
+comes from the case store (cases.case, cases.cases, case_events), its
+next steps from what the store allows now (cases.moves), and every word
+from the kind's declaration (cases.kind) and its surface words
+(case_surface.words).
 
 What the owner reads when he opens a case (its Home item, its block in
 Action requests):
@@ -11,14 +14,14 @@ Action requests):
   Now              code's, at read time: the nearest date and the days
                    left, his next free time before it
   Since you last   code's, at read time: what changed since he last
-  looked           opened it, a new message from them with its gist
-  What was asked   code's: the kind, for whom, when, by whom; his answer;
-                   their last message
-  The places       code's: each part's date, state and how it is
-                   delivered, in one list
+  looked           opened it (on Home or in Action requests), a new
+                   message from them with its gist
+  What was asked   code's: the case, by whom, when the first mail came; his
+                   answer, with its day only from his own decision
+  The <parts>      code's: each part's date, state and how it goes in
   What came in,    code's: the materials by kind (file names where the
   Still missing    level lets a reader see them), what the work still
-                   needs (letters_work.materials_plan)
+                   needs (the kind's wanted materials, dates, methods)
   What happened,   the model's, stored: how the work got here, what is
   What is at       at stake by the nearest date, what the records do not
   stake, What      show; and two or three next steps
@@ -27,46 +30,48 @@ Action requests):
 
 Facts are code's, read when the card is read, so they are never stale;
 the model writes only what needs judgment. Its next steps are chosen
-from the moves the case allows now (allowed_moves) and checked in code
-(check_step); each one runs the same path as the matching button on the
-case's card (the kind's answer: letter_surface.answer through the bot's
-Hooks.letter), never a second one:
+from the moves the case allows now (allowed_moves, over cases.moves) and
+checked in code (check_step); each one runs the same path as the matching
+button on the case's card (case_surface's answer, through the bot's
+Hooks.letter or Hooks.case), never a second one:
 
-  draft            draft the work (Draft the letter, Change the letter)
+  draft            draft the work (the kind's Draft and Change words)
   ask_materials    a short ask for what is missing (the owner confirms;
                    the draft waits for Send)
   set_due          the due date of a part with none: a date the records
                    state, else the owner picks it
-  mark_delivered   the owner's word that a part is delivered (confirms;
-                   only for a part whose work exists)
-  open_link        the part's portal, a link (no post, nothing changes)
-  decline          say no to the whole case (confirms; the reply that
-                   says no waits for Send)
+  mark_delivered   the owner's word that a part went in (confirms; only
+                   for a part whose work exists)
+  open_link        the part's link, a link (no post, nothing changes)
 
-No step sends, submits or declines on its own: a draft waits for Send in
-Action requests, the owner confirms a decline or a delivery, and the keep
-gate holds: a kept case (keep_gate `local`, `facts`) gets no draft, no
-ask and no conversation, and runs on the owner's own model alone.
+No step sends, submits or declines: a draft waits for Send in Action
+requests, the owner confirms a delivery, and saying no stays the card's
+own Decline button. The keep gate holds: a kept case (keep_gate `local`,
+`facts`) gets no draft, no ask and no conversation, and runs on the
+owner's own model alone.
 
-What a model reads (build_packet): the kind; the person (from `facts`
-up); the parts by number, with their names from `summary` up; dates with
-their weekday and month in words; states and methods in words; the
-materials by kind, with their file names from `summary` up; what is
-missing; the case's events in code's words; the last messages' gists from
-the case's mail records (from `summary` up; never mail text, never a
-quote); the owner's rules; the moves it may choose. Never a file's
-contents (the letter, a statement, a CV), never a rating or a form
-answer, never a link or an address: a portal link can carry a key.
+What a model reads (build_packet): the kind; the counterpart (from
+`facts` up, a name and never an address); the parts by number, with their
+names from `summary` up; dates with their weekday and month in words;
+states and methods in the kind's words; the materials by kind, with their
+file names from `summary` up; what is missing; the case's events in
+code's words; the last messages' gists from the case's mail records (from
+`summary` up; never mail text, never a quote); the owner's rules; the
+moves it may choose. Never a file's contents, a rating or a form answer,
+never a link or an address (a portal link can carry a key). A date only a
+migration of the store wrote (the day the first letter tables moved) is
+never one: the asked day is the first mail's, the answer's day the
+owner's own decision's.
 
-Storage and refresh, as home_deeper's row briefings: an owner-private
-table beside them (<private_dir>/remote-llm/home-briefings.sqlite, 0600),
-keyed by the case version (version: a digest over the case, its parts,
-materials, events and its mail's latest records). The owner's own model
-writes a briefing when the version moves (refresh, from the mail tick); the
-hosted model rewrites the briefings of the cases on Home's list after each
-briefing run (hosted_pass, in the run's detached hosted pass); a tap writes
-one only when none is stored or it is stale. Kept cases run on the owner's
-own model alone, and fail closed: a level that cannot be read is `local`.
+Storage and refresh: an owner-private table beside the row briefings
+(<private_dir>/remote-llm/home-briefings.sqlite, 0600), keyed by the case
+version (cases.version, and the case's mail's latest records) and the
+keep level. The owner's own model writes a briefing when the version moves
+(refresh, from the mail tick); the hosted model rewrites the briefings of
+the cases on Home's list after each briefing run (hosted_pass); a tap
+writes one only when none is stored or it is stale. Kept cases run on the
+owner's own model alone, and fail closed. All of it only reads the store,
+so a store that waits for its owner's migration step reads and skips.
 
     case_briefing.py packet --case <id>          the packet, read-only
     case_briefing.py refresh [--limit N] [--dry-run]
@@ -105,7 +110,7 @@ PER_TICK = 2
 DAILY = 40
 HOSTED_CASES = 12
 HOSTED_PROMPT_MAX = 80_000
-# Home lists a case due this soon (letter_surface.HOME_DAYS): the day's list.
+# Home lists a case due this soon (case_surface.HOME_DAYS): the day's list.
 HOME_DAYS = 14
 # Back after this long, a new visit: "Since you last looked" counts from
 # the visit before (the app's own VISIT_MS).
@@ -115,6 +120,16 @@ SINCE_DAYS = 14
 SINCE_MAX = 5
 STEP_DAYS = 366
 LABEL_MAX = 60
+# Events this close to the case's own opening restate its start (the
+# intake or a migration writing the case at once): its mail has the dates.
+START_S = 120
+# The first letter release's migration marked the decisions it carried
+# over with this quote; such a decision's day is the migration's, not the
+# owner's, and is never shown.
+CARRIED_QUOTE = "recorded before letter cases"
+# The states in which a part's work exists (a draft, a text approved): a
+# part may be marked delivered from them alone.
+WORK_STATES = ("drafted", "ready")
 
 NOTE_STALE_STEP = "That step is out of date. Open the item again."
 NOTE_STEP_GONE = "That step is not open for this item now."
@@ -132,6 +147,10 @@ def _mod(name: str):
 
 def _hd():
     return _mod("home_deeper")
+
+
+def _cs():
+    return _mod("case_surface")
 
 
 def kept(level: Any) -> bool:
@@ -169,83 +188,81 @@ def _join(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-# ── the kinds ─────────────────────────────────────────────────────────
-# A kind's declaration: its words for the owner, its states, and the moves
-# a briefing step may take, each the answer its card's button runs
-# (`answer`; `new`: the answer while the owner has not said yes). Home's
-# choice id for a move is `<choice>:<answer>[:<part id>]`. When the general
-# case store lands, kind() reads its declaration (cases.kind) instead.
-
-LETTER = {
-    "name": "letter",
-    "choice": "letter",
-    "words": {
-        "work": "the letter", "part": "place", "parts": "places", "kept": "A kept letter case",
-        "what": {"recommendation": "a recommendation letter", "reference": "a reference letter",
-                 "nomination": "a nomination letter", "support": "a letter of support",
-                 "character": "a character letter", "evaluation": "an evaluation letter"},
-        "default": "a letter",
-        "states": {"asked": "not answered yet", "accepted": "to write", "drafted": "drafted",
-                   "ready": "ready to submit", "submitted": "submitted", "declined": "declined"},
-        "methods": {"portal": "portal link", "email": "by email", "upload": "you upload it",
-                    "unknown": "how to submit is not known"},
-        "materials": {"cv": "a CV", "statement": "a statement", "list": "a list of places",
-                      "draft": "points for the letter", "transcript": "a transcript", "sample": "a paper",
-                      "description": "a description", "form": "a form", "other": "another file"},
-        "labels": {"draft": "Draft the letter", "redraft": "Change the letter",
-                   "ask_materials": "Ask for what is missing", "set_due": "Set the due date",
-                   "mark_delivered": "Mark it submitted", "open_link": "Open the portal",
-                   "decline": "Say no to this letter"},
-        "confirm": {"ask_materials": "Tacitus drafts a short ask for {asks}. It waits for your Send.",
-                    "mark_delivered": "Is the letter for {part} submitted?",
-                    "decline": "Say no to this letter? Its places close. A reply that says no waits "
-                               "for your Send."},
-        "delivered": "submitted",
-        "state_events": {"submitted": "{part}: marked submitted.", "ready": "{part}: ready to submit."},
-    },
-    "open_states": ("asked", "accepted", "drafted", "ready"),
-    # a part whose work exists may be marked delivered
-    "work_states": ("drafted", "ready"),
-    "moves": {"draft": {"answer": "draft"}, "ask_materials": {"answer": "yes_ask"},
-              "set_due": {"answer": "date", "part": True}, "mark_delivered": {"answer": "submitted", "part": True},
-              "open_link": {"part": True}, "decline": {"answer": "decline", "new": "no"}},
-}
-KINDS = {"letter": LETTER}
-STEP_KINDS = ("draft", "ask_materials", "set_due", "mark_delivered", "open_link", "decline")
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
-def kind(name: str) -> dict | None:
-    """The kind's declaration (the adapter's: cases.kind when it lands)."""
-    return KINDS.get(str(name or ""))
+def _ts(value: Any) -> float | None:
+    """Unix seconds of an ISO time; one with no zone is UTC (the store's)."""
+    try:
+        t = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
 
 
-# ── the adapter: reading a case ───────────────────────────────────────
-# Every read of the store is here, read-only. A case comes back as the
-# letters store gives it; view() turns it into the shape the briefing
-# reads, at a keep level. Switching to the general store changes these
-# functions alone.
+def _local(value: Any) -> str:
+    """An ISO time (the store's, UTC) as the owner's own clock reads it,
+    "YYYY-MM-DDTHH:MM"; "" for none. A day on the card is his day."""
+    t = _ts(value)
+    return datetime.fromtimestamp(t, _zone()).strftime("%Y-%m-%dT%H:%M") if t is not None else ""
+
+
+# ── the adapter: the case store, the kind's declaration and words ─────
+# Every read of the store is here, read-only, and none names a kind.
+
+def store():
+    """cases.py: the case store for every kind."""
+    return _mod("cases")
+
+
+def kind(name: str):
+    """The kind's declaration (cases.kind: case_kinds.Kind), or None."""
+    try:
+        return store().kind(str(name or ""))
+    except Exception:
+        return None
+
+
+def words(name: str):
+    """The owner's words for the kind (case_surface.words)."""
+    return _cs().words(str(name or ""))
+
 
 def _connect():
     """The ledger database, read-only, rows by name."""
-    return _mod("letter_surface")._connect()
+    return _cs()._connect()
 
 
-def load(conn=None, *, open_only: bool = True) -> list[dict]:
-    """The cases ([] without the store or on a read failure)."""
-    return _mod("letter_surface").load_cases(conn, open_only=open_only)
+def general(case: dict) -> dict:
+    """A case in the store's shape (cases.case). A case the letters' layer
+    gave (person_name, destinations) is read as the store's letter."""
+    if not isinstance(case, dict) or "parts" in case:
+        return case
+    return {"id": case.get("id"), "kind": "letter", "subkind": case.get("kind", ""),
+            "counterpart_name": case.get("person_name", ""), "counterpart_email": case.get("person_email", ""),
+            "title": "", "status": case.get("status") or "open", "decision": case.get("decision") or "",
+            "opened": case.get("opened") or "", "materials": case.get("materials") or [],
+            "base_doc": case.get("base_letter") or "", "notes": case.get("notes") or "",
+            "keep_level": case.get("keep_level") or "full", "case_ledger_id": case.get("case_ledger_id") or "",
+            "questions": case.get("questions") or [], "messages": case.get("messages") or [],
+            "parts": [dict(d, delivered_at=d.get("delivered_at") or d.get("submitted_at") or "")
+                      for d in case.get("destinations") or []]}
 
 
-def case_kind(case: dict) -> str:
-    """The case's kind (a letter case's `kind` names the letter's sort)."""
-    return "letter"
+def load(conn, *, open_only: bool = True) -> list[dict]:
+    """Every case of every kind, in the store's shape."""
+    return [c for c in store().cases(conn, kind=None, open_only=open_only) or [] if isinstance(c, dict)]
 
 
 def events(conn, case_id: str) -> list[dict]:
-    """The case's history, oldest first: {seq, ts, part, kind, state, evidence}."""
+    """The case's history, oldest first: {seq, ts, part, kind, state, actor,
+    evidence}."""
     try:
-        got = conn.execute("SELECT seq, ts, dest_id, kind, state, actor, evidence FROM letter_events "
+        got = conn.execute("SELECT seq, ts, part_id, kind, state, actor, evidence FROM case_events "
                            "WHERE case_id = ? ORDER BY seq", (case_id,)).fetchall()
-    except Exception:
+    except Exception as e:
+        log.warning("case briefing: the events of a case could not be read: %s", e)
         return []
     out = []
     for r in got:
@@ -253,13 +270,13 @@ def events(conn, case_id: str) -> list[dict]:
             ev = json.loads(r["evidence"]) if str(r["evidence"] or "").startswith("{") else {}
         except ValueError:
             ev = {}
-        out.append({"seq": r["seq"], "ts": r["ts"], "part": r["dest_id"] or "", "kind": r["kind"],
+        out.append({"seq": r["seq"], "ts": r["ts"], "part": r["part_id"] or "", "kind": r["kind"],
                     "state": r["state"] or "", "actor": r["actor"] or "", "evidence": ev})
     return out
 
 
 def _row_ids(case: dict) -> list[str]:
-    ids = [str(d.get("ledger_id")) for d in case.get("destinations") or [] if d.get("ledger_id")]
+    ids = [str(d.get("ledger_id")) for d in case.get("parts") or [] if d.get("ledger_id")]
     if case.get("case_ledger_id"):
         ids.append(str(case["case_ledger_id"]))
     return list(dict.fromkeys(ids))
@@ -273,7 +290,8 @@ def rows(conn, case: dict) -> dict[str, dict]:
         return {}
     try:
         got = conn.execute(f"SELECT * FROM ledger WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall()
-    except Exception:
+    except Exception as e:
+        log.warning("case briefing: the rows of a case could not be read: %s", e)
         return {}
     out = {}
     for r in got:
@@ -288,17 +306,17 @@ def rows(conn, case: dict) -> dict[str, dict]:
     return out
 
 
-def levels(loaded: list[dict], *, records=None) -> None:
+def levels(loaded_: list[dict], *, records=None) -> None:
     """Each loaded case's keep level, in place: the strictest of its own and
     its rows' (keep_gate, one read of the mail's records for all); `local`
     when the check fails."""
     kg = _mod("keep_gate")
-    pool = [r for x in loaded for r in x["rows"].values()]
+    pool = [r for x in loaded_ for r in x["rows"].values()]
     try:
         found = kg.levels(pool, records=records) if pool else {}
     except Exception:
         found = {r.get("id"): "local" for r in pool}
-    for x in loaded:
+    for x in loaded_:
         mine = [found.get(i, "local") for i in x["rows"]]
         x["level"] = kg.stricter(*([x["case"].get("keep_level") or "full"] + mine))
 
@@ -306,67 +324,58 @@ def levels(loaded: list[dict], *, records=None) -> None:
 _THREAD_KEYS = ("latest", "message_count", "last_inbound", "last_from_user")
 
 
-def version(case: dict, rows_: dict, evs: list[dict]) -> str:
-    """The case version a briefing is written from (cases.version when the
-    general store lands): its own fields, its parts, its materials, its
-    open questions, its event count and its mail's latest records (a new
-    message in one of its threads moves it); never anything that moves
-    with the clock."""
-    dests = sorted([str(d.get(k) or "") for k in ("id", "name", "due", "method", "link", "state", "ledger_id",
-                                                   "draft", "submitted_at")]
-                   for d in case.get("destinations") or [])
-    brief = {lid: [(_brief(r).get(k)) for k in _THREAD_KEYS] for lid, r in sorted(rows_.items())}
-    key = {"case": [case.get(k) for k in ("kind", "status", "decision", "base_letter", "keep_level", "person_name",
-                                           "person_email", "case_ledger_id", "notes")],
-           "dests": dests, "materials": sorted([str(m.get("kind")), str(m.get("ref"))]
-                                               for m in case.get("materials") or [] if isinstance(m, dict)),
-           "questions": sorted(str(q.get("id")) for q in case.get("questions") or [] if isinstance(q, dict)),
-           "events": [len(evs), evs[-1]["seq"] if evs else 0], "threads": brief}
-    return hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()[:16]
-
-
-def loaded(case: dict, conn=None) -> dict:
-    """{case, rows, events, version} for one case, read-only (level later)."""
-    own = conn is None
-    conn = conn or _connect()
+def version(conn, case: dict, rows_: dict) -> str:
+    """The case version a briefing is written from: the store's own
+    (cases.version: every field, part, material, question and event) with
+    its mail's latest records beside it (a new message in one of its
+    threads moves it, recorded as an event or not); never the clock."""
     try:
-        r = rows(conn, case)
-        evs = events(conn, str(case.get("id") or ""))
-    finally:
-        if own:
-            conn.close()
-    return {"case": case, "rows": r, "events": evs, "version": version(case, r, evs), "level": "local"}
+        base = store().version(conn, str(case.get("id") or "")) if conn is not None else ""
+    except Exception:
+        base = ""
+    if not base:
+        base = hashlib.sha256(json.dumps(case, sort_keys=True, default=str).encode()).hexdigest()
+    brief = {lid: [_brief(r).get(k) for k in _THREAD_KEYS] for lid, r in sorted(rows_.items())}
+    return hashlib.sha256(json.dumps([base, brief], sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
-def load_all(*, open_only: bool = True, records=None, conn=None) -> list[dict]:
-    """Every open case, loaded, with its level."""
-    own = conn is None
-    conn = conn or _connect()
+def loaded(case: dict, conn) -> dict:
+    """{case, rows, events, version, level} for one case, read-only (its
+    level set by levels())."""
+    r = rows(conn, case)
+    return {"case": case, "rows": r, "events": events(conn, str(case.get("id") or "")),
+            "version": version(conn, case, r), "level": "local"}
+
+
+def load_all(*, open_only: bool = True, records=None) -> list[dict]:
+    """Every open case of every kind, loaded, with its level."""
+    conn = _connect()
     try:
         out = [loaded(c, conn) for c in load(conn, open_only=open_only)]
     finally:
-        if own:
-            conn.close()
+        conn.close()
     levels(out, records=records)
     return out
 
 
 def load_one(case_id: str = "", *, case: dict | None = None, records=None) -> dict | None:
-    """One case, loaded, with its level; None when the store has none. A
-    case handed in whose rows cannot be read is shown from itself alone,
-    at `local` (fails closed)."""
+    """One case by id, loaded from the store with its level; None when the
+    store has none. With the store out of reach, a case a surface handed
+    in is shown from itself alone, at `local` (fails closed)."""
+    cid = str(case_id or (case or {}).get("id") or "")
     try:
         conn = _connect()
-    except Exception:
+    except Exception as e:
         if case is None:
             raise
-        return {"case": case, "rows": {}, "events": [], "version": version(case, {}, []), "level": "local"}
+        log.warning("case briefing: the store could not be opened, so the case shows at local: %s", e)
+        c = general(case)
+        return {"case": c, "rows": {}, "events": [], "version": version(None, c, {}), "level": "local"}
     try:
-        if case is None:
-            case = next((c for c in load(conn, open_only=False) if str(c.get("id")) == str(case_id)), None)
-        if case is None:
+        got = store().case(conn, cid) if cid else None
+        if got is None:
             return None
-        x = loaded(case, conn)
+        x = loaded(got, conn)
     finally:
         conn.close()
     levels([x], records=records)
@@ -384,7 +393,7 @@ _ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
 _LINK = re.compile(r"\b(?:https?://|www\.)\S+", re.I)
 
 
-def _scrub(text: str) -> str:
+def _scrub(text: Any) -> str:
     """A record's words with no address and no link in them (a portal link
     can carry a key)."""
     return _LINK.sub("a link", _ADDRESS.sub("an address", " ".join(str(text or "").split())))
@@ -395,20 +404,22 @@ def _tokens(name: str) -> set[str]:
 
 
 def _who(sender: str, case: dict) -> str:
-    """"them" for the person's own mail (their address or a part of their
-    name in the sender), else "service" (a portal, an office)."""
+    """"them" for the counterpart's own mail (their address or a part of
+    their name in the sender), else "service" (a portal, an office)."""
     s = str(sender or "").lower()
-    email = str(case.get("person_email") or "").lower()
+    email = str(case.get("counterpart_email") or "").lower()
     if email and email in s:
         return "them"
-    names = _tokens(case.get("person_name") or "")
+    names = _tokens(case.get("counterpart_name") or "")
     return "them" if names and names & _tokens(s) else "service"
 
 
 def messages(case: dict, rows_: dict) -> list[dict]:
-    """The case's mail from its rows' records, oldest first, one per message:
-    {at, own, who, gist, files, part}. Never the mail's text or a quote."""
-    part_of = {str(d.get("ledger_id")): str(d.get("id")) for d in case.get("destinations") or [] if d.get("ledger_id")}
+    """The case's mail, oldest first, one per message: {at (his clock), t
+    (Unix seconds), own, who, gist, files, part}. Its rows' records (the gists, the files, the owner's own
+    mail), and the store's `message` events (cases.messages) for mail no
+    row's record holds. Never the mail's text or a quote."""
+    part_of = {str(d.get("ledger_id")): str(d.get("id")) for d in case.get("parts") or [] if d.get("ledger_id")}
     seen, out = set(), []
     for lid, row in rows_.items():
         for m in _brief(row).get("messages") or []:
@@ -420,11 +431,17 @@ def messages(case: dict, rows_: dict) -> list[dict]:
             seen.add(key)
             own = bool(m.get("own"))
             files = [str(a) for a in m.get("attachments") or [] if isinstance(a, str)]
-            out.append({"at": str(m.get("received") or "")[:19], "own": own,
+            out.append({"at": _local(m.get("received")), "t": _ts(m.get("received")) or 0.0, "own": own,
                         "who": "owner" if own else _who(m.get("from"), case),
                         "gist": _scrub(m.get("gist")), "files": [_scrub(f) for f in files],
                         "part": part_of.get(lid, "")})
-    return sorted(out, key=lambda m: m["at"])
+    for m in case.get("messages") or []:
+        if isinstance(m, dict) and m.get("message_id") and m["message_id"] not in seen and m.get("at"):
+            seen.add(m["message_id"])
+            out.append({"at": _local(m["at"]), "t": _ts(m["at"]) or 0.0, "own": False,
+                        "who": _who(f"{m.get('name') or ''} {m.get('from') or ''}", case), "gist": "",
+                        "files": [], "part": str(m.get("part") or "")})
+    return sorted(out, key=lambda m: m["t"])
 
 
 def last_inbound(case: dict, rows_: dict, level: str) -> dict | None:
@@ -440,78 +457,108 @@ def last_inbound(case: dict, rows_: dict, level: str) -> dict | None:
             "part": m["part"]}
 
 
+def _decided_on(case: dict, evs: list[dict]) -> str:
+    """The day of the owner's own decision on the case (his last accept or
+    decline), "" when the store holds none of his: a decision a migration
+    carried over has the migration's day, never shown."""
+    for e in reversed(evs):
+        if e.get("kind") not in ("accept", "decline"):
+            continue
+        quote = str((e.get("evidence") or {}).get("quote") or "")
+        if e.get("actor") == "migration" or quote == CARRIED_QUOTE:
+            return ""
+        return _local(e.get("ts"))[:10]
+    return ""
+
+
+def _what(case: dict, w) -> str:
+    """"a recommendation letter", "a paper review", "a form"."""
+    label = w.subkinds.get(_cs().subkind(case)) or w.noun
+    label = label[:1].lower() + label[1:]
+    return ("an " if label[:1] in "aeiou" else "a ") + label
+
+
 def view(x: dict, *, today: date) -> dict:
     """The case as the briefing reads it, at its level (x["level"]): what a
-    reader at that level may see and nothing more. `local`: no names, places
-    by number, materials by kind, no gists; `facts`: the person too;
-    `summary`, `full`: place and file names and the mail's gists (`full`
+    reader at that level may see and nothing more. `local`: no names, parts
+    by number, materials by kind, no gists; `facts`: the counterpart too;
+    `summary`, `full`: part and file names and the mail's gists (`full`
     also the case's notes). Links stay in `link` for code's own use and
     never go into a packet."""
     case, rows_, level = x["case"], x["rows"], x["level"]
-    decl = kind(case_kind(case)) or LETTER
-    words = decl["words"]
-    lw = _mod("letters_work")
+    cs = _cs()
+    kname = str(case.get("kind") or "")
+    w = words(kname)
+    k = kind(kname)
     msgs = messages(case, rows_)
     open_ = _open_level(level)
     parts = []
-    for i, d in enumerate(case.get("destinations") or [], 1):
+    for i, d in enumerate(case.get("parts") or [], 1):
         link = str(d.get("link") or "")
-        named = _one(d.get("name"), 80) if open_ else ""
-        parts.append({"ref": f"p{i}", "id": str(d.get("id") or ""),
-                      "name": named or f"{words['part'][0].upper() + words['part'][1:]} {i}",
+        named = _one(_scrub(d.get("name")), 80) if open_ else ""
+        parts.append({"ref": f"p{i}", "id": str(d.get("id") or ""), "name": named or f"{_cap(w.part)} {i}",
                       "due": str(d.get("due") or "")[:10], "state": d.get("state") or "asked",
-                      "method": d.get("method") or "unknown", "submitted_at": str(d.get("submitted_at") or "")[:10],
+                      "method": d.get("method") or "unknown",
+                      "delivered_at": str(d.get("delivered_at") or "")[:10],
                       "link": link if open_ and re.match(r"^https://[^\s<>|]+$", link) else ""})
-    files = [f for m in msgs if not m["own"] for f in m["files"]]
-    try:
-        plan = lw.materials_plan(case, extra_present=files)
-    except Exception:
-        plan = {"present": {}, "missing": [], "asks": []}
-    arrived = []
-    for k, names in (plan.get("present") or {}).items():
-        word = words["materials"].get(k, words["materials"]["other"])
-        names = list(dict.fromkeys(names))
-        arrived.append({"kind": k, "word": word, "names": [_one(n, 60) for n in names] if open_ else [],
-                        "count": len(names)})
-    opn = [p for p in parts if p["state"] in decl["open_states"]]
-    drafted = bool(case.get("base_letter")) or any(p["state"] in decl["work_states"] for p in opn)
+    present: dict[str, list[str]] = {}
+
+    def add(kind_: str, ref: str) -> None:
+        nm = _scrub(Path(str(ref).split("#")[-1]).name or ref)
+        if nm and nm not in present.setdefault(kind_, []):
+            present[kind_].append(nm)
+    for m in case.get("materials") or []:
+        if isinstance(m, dict) and m.get("ref"):
+            add(str(m.get("kind") or "other"), str(m["ref"]))
+    for m in msgs:
+        for f in m["files"] if not m["own"] else []:
+            add(store().material_kind(k, f) if k is not None else "other", f)
+    mw = dict(w.material_words)
+    arrived = [{"kind": kk, "word": mw.get(kk, kk), "names": [_one(n, 60) for n in names] if open_ else [],
+                "count": len(names)} for kk, names in present.items()]
+    opn = [p for p in parts if p["state"] in cs.OPEN_STATES]
+    drafted = bool(case.get("base_doc")) or any(p["state"] in WORK_STATES for p in opn)
     missing, asks = [], []
     if not drafted and opn:
-        missing.append(words["work"])
-    for k in plan.get("missing") or []:
-        if k != "list":
-            missing.append(words["materials"].get(k, k))
-            asks.append(words["materials"].get(k, k))
+        missing.append(w.missing_work)
+    for want in (k.wanted_materials if k is not None else ()):
+        if want not in present:
+            missing.append(mw.get(want, want))
+            asks.append(mw.get(want, want))
     undated = [p for p in opn if not p["due"]]
     no_method = [p for p in opn if p["method"] in ("", "unknown")]
     if undated:
-        missing.append(f"the due date for {_n(len(undated), words['part'])}")
+        missing.append(f"the due date for {_n(len(undated), w.part, w.parts)}")
     if no_method:
-        missing.append(f"how to submit to {_n(len(no_method), words['part'])}")
-    if not parts and "list" in (plan.get("missing") or []):
-        asks.append(words["materials"]["list"])
-    elif undated or no_method:
-        what = _join((["the due date"] if undated else []) + (["how to submit"] if no_method else []))
-        asks.append(f"{what} for {_n(len({p['ref'] for p in undated + no_method}), words['part'])}")
-    who = _one(_scrub(case.get("person_name")), 60) if level != "local" else ""  # a name, never an address
-    asked_on = min([d for d in [_date(case.get("opened"))] + [_date(m["at"]) for m in msgs if not m["own"]] if d],
-                   default=None)
+        missing.append(f"how to send {_n(len(no_method), w.part, w.parts)}")
+    if undated or no_method:
+        what = _join((["the due date"] if undated else []) + (["how to send it"] if no_method else []))
+        asks.append(f"{what} for {_n(len({p['ref'] for p in undated + no_method}), w.part, w.parts)}")
+    nameless = dict(case, counterpart_email="")
+    label = cs.name(nameless, level, w)
+    who = _one(_scrub(case.get("counterpart_name")), 60) if level != "local" else ""
+    inbound = [_date(m["at"]) for m in msgs if not m["own"] and _date(m["at"])]
     new = not case.get("decision") and all((p["state"] or "asked") == "asked" for p in parts)
-    li = last_inbound(case, rows_, level)
-    out = {"id": str(case.get("id") or ""), "kind": decl["name"], "decl": decl, "level": level,
-           "what": words["what"].get(str(case.get("kind") or "").lower(), words["default"]),
-           "who": who, "asked_on": asked_on.isoformat() if asked_on else "",
-           "asked_by": "them" if case.get("case_ledger_id") else "service",
-           "status": case.get("status") or "open", "decision": case.get("decision") or "", "new": new,
-           "opened": str(case.get("opened") or ""),
-           "parts": parts, "arrived": arrived, "missing": missing, "asks": asks,
-           "drafted": drafted, "can_write": bool(case.get("person_email")) and not kept(level),
-           "messages": [dict(m, gist=m["gist"] if open_ else "", files=m["files"] if open_ else [])
-                        for m in msgs],
-           "last_inbound": li, "notes": _one(_scrub(case.get("notes")), 200) if level == "full" else "",
-           "questions": len([q for q in case.get("questions") or [] if isinstance(q, dict)]),
-           "events": x["events"]}
-    return out
+    return {"id": str(case.get("id") or ""), "kind": kname, "words": w, "level": level, "label": label,
+            "what": _what(case, w), "who": who, "asked_on": min(inbound).isoformat() if inbound else "",
+            "asked_by": "them" if case.get("case_ledger_id") else "service",
+            "status": case.get("status") or "open", "decision": case.get("decision") or "", "new": new,
+            "decided_on": _decided_on(case, x["events"]), "opened": str(case.get("opened") or ""),
+            "parts": parts, "arrived": arrived, "missing": missing, "asks": asks, "drafted": drafted,
+            "can_write": bool(case.get("counterpart_email")) and not kept(level),
+            "messages": [dict(m, gist=m["gist"] if open_ else "", files=m["files"] if open_ else [])
+                         for m in msgs],
+            "last_inbound": last_inbound(case, rows_, level),
+            "notes": _one(_scrub(case.get("notes")), 200) if level == "full" else "",
+            "moves": _store_moves(case), "events": x["events"]}
+
+
+def _store_moves(case: dict) -> list[dict]:
+    try:
+        return [m for m in store().moves(case) or [] if isinstance(m, dict)]
+    except Exception as e:
+        log.warning("case briefing: the store's moves could not be read: %s", e)
+        return []
 
 
 def _stop(text: str) -> str:
@@ -526,33 +573,37 @@ def _n(count: int, one: str, many: str = "") -> str:
 
 # ── which moves a case allows ─────────────────────────────────────────
 
+STEP_KINDS = ("draft", "ask_materials", "set_due", "mark_delivered", "open_link")
+
+
 def allowed_moves(v: dict) -> list[dict]:
-    """[{"kind", "part"?}]: the moves the case allows now, in its kind's
-    words. A closed case allows none. Draft only once the owner said yes,
-    and never on a kept case (its letter stays on his own model); the ask
-    for materials only when something is missing and there is an address
-    to write to; a date only for an open part with none (a date it has
-    moves on the card's own button); delivered only for an open part whose
-    work exists; its portal only where it has a link and the level shows
-    it; decline while anything is open."""
+    """[{"kind", "part"?}]: the steps the case allows now, each one the
+    store's own move (cases.moves) and code's rule beside it. Draft once the
+    owner said yes, never on a kept case (its work stays on his own model);
+    the ask for materials only when the kind wants one the case lacks and
+    there is an address to write to; a date only for an open part with none;
+    delivered only for an open part whose work exists; its link only where
+    it has one and the level shows it. Saying no is never a step: the
+    card's own Decline button stays the owner's."""
     if v["status"] != "open":
         return []
-    decl = v["decl"]
-    opn = [p for p in v["parts"] if p["state"] in decl["open_states"]]
+    mv = v["moves"]
+
+    def has(move: str, part: str | None = None) -> bool:
+        return any(m.get("move") == move and (part is None or str(m.get("part") or "") == part) for m in mv)
+    opn = [p for p in v["parts"] if p["state"] in _cs().OPEN_STATES]
     out: list[dict] = []
-    if opn and not v["new"] and not kept(v["level"]):
+    if opn and not v["new"] and not kept(v["level"]) and (has("draft") or has("ready")):
         out.append({"kind": "draft"})
-    if v["can_write"] and v["asks"]:
+    if v["can_write"] and v["asks"] and has("ask_materials"):
         out.append({"kind": "ask_materials"})
     for p in opn:
-        if not p["due"]:  # a date it has moves on the card's own button
+        if not p["due"] and has("set_due", p["id"]):
             out.append({"kind": "set_due", "part": p["ref"]})
-        if p["state"] in decl["work_states"]:
+        if p["state"] in WORK_STATES and has("delivered", p["id"]):
             out.append({"kind": "mark_delivered", "part": p["ref"]})
-        if p["link"]:
+        if p["link"] and has("open_link", p["id"]):
             out.append({"kind": "open_link", "part": p["ref"]})
-    if opn or v["new"]:
-        out.append({"kind": "decline"})
     return out
 
 
@@ -577,8 +628,7 @@ def now_lines(v: dict, *, today: date, now: float, zone: ZoneInfo, briefing: dic
     """The lines that depend on the moment, never stored: the nearest open
     date and the days left (an overdue one first), his next free time
     before it."""
-    decl = v["decl"]
-    opn = [p for p in v["parts"] if p["state"] in decl["open_states"] and _date(p["due"])]
+    opn = [p for p in v["parts"] if p["state"] in _cs().OPEN_STATES and _date(p["due"])]
     if not opn:
         return []
     late = [p for p in opn if _date(p["due"]) < today]
@@ -602,36 +652,35 @@ def now_lines(v: dict, *, today: date, now: float, zone: ZoneInfo, briefing: dic
     return out
 
 
-EVENT_WORDS = {"accept": "You said yes.", "decline": "You said no.", "draft": "{work} was drafted.",
-               "merge": "Two requests became this one.", "reopen": "It opened again."}
-# A part's new state in words: the kind's own (`state_events`), else these.
-STATE_EVENT = {"declined": "{part}: declined.", "drafted": "{part}: drafted."}
 MAIL_EVENT = {"request": "A new request came in{for_part}.", "reminder": "A reminder came in{for_part}.",
               "confirmation": "{part} confirmed it got it."}
 
 
-def _ts(value: Any) -> float | None:
-    """Unix seconds of an ISO time; one with no zone is UTC (the store's)."""
-    try:
-        t = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
-
-
 def event_line(e: dict, v: dict) -> str:
-    """One event in code's words, at the case's level; "" for one that says
-    nothing to the owner."""
-    words = v["decl"]["words"]
+    """One event in code's words (the kind's), at the case's level; "" for
+    one that says nothing to the owner."""
+    w = v["words"]
+    states = dict(w.state_words)
     by_id = {p["id"]: p for p in v["parts"]}
     part = by_id.get(e.get("part") or "")
     name = part["name"] if part else ""
     k = e.get("kind")
-    if k in EVENT_WORDS:
-        return EVENT_WORDS[k].format(work=words["work"][0].upper() + words["work"][1:])
-    said = {**STATE_EVENT, **words.get("state_events", {})}
-    if k == "state" and e.get("state") in said and name:
-        return said[e["state"]].format(part=name)
+    if k == "accept":
+        return "You said yes."
+    if k == "decline":
+        return "You said no."
+    if k == "draft":
+        return "A draft was saved."
+    if k == "merge":
+        return "Two requests became this one."
+    if k == "reopen":
+        return "It opened again."
+    if k == "state" and name:
+        s = e.get("state")
+        if s == w.delivered:
+            return f"{name}: marked {w.delivered_word}."
+        if s in ("ready", "drafted", "declined"):
+            return f"{name}: {states.get(s, s)}."
     if k == "due" and name:
         to, was = _date(e.get("state")), _date((e.get("evidence") or {}).get("from"))
         if to and was:
@@ -639,15 +688,28 @@ def event_line(e: dict, v: dict) -> str:
         return f"{name}: due date set to {_short(to)}." if to else f"{name}: due date taken off."
     if k == "material":
         kind_ = str((e.get("evidence") or {}).get("kind") or "other")
-        word = words["materials"].get(kind_, words["materials"]["other"])
-        return f"{word[0].upper() + word[1:]} came in."
-    if k == "destination" and name:
-        return f"A new {words['part']}: {name}."
+        return f"{_cap(dict(w.material_words).get(kind_, kind_))} came in."
+    if k in ("part", "destination") and name:
+        return f"A new {w.part}: {name}."
     if k == "mail":
         role = str((e.get("evidence") or {}).get("role") or "")
         if role in MAIL_EVENT and (name or role != "confirmation"):
             return MAIL_EVENT[role].format(part=name, for_part=f" for {name}" if name else "")
     return ""
+
+
+def _restated(e: dict, v: dict) -> bool:
+    """An event that only restates the case's start or carries a decision a
+    migration moved: its day is not the owner's."""
+    if e.get("actor") == "migration":
+        return True
+    if e.get("kind") in ("accept", "decline") and \
+            str((e.get("evidence") or {}).get("quote") or "") == CARRIED_QUOTE:
+        return True
+    opened = next((_ts(x.get("ts")) for x in v["events"] if x.get("kind") == "open"), None) or _ts(v["opened"])
+    t = _ts(e.get("ts"))
+    return e.get("kind") in ("open", "part", "destination", "accept", "decline") and bool(opened and t) \
+        and abs(t - opened) < START_S
 
 
 def since_lines(v: dict, since: float | None, *, now: float) -> list[str]:
@@ -659,16 +721,17 @@ def since_lines(v: dict, since: float | None, *, now: float) -> list[str]:
     floor = max(since, now - SINCE_DAYS * 86400)
     out: list[str] = []
     for m in v["messages"]:
-        t = _ts(m["at"])
-        if m["own"] or t is None or t <= floor:
+        t = m.get("t")
+        if m["own"] or not t or t <= floor:
             continue
         d = _date(m["at"])
-        who = ("them" if not v["who"] else v["who"]) if m["who"] == "them" else "a service"
+        who = (v["who"] or "them") if m["who"] == "them" else "a service"
         head = f"A new message from {who} on {_short(d)}" if d else f"A new message from {who}"
         out.append(f"{head}: {_stop(_one(m['gist'], 200))}" if m["gist"] else f"{head}.")
     for e in v["events"]:
         t = _ts(e.get("ts"))
-        if t is None or t <= floor or e.get("kind") == "mail" and (e.get("evidence") or {}).get("role") != "confirmation":
+        if t is None or t <= floor or _restated(e, v) or (
+                e.get("kind") == "mail" and (e.get("evidence") or {}).get("role") != "confirmation"):
             continue  # a request or a reminder is its message above
         line = event_line(e, v)
         if line and line not in out:
@@ -677,44 +740,46 @@ def since_lines(v: dict, since: float | None, *, now: float) -> list[str]:
 
 
 def ask_lines(v: dict, *, today: date) -> list[str]:
-    """What was asked, for whom, when and by whom; his answer; their last
-    message (its gist where the level shows it)."""
-    who = v["who"]
-    what = v["what"][0].upper() + v["what"][1:]
+    """What was asked, by whom and when its first mail came; his answer,
+    with its day only from his own decision; their last message."""
+    w = v["words"]
     d = _date(v["asked_on"])
-    out = [f"{what}" + (f" for {who}" if who else "") + (f", asked {_short(d)}" if d else "") + "."]
+    out = [v["label"] + (f", asked {_short(d)}" if d else "") + "."]
     if v["asked_by"] == "them":
-        out.append(f"{who or 'They'} asked you directly.")
-    else:
-        out.append(f"Each {v['decl']['words']['part']} asked by its own mail.")
-    out.append("You have not answered yet." if v["new"] else "You said yes." if v["decision"] == "accepted"
-               else "You said no." if v["decision"] == "declined" else "")
+        out.append(f"{v['who'] or 'They'} asked you directly.")
+    elif len(v["parts"]) > 1:
+        out.append(f"Each {w.part} came by its own mail.")
+    on = _date(v["decided_on"])
+    when = f" on {_short(on)}" if on else ""
+    out.append("You have not answered yet." if v["new"] else f"You said yes{when}." if v["decision"] == "accepted"
+               else f"You said no{when}." if v["decision"] == "declined" else "")
     li = v.get("last_inbound")
     if li and li.get("who") == "them" and _date(li["at"]):
-        when = _short(_date(li["at"]))
-        out.append(f"Their last message, {when}: {_stop(li['gist'])}" if li.get("gist")
-                   else f"Their last message came {when}.")
+        day = _short(_date(li["at"]))
+        out.append(f"Their last message, {day}: {_stop(li['gist'])}" if li.get("gist")
+                   else f"Their last message came {day}.")
     return [x for x in out if x]
 
 
 def part_lines(v: dict, *, today: date) -> list[str]:
-    """Each part's date, state and how it is delivered, open ones first;
-    the finished ones in one line."""
-    words = v["decl"]["words"]
-    opn = [p for p in v["parts"] if p["state"] in v["decl"]["open_states"]]
+    """Each part's date, state and how it goes in, open ones first; the
+    finished ones in one line."""
+    w = v["words"]
+    states, methods = dict(w.state_words), dict(w.method_words)
+    opn = [p for p in v["parts"] if p["state"] in _cs().OPEN_STATES]
     opn.sort(key=lambda p: p["due"] or "9999")
     out = []
     for p in opn[:9]:
         d = _date(p["due"])
         when = (f"was due {_short(d)}" if d < today else f"due {_short(d)}") if d else "no due date"
-        how = words["methods"].get(p["method"], "") if _open_level(v["level"]) or p["method"] != "unknown" else ""
-        out.append(", ".join(x for x in (f"{p['name']}: {when}", words["states"].get(p["state"], p["state"]), how) if x))
+        how = methods.get(p["method"], "") if _open_level(v["level"]) or p["method"] != "unknown" else ""
+        out.append(", ".join(x for x in (f"{p['name']}: {when}", states.get(p["state"], p["state"]), how) if x))
     if len(opn) > 9:
         out.append(f"And {len(opn) - 9} more.")
-    done = [p for p in v["parts"] if p["state"] == "submitted"]
+    done = [p for p in v["parts"] if p["state"] == w.delivered]
     gone = [p for p in v["parts"] if p["state"] == "declined"]
     if done:
-        out.append(f"{words['delivered'][0].upper() + words['delivered'][1:]}: {_join([p['name'] for p in done][:6])}"
+        out.append(f"{_cap(w.delivered_word)}: {_join([p['name'] for p in done][:6])}"
                    + (f" and {len(done) - 6} more" if len(done) > 6 else "") + ".")
     if gone:
         out.append(f"Declined: {_join([p['name'] for p in gone][:6])}.")
@@ -728,23 +793,20 @@ def material_lines(v: dict) -> tuple[list[str], list[str]]:
         word = a["word"]
         came.append(f"{word} ({_join(a['names'][:3])})" if a["names"] else
                     (f"{word}" if a["count"] == 1 else f"{word}: {a['count']} files"))
-    line = _join(came)
-    came_lines = [line[0].upper() + line[1:] + "."] if came else ["Nothing yet."]
-    missing = [m[0].upper() + m[1:] + "." for m in v["missing"]]
-    return came_lines, missing
+    came_lines = [_cap(_join(came)) + "."] if came else ["Nothing yet."]
+    return came_lines, [_cap(m) + "." for m in v["missing"]]
 
 
 def code_sections(v: dict, *, today: date, now: float, zone: ZoneInfo, since: float | None,
                   briefing: dict | None = None, places: bool = True) -> list[tuple[str, list[str]]]:
     """The card's code-built sections, in their order; `places` False for a
-    block whose card lists the places and what is missing already."""
-    words = v["decl"]["words"]
+    block whose card lists the parts and what is missing already."""
     out = [("Now", now_lines(v, today=today, now=now, zone=zone, briefing=briefing)),
            ("Since you last looked", since_lines(v, since, now=now)),
            ("What was asked", ask_lines(v, today=today))]
     if places:
         came, missing = material_lines(v)
-        out += [(f"The {words['parts']}", part_lines(v, today=today)),
+        out += [(f"The {v['words'].parts}", part_lines(v, today=today)),
                 ("What came in", came), ("Still missing", missing)]
     return [(h, lines) for h, lines in out if lines]
 
@@ -761,36 +823,33 @@ def _with_words(value: Any) -> str:
 
 def build_packet(v: dict, *, today: date, rules: str = "", allowed=(), shed: int = 0) -> dict:
     """The records a model reads for one case (module doc), at its level."""
-    words = v["decl"]["words"]
+    w = v["words"]
+    states, methods = dict(w.state_words), dict(w.method_words)
     n_msgs, n_events = ((6, 10), (4, 6), (2, 4))[min(shed, 2)]
-    out: dict = {"written_on": f"{today.isoformat()} ({_hd().day_words(today)})",
-                 "case": {"what": f"{v['what']} the owner was asked to write",
-                          "for": v["who"] or "a person kept on his own model",
-                          "asked_on": _with_words(v["asked_on"]) if v["asked_on"] else "",
-                          "asked_by": "the person" if v["asked_by"] == "them" else "each place by its own mail",
-                          "his_answer": "not answered yet" if v["new"] else
-                          {"accepted": "yes", "declined": "no"}.get(v["decision"], ""),
-                          "work": f"{words['work']}: " + ("drafted" if v["drafted"] else "not drafted yet")}}
+    case = {"what": f"{v['what']} he was asked for",
+            "for": v["label"] if v["level"] != "local" else "a case kept on his own model",
+            "asked_by": "the person or office who asked, by their own mail" if v["asked_by"] == "them"
+            else f"each {w.part} by its own mail",
+            "his_answer": "not answered yet" if v["new"] else
+            {"accepted": "yes", "declined": "no"}.get(v["decision"], ""),
+            "work": f"{w.missing_work}: " + ("drafted" if v["drafted"] else "not drafted yet")}
+    if v["asked_on"]:
+        case["first_mail_on"] = _with_words(v["asked_on"])
+    if v["decided_on"]:
+        case["answered_on"] = _with_words(v["decided_on"])
     if v["notes"]:
-        out["case"]["notes"] = v["notes"]
-    out[words["parts"]] = [{"part": p["ref"], "name": p["name"],
-                            "due": _with_words(p["due"]) if p["due"] else "no due date",
-                            "state": words["states"].get(p["state"], p["state"]),
-                            "how": words["methods"].get(p["method"], p["method"]),
-                            **({"submitted_on": _with_words(p["submitted_at"])} if p["submitted_at"] else {})}
-                           for p in v["parts"]]
+        case["notes"] = v["notes"]
+    out: dict = {"written_on": f"{today.isoformat()} ({_hd().day_words(today)})", "case": case}
+    out[w.parts] = [{"part": p["ref"], "name": p["name"],
+                     "due": _with_words(p["due"]) if p["due"] else "no due date",
+                     "state": states.get(p["state"], p["state"]), "how": methods.get(p["method"], p["method"]),
+                     **({f"{w.delivered_word}_on": _with_words(p["delivered_at"])} if p["delivered_at"] else {})}
+                    for p in v["parts"]]
     out["came_in"] = [{"kind": a["kind"], **({"files": a["names"][:4]} if a["names"] else {"count": a["count"]})}
                       for a in v["arrived"]]
     out["still_missing"] = list(v["missing"])
-    hist = []
-    opened = _ts(v["opened"])
-    for e in v["events"]:
-        t = _ts(e.get("ts"))
-        if e.get("kind") in ("open", "destination", "accept", "decline") and opened and t and abs(t - opened) < 120:
-            continue  # the case's own start, restated (its mail carries the real dates; his answer is above)
-        line = event_line(e, v)
-        if line:
-            hist.append({"at": _with_words(str(e.get("ts") or "")[:16]), "what": line})
+    hist = [{"at": _with_words(_local(e.get("ts"))), "what": line} for e in v["events"]
+            if not _restated(e, v) and (line := event_line(e, v))]
     if hist:
         out["history"] = hist[-n_events:]
     msgs = [m for m in v["messages"] if m["at"]]
@@ -826,9 +885,8 @@ Then choose 2 or 3 next steps, each one of `moves_you_may_choose` exactly: its `
 - draft: the assistant drafts {work} from the materials, or changes the draft.
 - ask_materials: the assistant drafts a short ask for what is still missing. He confirms it first.
 - set_due: set a {part}'s due date. Give `date` (YYYY-MM-DD) only when the records state that date; else leave it "" and he picks it.
-- mark_delivered: he says {work} for that {part} went in. Only when the records suggest it did.
-- open_link: open that {part}'s portal to submit {work}.
-- decline: he says no to the whole case. Only when the records show he cannot or will not do it.
+- mark_delivered: he says that {part} is {delivered}. Only when the records suggest it went in.
+- open_link: open that {part}'s link to send it.
 `why` is a few words on why the step fits.
 
 Rules:
@@ -858,8 +916,9 @@ SCHEMA = {"type": "object", "additionalProperties": False, "properties": {
 
 
 def _instructions(v: dict) -> str:
-    w = v["decl"]["words"]
-    return PROMPT.format(what=v["what"], parts=w["parts"], part=w["part"], work=w["work"])
+    w = v["words"]
+    return PROMPT.format(what=v["what"], parts=w.parts, part=w.part, work=w.missing_work,
+                         delivered=w.delivered_word)
 
 
 def prompt_text(v: dict, packet: dict) -> str:
@@ -886,7 +945,7 @@ def check_step(raw: dict, *, allowed: list[dict], known, today: date) -> tuple[d
         p["part"] = hit["part"]
     said = str(raw.get("date") or "").strip()[:10] if k == "set_due" else ""
     if said:
-        d = _date(raw.get("date"))
+        d = _date(said)
         if not d or d < today or d > today + timedelta(days=STEP_DAYS):
             return None, "date out of range"
         month_day = f"{d.strftime('%B').lower()} {d.day}"
@@ -941,11 +1000,14 @@ def check_answer(obj: dict, packet: dict, *, allowed: list[dict], today: date) -
 def offered(steps: list[dict], v: dict, *, today: date) -> list[dict]:
     """The stored steps the case still allows now (its parts by id, so a
     part that closed or moved drops its steps), each as the app draws it:
-    {id, label, detail?, input?, confirm?, href?} with its move."""
+    {id, label, detail?, input?, confirm?, href?} with its move. The words
+    are the kind's."""
     allowed = {_move_key(m) for m in allowed_moves(v)}
-    decl = v["decl"]
-    words = decl["words"]
+    w = v["words"]
     by_ref = {p["ref"]: p for p in v["parts"]}
+    labels = {"draft": w.change if v["drafted"] else w.draft, "ask_materials": "Ask for what is missing",
+              "set_due": "Set the due date", "mark_delivered": f"Mark it {w.delivered_word}",
+              "open_link": w.link.split(" for ")[0]}
     out = []
     for s in steps or []:
         k, p = s.get("kind"), s.get("params") or {}
@@ -955,7 +1017,7 @@ def offered(steps: list[dict], v: dict, *, today: date) -> list[dict]:
         d = _date(p.get("date"))
         if d and d < today:
             continue
-        pub: dict = {"id": s["id"], "label": words["labels"].get("redraft" if k == "draft" and v["drafted"] else k, k)}
+        pub: dict = {"id": s["id"], "label": _one(labels.get(k, k), LABEL_MAX)}
         if part:
             pub["detail"] = _one(part["name"], LABEL_MAX)
         if k == "set_due":
@@ -964,24 +1026,28 @@ def offered(steps: list[dict], v: dict, *, today: date) -> list[dict]:
             else:
                 pub["input"] = "date"
         if k == "ask_materials":
-            asks = _join([a for a in v["asks"]][:3]) or "what is missing"
+            asks = _join(v["asks"][:3]) or "what is missing"
             pub["detail"] = _one(asks, 120)
-            pub["confirm"] = words["confirm"]["ask_materials"].format(asks=asks)
-        if k in ("mark_delivered", "decline"):
-            pub["confirm"] = words["confirm"][k].format(part=part["name"] if part else "")
+            pub["confirm"] = f"Tacitus drafts a short ask for {asks}. It waits for your Send."
+        if k == "mark_delivered":
+            pub["confirm"] = f"Mark {part['name']} as {w.delivered_word}? Only do this once it went in."
         if k == "open_link":
             pub["href"] = part["link"]
         out.append({"pub": pub, "kind": k, "params": p, "part": part})
     return out
 
 
+# The card's answer each step runs (case_surface's choices; the delivered
+# answer is the kind's own word, Words.deliver_choice).
+ANSWERS = {"draft": "draft", "ask_materials": "yes_ask", "set_due": "date"}
+
+
 def choice_of(s: dict, v: dict, arg: str = "") -> tuple[str, str]:
-    """(Home's choice id, its words) for a step: the kind's answer on the
-    case's card, `<choice>:<answer>[:<part id>]`."""
-    decl = v["decl"]
-    move = decl["moves"][s["kind"]]
-    answer = move.get("new") if v["new"] and move.get("new") else move.get("answer", "")
-    cid = f"{decl['choice']}:{answer}" + (f":{s['part']['id']}" if move.get("part") and s.get("part") else "")
+    """(Home's choice id, its words) for a step: the case card's answer,
+    `<prefix>:<answer>[:<part id>]` in the kind's words."""
+    w = v["words"]
+    answer = w.deliver_choice if s["kind"] == "mark_delivered" else ANSWERS[s["kind"]]
+    cid = f"{w.prefix}:{answer}" + (f":{s['part']['id']}" if s.get("part") else "")
     if s["kind"] != "set_due":
         return cid, ""
     return cid, s["params"].get("date") or arg
@@ -1210,8 +1276,8 @@ def stale(cases: list[dict], versions: dict) -> list[dict]:
            != (x["version"], x["level"])]
 
     def due(x):
-        dues = [str(d.get("due") or "") for d in x["case"].get("destinations") or []
-                if d.get("due") and (d.get("state") or "asked") in LETTER["open_states"]]
+        dues = [str(d.get("due") or "") for d in x["case"].get("parts") or []
+                if d.get("due") and (d.get("state") or "asked") in _cs().OPEN_STATES]
         return min(dues) if dues else "9999"
     return sorted(out, key=due)
 
@@ -1274,12 +1340,12 @@ The cases:
 
 
 def on_home(case: dict, today: date) -> bool:
-    """Home lists the case today (letter_surface.home_items' rule, less its
+    """Home lists the case today (case_surface.home_items' rule, less its
     card): new, overdue, undated or due within HOME_DAYS."""
-    ls = _mod("letter_surface")
-    if not ls.is_open(case):
+    cs = _cs()
+    if not cs.is_open(case):
         return False
-    f = ls.facts(case, today)
+    f = cs.facts(case, today)
     return bool(f["new"] or f["overdue"] or f["undated"]
                 or (f["next_due"] and (f["next_due"] - today).days <= HOME_DAYS))
 
@@ -1402,15 +1468,20 @@ def card(x: dict, rec: dict | None, *, now: float, since: float | None, places: 
 
 
 def _case_of(case_id: str, case: dict | None):
+    """The case by id from the store (the surface's dict only when the
+    store is out of reach)."""
     return load_one(case_id, case=case)
 
 
+NOTE_READ_FAILED = "Tacitus could not read this case's briefing. Try again in a minute."
+
+
 def state(fe, ref: str, item: dict | None = None, *, case: dict | None = None, case_id: str = "") -> dict:
-    """The Home item's `deeper` for a case (home_items for kind `letter`),
-    read at once: the stored briefing with the code-built lines first, or
-    the code-built lines alone with `none` (the app then asks for the
-    model's part). The open counts as the owner's look (Store.look). Never
-    a model call."""
+    """The Home item's `deeper` for a case (home_items, kinds `letter` and
+    `case`), read at once: the stored briefing with the code-built lines
+    first, or the code-built lines alone with `none` (the app then asks for
+    the model's part). The open counts as the owner's look (Store.look).
+    Never a model call. A failure is logged with its trace and shown."""
     D = _hd()
     try:
         j = D.jobs_for(fe)
@@ -1438,9 +1509,9 @@ def state(fe, ref: str, item: dict | None = None, *, case: dict | None = None, c
         if j.spent():
             return {**got, "state": "ready", "note": D.NOTE_CAP.format(n=j.cap())}
         return {**got, "state": "none"}
-    except Exception as e:
-        log.warning("case briefing: the state of %s could not be read: %s", ref, e)
-        return {"state": "unavailable", "note": NOTE_NO_CASE}
+    except Exception:
+        log.exception("case briefing: the state of %s could not be read", ref)
+        return {"state": "failed", "note": NOTE_READ_FAILED}
 
 
 def start(fe, ref: str, item: dict | None = None, *, case: dict | None = None, case_id: str = "") -> dict:
@@ -1498,8 +1569,8 @@ def start(fe, ref: str, item: dict | None = None, *, case: dict | None = None, c
         got = j.job(ref)
         return {"ok": True, "state": "ready" if got.get("state") == "stored" else got.get("state") or "failed",
                 **({"note": got["note"]} if got.get("note") else {})}
-    except Exception as e:
-        log.warning("case briefing: the job for %s did not start: %s", ref, e)
+    except Exception:
+        log.exception("case briefing: the job for %s did not start", ref)
         return {"ok": False, "state": "failed", "note": D.NOTE_FAILED}
 
 
@@ -1507,9 +1578,10 @@ def step(fe, ref: str, step_id: str, item: dict | None = None, *, case: dict | N
          case_id: str = "", arg: Any = None) -> dict:
     """A step the owner tapped on a case: {"choice", "arg", "move": True}
     for the kind's answer (home_items runs it as the matching button on the
-    case's card does, Hooks.letter); a finished {ok, said, goto} for the
-    portal's link and Continue in a conversation. A step of a briefing older
-    than the case, or one the case no longer allows, is refused."""
+    case's card does, Hooks.letter or Hooks.case); a finished {ok, said,
+    goto} for a part's link and Continue in a conversation. A step of a
+    briefing older than the case, or one the case no longer allows, is
+    refused."""
     D = _hd()
     try:
         j = D.jobs_for(fe)
@@ -1532,15 +1604,28 @@ def step(fe, ref: str, step_id: str, item: dict | None = None, *, case: dict | N
         if s is None:
             return {"ok": False, "said": NOTE_STEP_GONE}
         if s["kind"] == "open_link":
-            return {"ok": True, "said": "Opening the portal.", "goto": s["part"]["link"]}
+            return {"ok": True, "said": "Opening its link.", "goto": s["part"]["link"]}
         words = " ".join(str(arg or "").split())
         if s["kind"] == "set_due" and not s["params"].get("date") and not _date(words):
             return {"ok": False, "said": "Pick the date first."}
         choice, arg_ = choice_of(s, v, words)
         return {"choice": choice, "arg": arg_, "move": True}
-    except Exception as e:
-        log.warning("case briefing: the step %s on %s failed: %s", step_id, ref, e)
+    except Exception:
+        log.exception("case briefing: the step %s on %s failed", step_id, ref)
         return {"ok": False, "said": "Tacitus could not do that. Try again."}
+
+
+def look(case_ids, *, now: float | None = None) -> int:
+    """The owner opened these cases' block in Action requests (the app's
+    read of its thread): each one's look, as an open on Home is one, so
+    "Since you last looked" counts from it. Returns how many were noted."""
+    now = now if now is not None else time.time()
+    n = 0
+    store = Store()
+    for cid in dict.fromkeys(str(c) for c in case_ids or () if c):
+        store.look(cid, now)
+        n += 1
+    return n
 
 
 _LOADED: dict = {"at": 0.0, "key": None, "cases": []}
@@ -1563,8 +1648,9 @@ def _loaded_cached(now: float) -> list[dict]:
 
 def request_views(case_ids, *, now: float | None = None) -> dict[str, dict]:
     """{case id: {"text", "by"?, "at"?, "stale"?}} for Action requests'
-    blocks: the same briefing, less the places and what is missing (its
-    card lists them), read-only (a block opened there is not a look)."""
+    blocks: the same briefing, less the parts and what is missing (its card
+    lists them). A read: the look comes when the owner opens the block
+    (look(), from the app's read of its thread)."""
     want = {str(c) for c in case_ids or () if c}
     if not want:
         return {}

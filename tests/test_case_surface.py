@@ -670,11 +670,18 @@ def _live_review(days: int = 2):
     return c
 
 
-def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch):
+def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch, tmp_path):
     sys.path.insert(0, str(ROOT / "tests"))
+    import home_deeper
     import home_fixtures as F
     import home_items as I
     import home_screen as H
+    import ledger
+    # no ledger and no local model: the briefing's own fallback, whatever
+    # another test left at the ledger's usual place
+    monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "no-ledger.db")
+    monkeypatch.setattr(home_deeper, "_store_path", lambda: tmp_path / "home-briefings.sqlite")
+    monkeypatch.setattr(home_deeper, "local_ready", lambda cfg=None: False)
     case = _live_review()
     monkeypatch.setattr(C, "load_cases", lambda conn=None, open_only=True, kinds=None:
                         [] if kinds == ["letter"] else [case])
@@ -684,7 +691,10 @@ def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch):
     assert it["kind"] == "case" and it["label"] == "Review"
     assert it["brief"]["what"] == "Paper review for Pat Lee."
     assert [c["id"] for c in it["choices"]] == ["case:draft", "case:delivered:rp1", "open"]
-    assert it["deeper"]["state"] == "unavailable"
+    # the briefing on a case (case_briefing), as a letter gets it; with no
+    # store to read, from the case itself and kept (no name, no part)
+    assert it["deeper"]["state"] == "ready" and "The reports\n- Report 1: due " in it["deeper"]["text"]
+    assert "Pat Lee" not in it["deeper"]["text"] and it["deeper"]["note"] == home_deeper.NOTE_KEPT_NO_LOCAL
     called = []
 
     class FE:
@@ -705,9 +715,9 @@ def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch):
     assert got == {"ok": True, "said": "Marked as returned."} and ("rv-1", "delivered", "rp1", "") in called
     got, _after = h.act("case:rv-1", "done")
     assert got["ok"] is False
-    # no deeper briefing for a `case` item yet: a start and a step say so, cleanly
-    assert h.deeper("case:rv-1") == {"ok": False, "state": "unavailable",
-                                     "note": "Everything Tacitus knows about it is above."}
+    # kept, with no local model: no model call starts, and a step it never
+    # offered is refused, cleanly
+    assert h.deeper("case:rv-1") == {"ok": True, "state": "unavailable", "note": home_deeper.NOTE_KEPT_NO_LOCAL}
     got, _after = h.act("case:rv-1", "step:s1")
     assert got["ok"] is False and got["said"] == I.NO_CHOICE
 

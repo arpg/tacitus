@@ -125,6 +125,12 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         from preprocessor import web_requests as _web_requests
         _web.request_context = lambda items: _web_requests.context(
             items, payload_of=lambda v: _staged_button_payload(v, consume=False))
+        # Opening a request's block in Action requests is the owner's look
+        # at the work case its card names, as an open on Home is
+        # (case_briefing.look: "Since you last looked" counts from it).
+        _web.thread_opened = lambda ch, key, w=_web: _web_requests.looked(
+            [m.get("card") for m in w.store.thread(ch, key, 50) if m.get("kind") == "card"]) \
+            if (w.store.channel(ch) or {}).get("kind") == "dm" else 0
         # The status light in the app's top bar (docs/webchat.md, Status
         # light): is everything working right now, from the state the
         # system keeps. A red condition that may interrupt pushes once, only
