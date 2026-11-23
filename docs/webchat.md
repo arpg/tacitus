@@ -1450,6 +1450,13 @@ and what the place does changed.
   next step whose label has no name once its emoji is off (empty, or
   ending in a colon: "Submitted: " with the name missing) is not drawn:
   two such buttons could not be told apart.
+- **The lock.** A lock before a card's title marks a press that passes the
+  bot's confirmation gate: the kinds `send`, `bulk`, `schedule`, `event`,
+  `event_update`, `event_delete`, `plugin`, `publish` and `browser` (the
+  handlers behind `_reject_if_stale_confirmation` or a `request-confirm`
+  token). Any other card (a letter's decision, the Replies card, a close
+  proposal, a room picker) keeps its own leading emoji, and a lock in its
+  title is dropped.
 
 ## State
 
