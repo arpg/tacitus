@@ -484,7 +484,7 @@ ACTIONS = {"approve_send", "cancel_send", "approve_schedule_send",
            "close_all_proposed", "review_proposed", "close_proposed",
            "keep_open_proposed", "reopen_closed", "approve_browser", "cancel_browser",
            "review_replies", "reply_draft", "reply_skip", "reply_not_needed", "reply_discuss",
-           "reply_choice_two", "letter_submitted"}
+           "reply_choice_two", "letter_submitted", "case_delivered", "case_which"}
 VIEWS = {"edit_draft_modal", "home_ask_modal", "home_journal_modal"}
 
 
