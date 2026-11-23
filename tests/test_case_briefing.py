@@ -101,10 +101,13 @@ ANSWER = {"history": ["Rowan Vale asked for the letter and named Harbor Tech PhD
                     {"kind": "set_due", "part": "", "date": "", "why": "no date"}]}
 
 
-def make_case(env, *, level="full", decide=True, drafted=False, person_wrote=True) -> str:
+def make_case(env, *, level="full", decide=True, drafted=False, person_wrote=True, undated=True) -> str:
     """A recommendation letter for a made-up person, two destinations: one
     portal with a link and a date, one by email with no date; the person's
-    own mail (with a CV attached, a quote and a gist) on the case's row."""
+    own mail (with a CV attached, a quote and a gist) on the case's row.
+    `undated`: the case as it is before it has its one date (the store's
+    yes takes the date its places state; these tests read the case
+    before that, as the briefing of a case with no date shows it)."""
     L, conn = env.letters, env.conn
     cid = L.ensure_case(conn, "Rowan Vale", "rowan.vale@example.org", "recommendation", keep_level=level)
     L.add_destination(conn, cid, "Harbor Tech PhD", due=day(9), method="portal", link=PORTAL,
@@ -120,6 +123,8 @@ def make_case(env, *, level="full", decide=True, drafted=False, person_wrote=Tru
                                         files=["Rowan_Vale_CV.pdf"])])
     if decide:
         L.accept(conn, cid, actor="owner", quote="yes (Action requests)")
+        if undated:
+            env.cases.set_date(conn, cid, "")
     if drafted:
         L.record_draft(conn, cid, "/letters/rowan-vale/letter.md")
     conn.commit()
@@ -142,6 +147,7 @@ def make_work(env, kind, who, email, title, part, *, due=None, link="", subkind=
                      conversation_id=f"conv-{cid}", message_id=f"msg-{cid}", actor="intake")
     if decide:
         c.accept(conn, cid, actor="owner", quote="yes (Action requests)")
+        c.set_date(conn, cid, "")              # before its one date (make_case's `undated`)
     conn.commit()
     return cid, pid
 
@@ -340,6 +346,7 @@ def test_a_part_with_no_name_is_numbered_and_the_ask_names_what_is_missing(env):
     cid = make_case(env)
     env.letters.add_destination(env.conn, cid, "", method="portal", link="https://apply.example.com/ref/zz",
                                 conversation_id="conv-z", message_id="msg-z")
+    env.cases.set_date(env.conn, cid, "")      # the place came in; the case read before its one date
     set_brief(env, "task-own", [msg("m1", 72, "Rowan Vale <rowan.vale@example.org>", "Rowan Vale asked.",
                                     files=["Rowan_Vale_CV.pdf"]),
                                 msg("m2", 70, "Rowan Vale <rowan.vale@example.org>", "Rowan Vale sent it again.",
@@ -814,7 +821,9 @@ def test_a_fault_in_the_briefing_is_logged_with_its_trace_and_shown(env, monkeyp
 def test_a_briefing_older_than_the_case_is_shown_stale_and_its_steps_refused(env):
     cid = make_case(env)
     CB.refresh(store=env.store, daily=None)
-    env.letters.set_due(env.conn, one(env, cid)["case"]["parts"][1]["id"], day(30))
+    # the case changes after its briefing was written (a date on a place
+    # would date the case and quiet it: a file comes in instead)
+    env.letters.add_material(env.conn, cid, "statement", "msg-9#Rowan_Vale_SOP.pdf")
     env.conn.commit()
     h, fe, pressed = home(env)
     d = h.item(f"letter:{cid}")["deeper"]

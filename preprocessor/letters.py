@@ -145,8 +145,8 @@ def letter_case(c: dict | None) -> dict | None:
             "materials": c["materials"], "base_letter": c["base_doc"], "notes": c["notes"],
             "aliases": c["aliases"], "keep_level": c["keep_level"],
             "case_ledger_id": c["case_ledger_id"],
-            "do_by": c.get("do_by", ""), "lead_days": c.get("lead_days"),
-            "start_on": c.get("start_on", ""),
+            "do_by": c.get("do_by", ""), "do_by_from": c.get("do_by_from", ""),
+            "lead_days": c.get("lead_days"), "start_on": c.get("start_on", ""),
             "destinations": [_dest(d) for d in c["parts"]],
             "questions": [_question(q) for q in c["questions"]],
             "messages": [dict(m, destination=m.get("part", "")) for m in c.get("messages") or []]}

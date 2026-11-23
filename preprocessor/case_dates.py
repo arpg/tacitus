@@ -16,7 +16,10 @@ the owner's setting `case_lead_days` in ea-config.json, or the case's own
 `lead_days`); `start_on` brings it back sooner. Its stage:
 
     new        no answer yet: the first decision is open
-    undated    he said yes and the case has no date: the date card, once
+    undated    he said yes and the case has no date: the store takes the
+               earliest date a part states (cases.stated_date); with
+               parts and no date anywhere, the date card, once; with no
+               part, silence (the weekly review)
     quiet      dated, not started, before its lead time: on no list but
                the weekly review
     due        its time came (or work on it began): the case's block
@@ -94,11 +97,20 @@ def own_due(d: dict) -> date | None:
     return _day(d.get("own_due") if "own_due" in d else d.get("due"))
 
 
-def due_of(d: dict, c: dict) -> date | None:
+def is_ready(c: dict) -> bool:
+    """The work is ready: an open part waits only for its delivery."""
+    return any(d.get("state") == "ready" for d in open_parts(c))
+
+
+def due_of(d: dict, c: dict, today: date | None = None) -> date | None:
     """The date a part is due by: the case's one date, or the part's own
-    when that is earlier (a later one of its own stays recorded, not
-    shown: the work is done by the case's date)."""
-    got = [x for x in (own_due(d), do_by(c)) if x]
+    when that is earlier. Once the work is ready and the case's date has
+    passed (`today`), a part still open with a later date of its own is
+    due by that date: it is late only against its own."""
+    own, by = own_due(d), do_by(c)
+    if own and by and own > by and today and by < today and is_ready(c):
+        return own
+    got = [x for x in (own, by) if x]
     return min(got) if got else None
 
 
@@ -107,10 +119,10 @@ def proposed(c: dict) -> date | None:
     return min((x for x in (own_due(d) for d in open_parts(c)) if x), default=None)
 
 
-def next_due(c: dict) -> date | None:
+def next_due(c: dict, today: date | None = None) -> date | None:
     """The nearest date the case is due by: its open parts' dates (their
     own, else the case's), or the case's own date with no part open."""
-    got = [x for x in (due_of(d, c) for d in open_parts(c)) if x]
+    got = [x for x in (due_of(d, c, today) for d in open_parts(c)) if x]
     if got:
         return min(got)
     return do_by(c) if not parts(c) else None

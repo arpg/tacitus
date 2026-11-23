@@ -622,8 +622,10 @@ def _bot(monkeypatch, case_list, questions=()):
 
 
 def test_the_tick_posts_a_reviews_decision_and_a_forms_date_card(monkeypatch):
-    # A form with a yes and no date of its own gets one card for its date.
-    ns, calls, store = _bot(monkeypatch, [new_review(), form()])
+    # A form with a yes and no date anywhere gets one card for its date.
+    undated = form()
+    undated["parts"][0]["due"] = ""
+    ns, calls, store = _bot(monkeypatch, [new_review(), undated])
     assert ns["_post_letter_cards"](force=True) == 2
     assert [c.kind for c in calls["cards"]] == ["case_ask", "case_ask"]
     assert store["cards"]["rv-2"]["kind"] == "ask" and store["cards"]["fm-1"]["kind"] == "date"

@@ -5530,16 +5530,56 @@ def _post_letter_cards(force: bool = False) -> int:
     _LAST_LETTER_CHECK[0] = now
     from preprocessor import case_surface as _cs
     from preprocessor import letter_surface as _ls
-    posted = _post_kind_cards(_ls, _ls.load_cases(), _load_letter_cards, _save_letter_cards,
-                              _letter_levels, now, ":information_source: This letter case is closed now.")
     others = _cs.other_kinds()
+    # A case he said yes to with no date takes the earliest date its places
+    # state, with no question; he is told in one line for all of them.
+    _cs.write_stated_dates()
+    letters_now = _ls.load_cases()
+    others_now = _cs.load_cases(kinds=others) if others else []
+    posted = _tell_stated_dates([(_ls, letters_now, _load_letter_cards, _save_letter_cards, _letter_levels),
+                                 (_cs, others_now, _load_case_cards, _save_case_cards, _case_levels)])
+    posted += _post_kind_cards(_ls, letters_now, _load_letter_cards, _save_letter_cards,
+                               _letter_levels, now, ":information_source: This letter case is closed now.")
     if others:
-        posted += _post_kind_cards(_cs, _cs.load_cases(kinds=others), _load_case_cards,
+        posted += _post_kind_cards(_cs, others_now, _load_case_cards,
                                    _save_case_cards, _case_levels, now, ":information_source: This is closed now.")
     posted += _post_which_cards(_cs, now)
     if posted:
         log.info(f"Case cards posted: {posted}")
     return posted
+
+
+def _tell_stated_dates(stores: list) -> int:
+    """One line in the DM for every case whose date was set from what they
+    asked and not yet told (case_surface.told_dates, stated_line); nothing
+    to answer. `stores` is [(surface, cases, load, save, levels_of)].
+    Returns 1 when it posted."""
+    from preprocessor import case_surface as _cs
+    items, marks = [], []
+    for surface, cases, load, save, levels_of in stores:
+        data = load()
+        todo = surface.told_dates(cases, data.get("cards") or {})
+        if todo:
+            levels = levels_of(todo)
+            items += [(_cs._tag(c, _cs.kind_of(c)), levels.get(str(c.get("id")), "local")) for c in todo]
+            marks.append((data, save, todo))
+    if not items:
+        return 0
+    dm_channel = _resolve_dm_channel()
+    if not dm_channel:
+        return 0
+    try:
+        FRONTEND.post(channel=dm_channel, text=_cs.stated_line(items, _cs.today_local()))
+    except Exception as e:
+        log.warning(f"stated dates line not posted: {e}")
+        return 0
+    for data, save, todo in marks:
+        cards = data.setdefault("cards", {})
+        for c in todo:
+            rec = cards.setdefault(str(c.get("id")), {})
+            rec["told"] = rec["do_by"] = str(c.get("do_by") or "")
+        save(data)
+    return 1
 
 
 def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, closed: str) -> int:

@@ -140,11 +140,16 @@ The case closes when every place is submitted or declined.
 
 The owner writes one letter by one date and uploads it to each place.
 The case has that one date (`do_by`): every place goes under it, and a
-place's own later date is kept but not shown. A place that comes with an
-earlier date moves the case's date; the owner is told once.
+place's own later date is kept but not shown until the letter is ready.
+A place that comes with an earlier date moves the case's date; the owner
+is told once. Once the letter is ready and the date has passed, a place
+still open is late only against its own date.
 
-- The owner gives the date with his yes, or once on the date card. In
-  words: `letters.py set-date --case <id> --date YYYY-MM-DD`.
+- The owner gives the date with his yes. A yes with no date takes the
+  earliest date a place states, and the bot tells him in one line. Only a
+  case with places and no date anywhere gets one date card; a case with
+  no place yet waits, silent, until a place or a date comes. In words:
+  `letters.py set-date --case <id> --date YYYY-MM-DD`.
 - Until 7 days before the date the case is quiet: no card, not on Home,
   not in the daily briefing (the weekly review lists it). "Start this
   one now": `letters.py start --case <id>`. "Remind me 3 days before":

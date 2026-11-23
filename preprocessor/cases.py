@@ -587,9 +587,19 @@ def _case_dict(conn, r) -> dict:
             "materials": _materials(conn, r["id"]), "base_doc": r["base_doc"],
             "notes": r["notes"], "aliases": _json(r["aliases"], []),
             "keep_level": r["keep_level"] or "full", "case_ledger_id": r["case_ledger_id"],
-            "do_by": do_by, "lead_days": _col(r, "lead_days", None),
+            "do_by": do_by, "do_by_from": _date_from(conn, r["id"]) if do_by else "",
+            "lead_days": _col(r, "lead_days", None),
             "start_on": str(_col(r, "start_on") or ""),
             "parts": parts, "questions": qs, "messages": _messages(conn, r["id"])}
+
+
+def _date_from(conn, case_id: str) -> str:
+    """Who gave the case its date, by its last `do_by` event: "owner" (his
+    yes or his pick), "stated" (the earliest date its parts state, set with
+    no question) or "earlier" (a part's earlier date moved it)."""
+    e = conn.execute("SELECT evidence FROM case_events WHERE case_id = ? AND kind = 'do_by' "
+                     "ORDER BY seq DESC LIMIT 1", (case_id,)).fetchone()
+    return str(_json(e["evidence"], {}).get("why") or "owner") if e else ""
 
 
 # What a part with no name is called, by kind ("Place 2").
@@ -1133,6 +1143,7 @@ def add_part(conn, case_id: str, name: str, due: str = "", method: str = "unknow
                      (*sets.values(), existing))
         _sync_row_date(conn, existing)
         pull_date(conn, case_id, existing, actor=actor)
+        stated_date(conn, case_id, actor=actor)
         return existing
     did = _id(k.prefixes[1], case_id, norm_part(name) or sender or link or now, now,
               os.urandom(4).hex())
@@ -1161,6 +1172,7 @@ def add_part(conn, case_id: str, name: str, due: str = "", method: str = "unknow
            evidence={"name": name, "due": due, "method": method, "ledger_id": lid})
     _sync_row_date(conn, did)
     pull_date(conn, case_id, did, actor=actor)
+    stated_date(conn, case_id, actor=actor)
     return did
 
 
@@ -1185,6 +1197,7 @@ def set_due(conn, part_id: str, due: str, *, actor: str = "") -> dict:
     _event(conn, d["case_id"], "due", part_id=part_id, state=new, actor=actor,
            evidence={"from": d["due"], "to": new})
     pull_date(conn, d["case_id"], part_id, actor=actor)
+    stated_date(conn, d["case_id"], actor=actor)
     return {"part": part_id, "due": new, "was": d["due"]}
 
 
@@ -1213,12 +1226,47 @@ def set_date(conn, case_id: str, due: str, *, actor: str = "", why: str = "owner
     if due and not new:
         raise ValueError("the date must be YYYY-MM-DD")
     was = str(_col(c, "do_by") or "")
-    if new == was:
+    if new == was and (why != "owner" or _date_from(conn, case_id) in ("owner", "")):
+        # The same date again changes nothing, unless it is his own word on
+        # a date he had not given (it is his now: no line says it was set).
         return {"case": case_id, "do_by": new, "was": was}
     conn.execute("UPDATE cases SET do_by = ?, updated_at = ? WHERE id = ?", (new, _now(), case_id))
     _event(conn, case_id, "do_by", part_id=part_id, state=new, actor=actor,
            evidence={"from": was, "to": new, "why": why})
     return {"case": case_id, "do_by": new, "was": was}
+
+
+def stated_date(conn, case_id: str, *, actor: str = "") -> dict | None:
+    """A case he said yes to with no date of its own takes the earliest date
+    its open parts state, with no question (why "stated": the bot tells him
+    in one line). None when it has a date, no yes, or no part states one."""
+    c = conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
+    if c is None or c["status"] != "open" or c["decision"] != "accepted" or _col(c, "do_by"):
+        return None
+    if "do_by" not in _columns(conn, "cases"):
+        return None
+    got = conn.execute("SELECT MIN(due) FROM case_parts WHERE case_id = ? AND due != '' AND state IN "
+                       "('asked','accepted','drafted','ready')", (case_id,)).fetchone()[0]
+    if not got:
+        return None
+    return set_date(conn, case_id, got, actor=actor or "cases", why="stated")
+
+
+def stated_dates(conn, *, actor: str = "") -> list[dict]:
+    """stated_date for every open case: [{"case", "do_by"}] of the cases it
+    dated (the cases from before one date per case, on the bot's first
+    tick)."""
+    ensure_schema(conn)
+    _writable(conn)
+    if "do_by" not in _columns(conn, "cases"):
+        return []
+    out = []
+    for r in conn.execute("SELECT id FROM cases WHERE status = 'open' AND decision = 'accepted' AND "
+                          "do_by = ''").fetchall():
+        got = stated_date(conn, r["id"], actor=actor)
+        if got:
+            out.append({"case": r["id"], "do_by": got["do_by"]})
+    return out
 
 
 def pull_date(conn, case_id: str, part_id: str, *, actor: str = "") -> dict | None:
@@ -1402,6 +1450,9 @@ def accept(conn, case_id: str, *, actor: str = "", quote: str = "", do_by: str =
     out = {"case": case_id, "decision": "accepted"}
     if do_by:
         out["do_by"] = set_date(conn, case_id, do_by, actor=actor)["do_by"]
+    elif stated_date(conn, case_id, actor=actor):
+        out["do_by"] = str(_col(conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone(),
+                                "do_by"))
     return out
 
 

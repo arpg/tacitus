@@ -33,8 +33,9 @@ from before the cases, or one that cannot be read) every function here
 gives nothing and each surface stays as it was.
 
 One date per case, then quiet until it is time (case_dates.py): the
-owner's yes carries the case's one date; a case decided without one gets
-one date card. A dated case is quiet until its lead time (letters 7 days,
+owner's yes carries the case's one date; a yes with no date takes the
+earliest date its parts state (the store's, with one line that tells
+him); only a case with parts and no date anywhere gets one date card. A dated case is quiet until its lead time (letters 7 days,
 forms 3, reviews 10, reports 7): no card, no Home item, no line in the
 daily briefing (the weekly review lists it). Then its block posts once,
 "Time to write the letter", and again only when what it shows changed
@@ -668,7 +669,7 @@ def facts(case: dict, today: date) -> dict:
     D = _dates()
     ds = parts(case)
     opn = open_parts(case)
-    dated = [(d, D.due_of(d, case)) for d in opn]
+    dated = [(d, D.due_of(d, case, today)) for d in opn]
     nxt = min((due for _d, due in dated if due), default=None)
     if nxt is None and not ds:
         nxt = D.do_by(case)
@@ -1406,13 +1407,16 @@ def _value(case: dict, **extra) -> dict:
 
 def _part_line(d: dict, today: date, lv: str, n: int, w: Words, case: dict | None = None) -> str:
     """One part on a card: its name, its date when it has one of its own
-    that the case's one date does not cover (an earlier one), its state
-    and how it goes in."""
+    that the case's one date does not cover (an earlier one; on the
+    delivery list, its own or the case's), its state and how it goes in."""
     nm = _clean(d.get("name"), 80) if lv in ("full", "summary") else f"{w.part.capitalize()} {n}"
     D = _dates()
     cby = D.do_by(case) if case else None
     own = D.own_due(d) if case else _date(d.get("due"))
-    due = own if not cby else (own if own and own < cby else None)
+    if case and cby and D.is_ready(case):
+        due = own or cby                    # the delivery list: each place's own date, else the case's
+    else:
+        due = own if not cby else (own if own and own < cby else None)
     if due:
         when = ("was due " if due < today else "due ") + day_words(due, today)
     else:
@@ -1698,7 +1702,7 @@ def block_sig(case: dict, today: date) -> str:
     f = facts(case, today)
     body = {"stage": stage(case, today), "by": str(case.get("do_by") or ""),
             "open": [[str(d.get("id") or ""), d.get("state") or "", str(d.get("name") or ""),
-                      str((D.due_of(d, case) or "") and D.due_of(d, case).isoformat())]
+                      str((D.due_of(d, case, today) or "") and D.due_of(d, case, today).isoformat())]
                      for d in f["open"]],
             "done": f["submitted"], "draft": has_draft(case, f)}
     return hashlib.sha1(json.dumps(body, sort_keys=True).encode()).hexdigest()[:12]
@@ -1880,7 +1884,11 @@ def _plan_one(c: dict, rec: dict, today: date, todays: list[dict], fresh: dict) 
             return [{"case": cid, "what": "remind", "kind": "ask", "items": loud, "keys": keys}]
         return [{"case": cid, "what": "mark", "keys": keys}] if keys else []
     if st == "undated":
-        if not rec.get("asked_date"):
+        # A place states a date: the store dates the case with it, and the
+        # owner gets one line (write_stated_dates, stated_line). No place
+        # yet: silent until a place or a date comes (the weekly review).
+        # Places and no date anywhere: the one date card, once.
+        if not rec.get("asked_date") and parts(c) and not _dates().proposed(c):
             return [{"case": cid, "what": "date", "keys": keys, **track}]
         if loud:
             return [{"case": cid, "what": "remind", "kind": "case", "items": loud, "keys": keys, **track}]
@@ -1929,6 +1937,61 @@ def _moved_earlier(c: dict, rec: dict) -> str:
     D = _dates()
     return next((str(d.get("id") or "") for d in open_parts(c)
                  if D.own_due(d) and D.own_due(d).isoformat() == now_), "")
+
+
+def write_stated_dates() -> list[dict]:
+    """The store's pass (cases.stated_dates): every case he said yes to
+    with no date takes the earliest date its places state, with no
+    question. [{"case", "do_by"}] of the cases dated; [] without the store
+    or on a failure (logged)."""
+    mod = _cases()
+    if mod is None or not hasattr(mod, "stated_dates"):
+        return []
+    conn = None
+    try:
+        conn = mod.connect()
+        got = mod.stated_dates(conn, actor="bot")
+        conn.commit()
+        return got
+    except Exception as e:
+        print(f"case_surface: the stated dates were not set: {str(e)[:160]}", file=sys.stderr)
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def told_dates(cases: list[dict], cards: dict) -> list[dict]:
+    """The cases whose date the store set from what they asked
+    (`do_by_from` "stated") that the owner has not been told of yet (the
+    bot's record `told`)."""
+    return [c for c in cases if is_open(c) and c.get("do_by") and c.get("do_by_from") == "stated"
+            and (cards.get(str(c.get("id") or "")) or {}).get("told") != c.get("do_by")]
+
+
+def stated_line(items: list[tuple[dict, str]], today: date) -> str:
+    """The one line that tells him the dates set from what they asked, for
+    every case at once, with nothing to answer: "I set dates for 3
+    letters from what they asked: Dana Reyes by Tue Dec 1, Pat Lee by Tue
+    Dec 8, Sam Ortiz by Tue Dec 1. Change one from its block when it comes
+    back." `items` is [(case, keep level)]."""
+    if not items:
+        return ""
+    counts: dict[str, int] = {}
+    named = []
+    for c, lv in items:
+        w = words_of(c)
+        counts[w.kind] = counts.get(w.kind, 0) + 1
+        who = (person(c, lv) if w.kind == "letter" else name(c, lv, w)) or w.kept.lower()
+        named.append(f"{who} by {day_words(_dates().do_by(c), today)}")
+    kinds = [f"{n} {words(k).noun.lower()}{'s' if n != 1 else ''}" for k, n in counts.items()]
+    what = kinds[0] if len(kinds) == 1 else ", ".join(kinds[:-1]) + " and " + kinds[-1]
+    one = len(items) == 1
+    return (f":calendar: I set {'the date' if one else 'dates'} for {what} from what they asked: "
+            + ", ".join(named) + f". Change {'it' if one else 'one'} from its block when it comes back.")
 
 
 def note_text(c: dict, step: dict, today: date, lv: str = "full") -> str:
@@ -2261,7 +2324,7 @@ def home_items(src, cases=None, *, rows: dict | None = None) -> tuple[list[dict]
             continue
         w = words_of(c)
         lv = level(c, rows, records=False)
-        due = _home_due(min([_dates().due_of(d, c) for d in f["overdue"]] or [f["next_due"]])
+        due = _home_due(min([_dates().due_of(d, c, today) for d in f["overdue"]] or [f["next_due"]])
                         if (f["overdue"] or f["next_due"]) else None, zone)
         urgency = "overdue" if f["overdue"] else ("soon" if due and due - now < 2 * 86400 else "calm")
         nm = name(c, lv, w)

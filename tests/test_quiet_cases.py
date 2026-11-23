@@ -357,6 +357,7 @@ def _bot(monkeypatch, conn, clock):
     monkeypatch.setattr(PC, "today_local", lambda: clock.day)
     monkeypatch.setattr(PC, "load_cases", lambda c=None, open_only=True, kinds=None: [])
     monkeypatch.setattr(PC, "part_questions", lambda c=None: [])
+    monkeypatch.setattr(PC, "write_stated_dates", lambda: cases.stated_dates(conn, actor="bot"))
     monkeypatch.setattr(LW, "_today", lambda: clock.day)
     monkeypatch.setattr(LW, "open_store", lambda: LW.Store(conn, letters))
     monkeypatch.setitem(sys.modules, "letters_work", LW)
@@ -539,31 +540,84 @@ def test_one_date_then_quiet_until_it_is_time(conn, monkeypatch):
     assert _tick(ns, calls) == []
 
 
-def test_a_case_from_before_gets_one_date_card_then_goes_quiet(conn, monkeypatch):
-    """7. The live cases: decided, no date. One card asks for it with the
-    earliest date its places state; once answered the case is quiet."""
-    clock = Clock(date(2026, 11, 22))
-    ns, calls, store = _bot(monkeypatch, conn, clock)
-    cid = letters.ensure_case(conn, "Rowan Vale", "rowan@uni.example")
-    letters.add_destination(conn, cid, "Northfield University", due="2026-12-01",
-                            link="https://apply.example.org/refer?key=1")
-    letters.add_destination(conn, cid, "", sender="gradadmit@lakeside.example")
-    letters.add_destination(conn, cid, "", sender="graduate_admissions@ridge.example")
+def _from_before(conn, who, email, places=()):
+    """A case decided before one date per case: accepted, with no date."""
+    cid = letters.ensure_case(conn, who, email)
+    for name, due, sender in places:
+        letters.add_destination(conn, cid, name, due=due, sender=sender)
     letters.accept(conn, cid, actor="migration", quote="recorded before letter cases")
+    cases.set_date(conn, cid, "")
     conn.commit()
+    return cid
+
+
+def test_cases_from_before_take_their_stated_dates_with_one_line_and_no_card(conn, monkeypatch):
+    """7. The deploy opens with no pile of cards: a case whose places state
+    a date takes the earliest one with no question, and one line names
+    them all; a case with no place stays silent (the weekly review); only a
+    case with places and no date anywhere gets its one date card."""
+    clock = Clock(date(2026, 11, 23))
+    ns, calls, store = _bot(monkeypatch, conn, clock)
+    a = _from_before(conn, "Rowan Vale", "rowan@uni.example",
+                     [("Northfield University", "2026-12-01", ""), ("", "", "gradadmit@lakeside.example")])
+    b = _from_before(conn, "Pat Lee", "pat@uni.example", [("Westmoor College", "2026-12-08", "")])
+    c = _from_before(conn, "Sam Ortiz", "sam@uni.example")
+    d = _from_before(conn, "Jamie Rivera", "jamie@uni.example", [("Harbor Tech", "", "")])
     [card] = _tick(ns, calls)
-    assert card.title == ":calendar: *When will you write the letter for Rowan Vale?*"
-    assert [(a.id, a.label) for a in card.actions] == [("letter_date", ":white_check_mark: By Tue Dec 1"),
-                                                       ("letter_date_pick", ":calendar: Another date")]
-    assert "2. lakeside.example: to write, how to submit is not known" in "\n".join(card.lines) or \
-        any("lakeside.example" in ln for ln in card.lines)
-    assert _tick(ns, calls) == []                                    # never asked twice
-    _press(ns, card, "letter_date")
-    assert "The date is Tue Dec 1. I bring it back on Tue Nov 24." in calls["status"][-1][1]
-    assert _tick(ns, calls) == [] and calls["posts"] == []
+    assert card.title == ":calendar: *When will you write the letter for Jamie Rivera?*"
+    assert [(x.id, x.label) for x in card.actions] == [("letter_date_pick", ":calendar: Pick the date")]
+    [(_ch, _th, line)] = calls["posts"]
+    assert line == (":calendar: I set dates for 2 letters from what they asked: Rowan Vale by Tue Dec 1, "
+                    "Pat Lee by Tue Dec 8. Change one from its block when it comes back.")
+    assert letters.case(conn, a)["do_by"] == "2026-12-01" and letters.case(conn, b)["do_by"] == "2026-12-08"
+    assert letters.case(conn, a)["do_by_from"] == "stated" and letters.case(conn, c)["do_by"] == ""
+    assert _tick(ns, calls) == [] and len(calls["posts"]) == 1          # said once
+    assert [i["id"] for i in _home(conn, clock.day)] == [f"letter:{d}"]  # only the one with no date
+    assert {e["case"] for e in _briefing(conn, clock.day)["quiet_cases"]} == {a, b, c}
+    # each then follows its course: back at its lead time, as one block
     clock.day = date(2026, 11, 24)
     [block] = _tick(ns, calls)
-    assert block.title.startswith(":memo: *Time to write the letter for Rowan Vale*: due Tue Dec 1, 3 places.")
+    assert block.title == ":memo: *Time to write the letter for Rowan Vale*: due Tue Dec 1, 2 places."
+    # a case that gains its first dated place takes its date the same way, said once
+    letters.add_destination(conn, c, "Ridgeline Institute", due="2026-12-20")
+    conn.commit()
+    assert _tick(ns, calls) == []
+    assert calls["posts"][-1][2] == (":calendar: I set the date for 1 letter from what they asked: Sam Ortiz "
+                                     "by Sun Dec 20. Change it from its block when it comes back.")
+    # his own date on a case is never "set from what they asked"
+    letters.add_destination(conn, d, "Coastal Institute", due="2026-12-28")
+    conn.commit()
+    assert letters.case(conn, d)["do_by"] == "2026-12-28"
+    n = len(calls["posts"])
+    cases.set_date(conn, d, "2026-12-28")                                # he picks the same day himself
+    conn.commit()
+    assert letters.case(conn, d)["do_by_from"] == "owner"
+    assert _tick(ns, calls) == [] and len(calls["posts"]) == n
+
+
+def test_once_ready_a_later_own_date_counts_after_the_case_date():
+    """2. Before the letter is ready every place is due by the case's date.
+    Once it is ready and that date passed, a place still open is late only
+    against its own date, and the delivery list shows each one's own date."""
+    import case_surface as C
+    c = {"id": "lc-1", "case_kind": "letter", "person_name": "Rowan Vale", "decision": "accepted",
+         "status": "open", "do_by": "2026-12-01", "opened": "2026-11-10",
+         "destinations": [{"id": "d1", "name": "Harbor Tech PhD", "due": "2026-12-01", "own_due": "",
+                           "state": "accepted", "method": "portal", "link": ""},
+                          {"id": "d2", "name": "Pinecrest College MS", "due": "2026-12-01",
+                           "own_due": "2026-12-15", "state": "accepted", "method": "portal", "link": ""}]}
+    after = date(2026, 12, 3)
+    assert {d["id"] for d in C.facts(c, after)["overdue"]} == {"d1", "d2"}       # not ready: the case's date
+    for d in c["destinations"]:
+        d["state"] = "ready"
+    f = C.facts(c, after)
+    assert [d["id"] for d in f["overdue"]] == ["d1"] and f["next_due"] == date(2026, 12, 1)
+    spec = C.case_spec(c, after)
+    assert "2. Pinecrest College MS: due Tue Dec 15, ready to submit, portal link" in spec["lines"]
+    assert "1. Harbor Tech PhD: was due Tue Dec 1, ready to submit, portal link" in spec["lines"]
+    before = C.case_spec(dict(c, destinations=[dict(x, state="accepted") for x in c["destinations"]]),
+                         date(2026, 11, 26))
+    assert "2. Pinecrest College MS: to write, portal link" in before["lines"]
 
 
 def test_a_live_block_from_before_gives_way_to_the_quiet_line(conn, monkeypatch):
@@ -579,18 +633,14 @@ def test_a_live_block_from_before_gives_way_to_the_quiet_line(conn, monkeypatch)
     assert calls["status"] == [("old1", ":zzz: Set for Tue Dec 15. I bring it back on Tue Dec 8.")]
 
 
-def test_a_yes_with_no_place_and_no_date_asks_once_and_waits_for_the_week(conn, monkeypatch):
-    """A case with no place named yet and no date: one date card (Pick the
-    date), then off Home and the daily lists; the weekly review has it."""
+def test_a_yes_with_no_place_and_no_date_is_silent_until_one_comes(conn, monkeypatch):
+    """A case with no place named yet and no date asks nothing: off Home
+    and the daily lists, on the weekly review, until a place or a date
+    comes."""
     clock = Clock(date(2026, 11, 23))
     ns, calls, store = _bot(monkeypatch, conn, clock)
-    cid = letters.ensure_case(conn, "Jamie Rivera", "jamie@uni.example")
-    letters.accept(conn, cid, actor="migration", quote="recorded before letter cases")
-    conn.commit()
-    [card] = _tick(ns, calls)
-    assert [(a.id, a.label) for a in card.actions] == [("letter_date_pick", ":calendar: Pick the date")]
-    assert card.actions[0].date == {"min": "2026-11-23", "max": "2027-11-24"}
-    assert _tick(ns, calls) == []
+    cid = _from_before(conn, "Jamie Rivera", "jamie@uni.example")
+    assert _tick(ns, calls) == [] and calls["posts"] == []
     assert _home(conn, clock.day) == []
     b = _briefing(conn, clock.day)
     assert b["letter_cases"] == [] and [e["case"] for e in b["quiet_cases"]] == [cid]

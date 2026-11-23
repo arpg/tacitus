@@ -592,9 +592,14 @@ writes.
 
 A case has one date it is done by (`cases.do_by`, `case_dates.py`): the
 owner gives it with his yes ("Yes, by Tue Dec 1", the earliest date a part
-states, or a date he picks), or once on a date card. Every part is due by
-it; a part's own date is kept and counts only when it is earlier, and a
-part that comes later with an earlier date moves the case's date
+states, or a date he picks). A yes with no date takes the earliest date a
+part states with no question (`cases.stated_date`, also when a case gains
+its first dated part; the bot tells him in one line for all of them);
+only a case with parts and no date anywhere gets one date card, and one
+with no part waits silently. Every part is due by the date; a part's own
+date is kept and counts only when it is earlier (once the work is ready
+and the date has passed, a part still open is late only against its own),
+and a part that comes later with an earlier date moves the case's date
 (`cases.pull_date`, an event the owner is told once). A dated case is
 quiet until its lead time (the kind's `lead`: letters 7 days, forms 3,
 reviews 10, reports 7; `case_lead_days` in `ea-config.json`; a case's own

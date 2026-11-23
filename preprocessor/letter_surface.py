@@ -305,6 +305,7 @@ def note_text(case: dict, step: dict, today: date, lv: str = "full") -> str:
 
 picked_day = _cs.picked_day
 PICK_A_DATE = _cs.PICK_A_DATE
+told_dates = _cs.told_dates
 
 
 def card_plan(cases: list[dict], cards: dict, today: date, sent: dict | None = None,

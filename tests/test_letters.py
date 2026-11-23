@@ -262,7 +262,10 @@ def test_a_persons_mail_and_each_portals_request_join_one_case(conn):
     assert c["materials"][0]["kind"] == "cv"
     letters.accept(conn, cid, actor="owner")
     line = letters.summary_line(letters.case(conn, cid), today=date(2026, 11, 22))
-    assert line == "Letter for Sam Ortiz: 0 of 3 submitted, next due Dec 1."
+    # The yes takes the earliest date the places state as the case's one
+    # date: every place is due by it.
+    assert letters.case(conn, cid)["do_by"] == "2026-12-01"
+    assert line == "Letter for Sam Ortiz: 0 of 3 submitted, next due Dec 1 (3 destinations)."
 
 
 def test_a_confirmation_submits_its_destination_and_the_last_one_closes_the_case(conn):

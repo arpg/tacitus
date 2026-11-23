@@ -500,7 +500,7 @@ def view(x: dict, *, today: date) -> dict:
     for i, d in enumerate(case.get("parts") or [], 1):
         link = str(d.get("link") or "")
         named = _one(_scrub(d.get("name")), 80) if open_ else ""
-        due = cs._dates().due_of(d, case)           # its own, else the case's one date
+        due = cs._dates().due_of(d, case, today)    # the case's one date, or its own
         parts.append({"ref": f"p{i}", "id": str(d.get("id") or ""), "name": named or f"{_cap(w.part)} {i}",
                       "due": due.isoformat() if due else "", "state": d.get("state") or "asked",
                       "own_due": str(d.get("own_due", d.get("due")) or "")[:10],

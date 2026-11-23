@@ -1305,9 +1305,11 @@ and what the place does changed.
   decision follows the answer. Its yes carries the case's one date in the
   same tap ("Yes, by Tue Dec 1", the earliest date a place states; "Yes, by
   another date", a date picker; with no date stated the yes itself asks for
-  one), so a date is never asked again. A case decided without a date gets
-  one date card ("When will you write the letter for ...?": By Tue Dec 1,
-  Another date), once. A dated case is quiet until its lead time (7 days
+  one), so a date is never asked again. A yes with no date takes the
+  earliest date a place states, and one line in Action requests names
+  every case dated that way, with nothing to answer. Only a case with
+  places and no date anywhere gets one date card ("When will you write the
+  letter for ...?": Pick the date), once; a case with no place waits. A dated case is quiet until its lead time (7 days
   for a letter): no card, not on Home, on no daily list. Then it has one
   live card, kind `letter` ("Letter to write"): "Time to write the letter
   for <person>: due Tue Dec 1, 4 places.", each open destination with its

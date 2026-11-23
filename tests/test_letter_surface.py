@@ -491,8 +491,11 @@ def test_the_card_plan_asks_once_then_keeps_one_block():
     nothing again in the same state, the loud rungs, and a retired card
     when the case is done."""
     c_new, c_open = jordan(), riley()
+    # A place that states a date: the store dates the case with it, no card
+    assert sorted((p["case"], p["what"]) for p in L.card_plan([c_new, c_open], {}, TODAY)) == [("case-jp", "ask")]
+    c_open["destinations"][0]["due"] = ""
     plan = L.card_plan([c_new, c_open], {}, TODAY)
-    # Rowan's case has a yes and no date: its one date card, asked once
+    # Rowan's case has a yes and no date anywhere: its one date card, asked once
     assert sorted((p["case"], p["what"]) for p in plan) == [("case-jp", "ask"), ("case-rc", "date")]
     cards = {"case-jp": {"kind": "ask", "live": False},
              "case-rc": {"kind": "date", "live": True, "asked_date": True}}
@@ -726,16 +729,15 @@ def test_the_tick_posts_the_decision_once_and_the_date_card_once(monkeypatch):
     # A yes with no date of the case's own gets one card for its date, not
     # its block: the block comes at its lead time.
     soon = riley()
-    soon["destinations"][0]["due"] = "2026-12-01"
+    soon["destinations"][0]["due"] = ""                         # no date anywhere
     ns, calls, store = _bot(monkeypatch, [jordan(), soon])
     assert ns["_post_letter_cards"](force=True) == 2
     kinds = [c.kind for c in calls["cards"]]
     assert kinds == ["letter_ask", "letter_ask"]
     assert store["cards"]["case-jp"]["kind"] == "ask" and store["cards"]["case-rc"]["kind"] == "date"
     assert store["cards"]["case-rc"]["asked_date"] and store["cards"]["case-rc"]["live"]
-    assert [a.id for a in calls["cards"][1].actions] == ["letter_date", "letter_date_pick"]
-    assert calls["cards"][1].actions[1].date == {"proposed": "2026-12-01", "min": "2026-11-23",
-                                                 "max": "2027-11-24"}
+    assert [a.id for a in calls["cards"][1].actions] == ["letter_date_pick"]
+    assert calls["cards"][1].actions[0].date == {"min": "2026-11-23", "max": "2027-11-24"}
     assert ns["_post_letter_cards"](force=True) == 0          # nothing new
     # A field's value is plain text: the frontends render it inert, and a
     # wrapped one would show its delimiters in the folded block.
