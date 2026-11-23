@@ -167,6 +167,23 @@ def _button(a: CardAction, cut: int | None = None) -> dict:
     return btn
 
 
+def _datepicker(a: CardAction) -> dict:
+    """A date action (CardAction.date) as Slack's date picker: its label is
+    the placeholder and the proposed day its first value. The pick comes
+    back as `selected_date` (ActionEvent.text); the action's value is the
+    bot's to look up by the card (a picker carries none)."""
+    out = {"type": "datepicker", "action_id": a.id,
+           "placeholder": {"type": "plain_text", "emoji": True,
+                           "text": _ct.one_line(_ct.strip_inert(a.label), 0)[:LABEL_CHARS]}}
+    if a.date.get("proposed"):
+        out["initial_date"] = str(a.date["proposed"])
+    return out
+
+
+def _element(a: CardAction) -> dict:
+    return _datepicker(a) if a.date else _button(a)
+
+
 def _actions_block(card: ConfirmationCard, elements: list[dict]) -> dict:
     block: dict = {"type": "actions"}
     if card.block_id:
@@ -369,13 +386,21 @@ def _render_event_delete(card: ConfirmationCard) -> list[dict]:
     return blocks + _footer(card)
 
 
+def _failed(card: ConfirmationCard) -> list[dict]:
+    """A press that did nothing, as one context line (ConfirmationCard.failed)."""
+    if not card.failed:
+        return []
+    return [{"type": "context", "elements": [{"type": "mrkdwn",
+                                              "text": ":warning: " + _card_mrkdwn(card.failed)}]}]
+
+
 def _render_plain(card: ConfirmationCard) -> list[dict]:
     """bulk, close and plugin cards: title, one section per line, then the
     buttons with no divider."""
-    blocks = _title_and_lines(card)
+    blocks = _title_and_lines(card) + _failed(card)
     if card.fields:
         blocks.append(_fields_section(card.fields))
-    blocks.append(_actions_block(card, [_button(a) for a in card.actions]))
+    blocks.append(_actions_block(card, [_element(a) for a in card.actions]))
     return blocks + _footer(card)
 
 
@@ -412,10 +437,10 @@ def _render_letter(card: ConfirmationCard) -> list[dict]:
     """A work case (a letter, a review, a form, a report): title, lines
     and fields as a plain card, the buttons, and the menu of the other
     parts after them (a "Submitted another one" pick)."""
-    blocks = _title_and_lines(card)
+    blocks = _title_and_lines(card) + _failed(card)
     if card.fields:
         blocks.append(_fields_section(card.fields))
-    elements = [_button(a) for a in card.actions]
+    elements = [_element(a) for a in card.actions]
     if card.select is not None and card.select.options:
         elements.append(_select_element(card.select))
     blocks.append(_actions_block(card, elements))
@@ -734,6 +759,8 @@ class SlackFrontend(ChatFrontend):
             if isinstance(parsed, dict):
                 value = parsed
         selected = str(((action.get("selected_option") or {}).get("value")) or "")
+        # A date picker sends its day, the press's text (CardAction.date).
+        picked = str(action.get("selected_date") or "") if action.get("type") == "datepicker" else ""
         return ActionEvent(
             action_id=str(action.get("action_id") or ""),
             user_id=str((body.get("user") or {}).get("id") or ""),
@@ -744,6 +771,7 @@ class SlackFrontend(ChatFrontend):
             block_id=str(action.get("block_id") or ""),
             trigger_id=str(body.get("trigger_id") or ""),
             raw=body,
+            text=picked,
         )
 
     @staticmethod

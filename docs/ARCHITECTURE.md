@@ -590,6 +590,29 @@ release move into the store with the owner's `cases.py migrate --apply`;
 until then they are read through temporary views and the store takes no
 writes.
 
+A case has one date it is done by (`cases.do_by`, `case_dates.py`): the
+owner gives it with his yes ("Yes, by Tue Dec 1", the earliest date a part
+states, or a date he picks). A yes with no date takes the earliest date a
+part states with no question (`cases.stated_date`, also when a case gains
+its first dated part; the bot tells him in one line for all of them);
+only a case with parts and no date anywhere gets one date card, and one
+with no part waits silently. Every part is due by the date; a part's own
+date is kept and counts only when it is earlier (once the work is ready
+and the date has passed, a part still open is late only against its own),
+and a part that comes later with an earlier date moves the case's date
+(`cases.pull_date`, an event the owner is told once). A dated case is
+quiet until its lead time (the kind's `lead`: letters 7 days, forms 3,
+reviews 10, reports 7; `case_lead_days` in `ea-config.json`; a case's own
+`lead_days` or `start_on`): no card, no Home item, no line in the daily
+briefing (`quiet_cases`, the weekly review's). Then its block posts once
+("Time to write the letter"), again only when what it shows changed
+(`case_surface.block_sig`), on a loud rung (the day before, the day, the
+day after) or a new message; once the work is ready it is the delivery
+list. A press that did nothing redraws its own card with the bot's words
+(`ConfirmationCard.failed`). A date is a picker (`CardAction.date`): the
+web chat sends the picked day, Slack a datepicker, and the web server
+refuses any other text for it.
+
 The bot puts the same queue in front of the owner once a day
 (`_post_reply_queue`, a router tick that runs with or without the
 resident): from 08:00 local and outside quiet hours it reads `ledger.py

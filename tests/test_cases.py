@@ -501,7 +501,9 @@ def test_a_kept_case_names_nothing_where_a_hosted_model_reads(conn):
     c = cases.case(conn, cid)
     v = cases.view(c)
     assert v["counterpart_name"] == "" and v["title"] == "" and v["questions"] == []
-    assert all(set(d) == {"id", "due", "method", "state", "ledger_id", "delivered_at"} for d in v["parts"])
+    # A date is no name: a kept part keeps its own date beside the date it is due by.
+    assert all(set(d) == {"id", "due", "own_due", "method", "state", "ledger_id", "delivered_at"}
+               for d in v["parts"])
     assert cases.summary_line(c, today=date(2026, 11, 22)) == \
         "Review (kept on your own model): report due Dec 1."
 

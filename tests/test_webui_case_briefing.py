@@ -48,13 +48,19 @@ SECTIONS = {"history": ["Rowan Vale asked for the letter and named Harbor Tech P
                         "Harbor Tech PhD sent its portal link."],
             "stakes": ["Harbor Tech PhD needs the letter by its date."],
             "unknown": ["The records do not show a statement."]}
+# The date step is the case's one date: it names no part.
 STEPS = [{"id": "s1", "kind": "draft", "params": {}},
          {"id": "s2", "kind": "open_link", "params": {"part": "p1"}},
-         {"id": "s3", "kind": "set_due", "params": {"part": "p2"}}]
+         {"id": "s3", "kind": "set_due", "params": {}}]
 
 
 def day(n: int) -> str:
     return (datetime.now(F.ZONE).date() + timedelta(days=n)).isoformat()
+
+
+def day_words(n: int) -> str:
+    d = datetime.now(F.ZONE).date() + timedelta(days=n)
+    return f"{d:%a %b} {d.day}"
 
 
 def a_case() -> dict:
@@ -144,13 +150,13 @@ def test_a_letter_item_opens_with_its_briefing_above_the_choices(app, size):
     expect(text).not_to_have_class(re.compile(r"\bh-fold\b"))
     steps = deeper.locator("[role='group'] > *")
     expect(steps).to_have_text(["Draft the letter", "Open the portal Harbor Tech PhD",
-                                "Set the due date Pinecrest College MS", "Continue in a conversation"])
+                                "Set the date", "Continue in a conversation"])
     portal = deeper.get_by_role("link", name="Open the portal Harbor Tech PhD")
     expect(portal).to_have_attribute("href", PORTAL)
     expect(portal).to_have_attribute("target", "_blank")
     expect(portal).to_have_attribute("rel", "noopener noreferrer")
-    expect(block.locator(".h-choices .btn")).to_have_text(["Draft the letter", "Submitted: Harbor Tech PhD",
-                                                           "Submitted: Pinecrest College MS", "Set the due date",
+    # a yes with no date of the case's own: Home asks for its one date
+    expect(block.locator(".h-choices .btn")).to_have_text([f"By {day_words(6)}", "Another date",
                                                            "Open it in Action requests"])
     assert PORTAL not in text.inner_text() and "rowan.vale@example.org" not in block.inner_text()
     settled(page)
@@ -171,16 +177,16 @@ def test_a_step_presses_the_case_cards_own_answer(app):
     wait_for(lambda: stub.letter_presses == [(CID, "draft", "", "")])
     expect(block.locator(".h-note")).to_have_text("Tacitus is on it. Its card is in Action requests.")
     assert [a["choice"] for a in stub.acts] == ["step:s1"]
-    # the date step asks for its day first, then presses Set the due date for that place
+    # the date step asks for its day first, then sets the case's one date
     block = opened(page) if block.locator(".h-body").is_hidden() else block
-    step = block.locator(".h-deeper").get_by_role("button", name="Set the due date Pinecrest College MS")
+    step = block.locator(".h-deeper").get_by_role("button", name="Set the date")
     step.click()
     field = block.locator(".h-deeper input[type='date']")
     expect(field).to_be_focused()
     field.fill(day(12))
     block.locator(".h-deeper").get_by_role("button", name="Use this date").click()
     wait_for(lambda: len(stub.letter_presses) == 2)
-    assert stub.letter_presses[1] == (CID, "date", "ld-p2", day(12))
+    assert stub.letter_presses[1] == (CID, "date", "", day(12))
     assert stub.acts[-1]["choice"] == "step:s3" and stub.acts[-1]["arg"] == day(12)
     assert not errors, errors
 
@@ -216,8 +222,7 @@ def test_with_nothing_stored_the_facts_show_and_the_rest_comes_in_below(app):
     thumb = [b.bounding_box() for b in block.locator(".h-choices .btn").all()]
     wait_for(lambda: stub.deeper_posts == [REF])                           # asked for on the open
     expect(deeper.locator(".text")).to_contain_text("What happened")       # written, then read again
-    expect(deeper.locator("[role='group'] button")).to_have_text(["Draft the letter",
-                                                                  "Set the due date Pinecrest College MS",
+    expect(deeper.locator("[role='group'] button")).to_have_text(["Draft the letter", "Set the date",
                                                                   "Continue in a conversation"])
     assert order(block) == ["brief", "choices", "links", "deeper"]         # it came later: below everything
     settled(page)

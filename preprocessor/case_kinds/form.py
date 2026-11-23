@@ -14,7 +14,8 @@ KIND = Kind(
     subkinds=("survey", "training", "registration", "signature", "disclosure", "evaluation"),
     decision=Decision(question="Will you fill it in?"),
     material_kinds=("form", "instructions", "document", "other"),
-    ladder=(7, 3, 1, 0, -1), guide="forms.md", model_kinds=("form",), response_mode="form",
+    ladder=(7, 3, 1, 0, -1), guide="forms.md", lead=3, model_kinds=("form",),
+    response_mode="form",
     detect_default=True, autonomy={"fill": "ask-first", "deliver": "ask-first"},
     rules=Rules(
         request=r"\b(?:(?:review and )?sign\b(?! up)[^.]{0,60}\b(?:document|form|agreement|report|"

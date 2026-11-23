@@ -20,8 +20,11 @@ questions and detection are cases.py's and the letter kind's.
 
     letters.py list [--all]
     letters.py get --case <id>
-    letters.py accept --case <id> [--quote "<owner's words>"]
+    letters.py accept --case <id> [--quote "<owner's words>"] [--date YYYY-MM-DD]
     letters.py decline --case <id> [--quote "<owner's words>"]
+    letters.py set-date --case <id> --date YYYY-MM-DD   (one date for every place)
+    letters.py lead --case <id> --days N   (back on his lists N days before the date)
+    letters.py start --case <id>           (back on his lists now)
     letters.py add-destination --case <id> --name <name> [--due YYYY-MM-DD]
                                [--method portal|email|upload|unknown] [--link <url>]
                                [--ledger-id <id>]
@@ -33,7 +36,7 @@ questions and detection are cases.py's and the letter kind's.
     letters.py record-submitted --dest <id> --evidence "<what shows it>"
     letters.py merge --from <case> --into <case>
     letters.py questions
-    letters.py answer --question <id> --choice "<the answer>"
+    letters.py answer --question <id> --choice "<the answer>" [--date YYYY-MM-DD]
     letters.py migrate [--days 21] [--apply] [--report <path>]
 
 `migrate` here reads the ledger's letter rows of before letter cases into
@@ -118,6 +121,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def _dest(d: dict) -> dict:
     return {"id": d["id"], "case": d["case"], "name": d["name"], "due": d["due"],
+            "own_due": d.get("own_due", d["due"]), "named": d.get("named", bool(d["name"])),
             "method": d["method"], "link": d["link"], "state": d["state"],
             "ledger_id": d["ledger_id"], "conversation_id": d["conversation_id"],
             "sender": d["sender"], "draft": d["draft"],
@@ -141,6 +145,8 @@ def letter_case(c: dict | None) -> dict | None:
             "materials": c["materials"], "base_letter": c["base_doc"], "notes": c["notes"],
             "aliases": c["aliases"], "keep_level": c["keep_level"],
             "case_ledger_id": c["case_ledger_id"],
+            "do_by": c.get("do_by", ""), "do_by_from": c.get("do_by_from", ""),
+            "lead_days": c.get("lead_days"), "start_on": c.get("start_on", ""),
             "destinations": [_dest(d) for d in c["parts"]],
             "questions": [_question(q) for q in c["questions"]],
             "messages": [dict(m, destination=m.get("part", "")) for m in c.get("messages") or []]}
@@ -155,6 +161,8 @@ def _general(c: dict) -> dict:
             "counterpart_email": c.get("person_email", ""), "title": "",
             "status": c.get("status"), "decision": c.get("decision"),
             "keep_level": c.get("keep_level"), "questions": c.get("questions") or [],
+            "do_by": c.get("do_by", ""), "lead_days": c.get("lead_days"),
+            "start_on": c.get("start_on", ""),
             "parts": [dict(d, delivered_at=d.get("submitted_at", "")) for d in
                       c.get("destinations") or []]}
 
@@ -231,8 +239,22 @@ def set_state(conn, dest_id: str, state: str, evidence: str = "", actor: str = "
     return _dest_result(_cases.set_state(conn, dest_id, state, evidence, actor))
 
 
-def accept(conn, case_id: str, *, actor: str = "", quote: str = "") -> dict:
-    return _cases.accept(conn, case_id, actor=actor, quote=quote)
+def accept(conn, case_id: str, *, actor: str = "", quote: str = "", do_by: str = "") -> dict:
+    return _cases.accept(conn, case_id, actor=actor, quote=quote, do_by=do_by)
+
+
+def set_date(conn, case_id: str, due: str, *, actor: str = "") -> dict:
+    """The case's one date: every destination with no date of its own is
+    due by it (cases.set_date)."""
+    return _cases.set_date(conn, case_id, due, actor=actor)
+
+
+def set_lead(conn, case_id: str, days, *, actor: str = "") -> dict:
+    return _cases.set_lead(conn, case_id, days, actor=actor)
+
+
+def start_now(conn, case_id: str, *, actor: str = "") -> dict:
+    return _cases.start_now(conn, case_id, actor=actor)
 
 
 def decline(conn, case_id: str, *, actor: str = "", quote: str = "") -> dict:
@@ -267,8 +289,8 @@ def questions(conn, *, open_only: bool = True) -> list[dict]:
     return [_question(q) for q in _cases.questions(conn, open_only=open_only, kind="letter")]
 
 
-def answer(conn, question_id: str, choice: str, *, actor: str = "owner") -> dict:
-    return _dest_result(_cases.answer(conn, question_id, choice, actor=actor))
+def answer(conn, question_id: str, choice: str, *, actor: str = "owner", do_by: str = "") -> dict:
+    return _dest_result(_cases.answer(conn, question_id, choice, actor=actor, do_by=do_by))
 
 
 def ask_write(conn, case_id: str, *, ledger_id: str = "") -> str:
@@ -648,6 +670,16 @@ def main(argv=None) -> int:
         s = sub.add_parser(name, allow_abbrev=False)
         s.add_argument("--case", required=True)
         s.add_argument("--quote", default="")
+        if name == "accept":
+            s.add_argument("--date", default="", help="the case's one date, YYYY-MM-DD")
+    s = sub.add_parser("set-date", allow_abbrev=False)
+    s.add_argument("--case", required=True)
+    s.add_argument("--date", required=True, help="YYYY-MM-DD, or \"\" for no date")
+    s = sub.add_parser("lead", allow_abbrev=False)
+    s.add_argument("--case", required=True)
+    s.add_argument("--days", required=True)
+    s = sub.add_parser("start", allow_abbrev=False)
+    s.add_argument("--case", required=True)
     s = sub.add_parser("add-destination", allow_abbrev=False)
     s.add_argument("--case", required=True)
     s.add_argument("--name", required=True)
@@ -678,6 +710,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("answer", allow_abbrev=False)
     s.add_argument("--question", required=True)
     s.add_argument("--choice", required=True)
+    s.add_argument("--date", default="")
     s = sub.add_parser("migrate", allow_abbrev=False)
     s.add_argument("--days", type=int, default=21)
     s.add_argument("--apply", action="store_true")
@@ -714,7 +747,13 @@ def main(argv=None) -> int:
             c = case(conn, args.case)
             return _out({"case": c, "line": summary_line(c)}) if c else _err(f"no case {args.case}")
         if args.cmd == "accept":
-            res = accept(conn, args.case, actor=actor, quote=args.quote)
+            res = accept(conn, args.case, actor=actor, quote=args.quote, do_by=args.date)
+        elif args.cmd == "set-date":
+            res = set_date(conn, args.case, args.date, actor=actor)
+        elif args.cmd == "lead":
+            res = set_lead(conn, args.case, args.days, actor=actor)
+        elif args.cmd == "start":
+            res = start_now(conn, args.case, actor=actor)
         elif args.cmd == "decline":
             res = decline(conn, args.case, actor=actor, quote=args.quote)
         elif args.cmd == "add-destination":
@@ -735,7 +774,7 @@ def main(argv=None) -> int:
         elif args.cmd == "questions":
             return _out({"questions": questions(conn)})
         elif args.cmd == "answer":
-            res = answer(conn, args.question, args.choice, actor=actor)
+            res = answer(conn, args.question, args.choice, actor=actor, do_by=args.date)
         elif args.cmd == "migrate":
             plan = migration_plan(conn, days=args.days)
             if args.report:

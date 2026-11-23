@@ -94,7 +94,8 @@ def test_1_a_review_request_gets_one_decision_and_the_judgment_stays_his():
               questions=[{"id": "rq-9", "kind": "decide", "choices": ["Yes", "No"], "answer": ""}])
     spec = C.decision_spec(c, TODAY)
     assert spec["title"].endswith("Will you do this review?")
-    assert [a[0] for a in spec["actions"]] == ["case_yes", "case_no"]
+    # its yes carries the case's one date: the date stated, or another one picked
+    assert [a[0] for a in spec["actions"]] == ["case_yes", "case_yes_date", "case_no"]
     calls = []
     no = C.answer(c, "no", question="rq-9", runner=lambda argv: calls.append(argv) or {"ok": True})
     assert calls == [["answer", "--question", "rq-9", "--choice", "No"]]
@@ -133,10 +134,10 @@ def test_3_a_report_asks_only_for_what_is_missing():
               questions=[{"id": "pq-9", "kind": "decide", "choices": ["Yes", "Yes, ask for materials", "No"],
                           "answer": ""}])
     spec = C.decision_spec(c, TODAY)
-    assert [a[1] for a in spec["actions"]] == [":white_check_mark: Yes", ":page_facing_up: Yes, ask for materials",
-                                               ":no_entry_sign: No"]
+    assert [a[1] for a in spec["actions"]] == [":white_check_mark: Yes, by Fri Dec 4", ":calendar: Yes, by another date",
+                                               ":page_facing_up: Yes, ask for materials", ":no_entry_sign: No"]
     calls = []
     got = C.answer(c, "yes_ask", question="pq-9", runner=lambda argv: calls.append(argv) or {"ok": True})
-    assert calls == [["answer", "--question", "pq-9", "--choice", "Yes, ask for materials"]]
+    assert calls == [["answer", "--question", "pq-9", "--choice", "Yes, ask for materials", "--date", "2026-12-04"]]
     assert "Ask only for what the request did not already include" in got["turn"]
     assert "waits for his Send" in got["turn"]

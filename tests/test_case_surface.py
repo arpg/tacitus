@@ -70,11 +70,18 @@ def _case(cid, kind, sub, who, email, parts, **over):
 
 
 def review():
-    """A paper review the owner said yes to, its report due Dec 1 on a site."""
+    """A paper review the owner said yes to by Dec 1 (its one date), its
+    report due Dec 1 on a site: within its lead time, so its block is up."""
     return _case("rv-1", "review", "paper", "Pat Lee", "pat.lee@example.org",
                  [_part("rp1", "Referee report", "2026-12-01", method="portal",
                         link="https://review.example.org/ms/123")],
-                 materials=[{"kind": "document", "ref": "/docs/reviews/rv-1/paper.pdf"}])
+                 materials=[{"kind": "document", "ref": "/docs/reviews/rv-1/paper.pdf"}], do_by="2026-12-01")
+
+
+def shown(c, today=TODAY):
+    """A bot record that has shown the case as it is now."""
+    return {"sig": C.block_sig(c, today), "do_by": c.get("do_by", ""),
+            "parts": [d["id"] for d in C.open_parts(c)]}
 
 
 def new_review():
@@ -193,15 +200,31 @@ def test_the_block_is_posted_again_when_they_write_after_it():
     marks = C.news_marks([c], rows, now=now)
     assert marks["rv-1"]["at"] == "2026-11-23T09:00:00Z" and marks["rv-1"]["words"] == "New message from Pat Lee."
     posted = datetime(2026, 11, 23, 8, 0, tzinfo=timezone.utc).timestamp()
-    cards = {"rv-1": {"kind": "case", "live": True, "posted": posted}}
-    plan = C.card_plan([c], cards, TODAY, {}, marks)
-    assert plan == [{"case": "rv-1", "what": "news", "kind": "case", "at": "2026-11-23T09:00:00Z", "keys": []}]
+    cards = {"rv-1": {"kind": "case", "live": True, "posted": posted, **shown(c)}}
+    [plan] = C.card_plan([c], cards, TODAY, {}, marks)
+    assert (plan["what"], plan["kind"], plan["at"]) == ("news", "case", "2026-11-23T09:00:00Z")
     spec = C.case_spec(c, TODAY, news=marks["rv-1"]["items"])
     assert spec["lines"][0] == "New message from Pat Lee."
     cards["rv-1"]["news_at"] = "2026-11-23T09:00:00Z"
     assert C.card_plan([c], cards, TODAY, {}, marks) == []          # shown once
-    cards = {"rv-1": {"kind": "case", "live": True, "posted": now.timestamp()}}
+    cards = {"rv-1": {"kind": "case", "live": True, "posted": now.timestamp(), **shown(c)}}
     assert C.card_plan([c], cards, TODAY, {}, marks) == []          # the block came after it
+
+
+def test_a_message_while_the_case_is_quiet_is_one_line():
+    """News is not a nag: a quiet case says it once, as a line, and stays quiet."""
+    c = dict(review(), do_by="2026-12-20")
+    c["parts"][0]["due"] = ""
+    rows = rows_of(c)
+    rows["row-rp1"]["thread_brief"] = _brief("conv-rp1", {"id": "m1", "from": "pat.lee@example.org",
+                                                         "received": "2026-11-23T09:00:00Z"})
+    marks = C.news_marks([c], rows, now=datetime(2026, 11, 23, 15, 0, tzinfo=timezone.utc))
+    cards = {"rv-1": {"kind": "ask", "live": False, "posted": 1.0, **shown(c)}}
+    [step] = C.card_plan([c], cards, TODAY, {}, marks)
+    assert (step["what"], step["text_key"]) == ("note", "news")
+    assert C.note_text(c, step, TODAY) == ":envelope: New message from Pat Lee. The report for Pat Lee stays set for Sun Dec 20."
+    cards["rv-1"]["news_at"] = step["at"]
+    assert C.card_plan([c], cards, TODAY, {}, marks) == []
 
 
 # ── the briefing JSON ─────────────────────────────────────────────────
@@ -345,11 +368,12 @@ def _rungs(c, due: date):
 
 
 def test_each_kind_rings_its_own_ladder():
-    assert _rungs(review(), date(2026, 12, 1)) == {14: (14, False), 7: (7, False), 3: (3, False),
-                                                   1: (1, True), 0: (0, True), -1: (-1, True)}
-    assert _rungs(form(), date(2026, 11, 27)) == {7: (7, False), 3: (3, False), 1: (1, True), 0: (0, True),
-                                                  -1: (-1, True)}
-    assert 14 in _rungs(report(), date(2026, 12, 4))
+    # The quiet rungs posted nothing: each kind's lead time brings the case
+    # back (its stage turns due), and the loud rungs ring on the nearest date.
+    assert _rungs(review(), date(2026, 12, 1)) == {1: (1, True), 0: (0, True), -1: (-1, True)}
+    assert _rungs(form(), date(2026, 11, 27)) == {1: (1, True), 0: (0, True), -1: (-1, True)}
+    assert {k: C._dates().kind_lead(k) for k in ("letter", "form", "review", "report")} == \
+        {"letter": 7, "form": 3, "review": 10, "report": 7}
     items = C.reminders([review()], date(2026, 11, 30))
     assert C.reminder_text(review(), items, date(2026, 11, 30), "full") == \
         "Review for Pat Lee: 1 report due tomorrow (Referee report)."
@@ -360,36 +384,50 @@ def test_each_kind_rings_its_own_ladder():
 def test_the_new_case_card_asks_the_kinds_own_question():
     spec = C.decision_spec(new_review(), TODAY)
     assert spec["kind"] == "case_ask" and spec["title"] == ":memo: *A review request.* Will you do this review?"
-    assert [(a[0], a[1]) for a in spec["actions"]] == [("case_yes", ":white_check_mark: Yes"),
+    # The yes carries the one date in the same tap: the date the records
+    # state, or another the owner picks (a date picker, never free words).
+    assert [(a[0], a[1]) for a in spec["actions"]] == [("case_yes", ":white_check_mark: Yes, by Mon Dec 14"),
+                                                       ("case_yes_date", ":calendar: Yes, by another date"),
                                                        ("case_no", ":no_entry_sign: No")]
-    assert spec["actions"][0][2] == {"case": "rv-2", "rows": ["row-rp2"], "question": "rq-1"}
+    assert spec["actions"][0][2] == {"case": "rv-2", "rows": ["row-rp2"], "question": "rq-1", "by": "2026-12-14"}
+    assert spec["actions"][1][5] == "The date" and spec["actions"][1][6] == {
+        "proposed": "2026-12-14", "min": "2026-11-23", "max": "2027-11-24"}
     assert spec["no_default"] and all(a[3] != "danger" for a in spec["actions"])
     assert "1. Panel report: due Mon Dec 14, not answered yet, by email" in spec["lines"]
     assert dict(spec["fields"])["From"] == "Jordan Park"
     rep = dict(report(), decision="")
     for d in rep["parts"]:
         d["state"] = "asked"
-    assert [a[0] for a in C.decision_spec(rep, TODAY)["actions"]] == ["case_yes", "case_yes_ask", "case_no"]
+    assert [a[0] for a in C.decision_spec(rep, TODAY)["actions"]] == ["case_yes", "case_yes_date", "case_yes_ask",
+                                                                      "case_no"]
+    nodate = dict(new_review())
+    nodate["parts"] = [dict(nodate["parts"][0], due="")]
+    yes = C.decision_spec(nodate, TODAY)["actions"][0]                # no date stated: the yes asks for it
+    assert (yes[0], yes[1], yes[5], yes[6]) == ("case_yes", ":white_check_mark: Yes", "The date",
+                                                {"min": "2026-11-23", "max": "2027-11-24"})
     assert C.decision_spec(dict(form(), decision=""), TODAY)["title"].endswith("Will you fill it in?")
     kept = C.decision_spec(new_review(), TODAY, "local")
     assert "Jordan" not in json.dumps(kept) and "Panel report" not in json.dumps(kept)
 
 
 def test_the_case_block_offers_what_fits_its_state():
+    # Its time came: "Time to do the review", Draft, the date as a picker,
+    # Decline and a menu for a report already returned (the delivery
+    # buttons are the ready report's list).
     spec = C.case_spec(review(), TODAY)
-    assert spec["kind"] == "case" and spec["title"] == ":memo: *Paper review for Pat Lee*: 0 of 1 returned."
+    assert spec["kind"] == "case" and spec["title"] == ":memo: *Time to do the review for Pat Lee*: due Tue Dec 1, 1 report."
     assert [(a[0], a[1]) for a in spec["actions"]] == [
-        ("case_draft", ":pencil2: Draft the report"), ("case_delivered", ":white_check_mark: Returned: Referee report"),
+        ("case_draft", ":pencil2: Draft the report"), ("case_date_pick", ":calendar: Change the date"),
         ("case_decline", "Decline")]
-    assert spec["actions"][1][2] == {"case": "rv-1", "rows": ["row-rp1"], "part": "rp1"}
+    assert spec["select"] == ("case_delivered", "Already returned one", [("Referee report", "rp1")])
     assert "Missing: the report." in spec["lines"]
     assert "<https://review.example.org/ms/123|Open the review site for Referee report>" in spec["lines"]
     assert all("ledger_id" not in a[2] for a in spec["actions"])
     undated = form()
     undated["parts"][0]["due"] = ""
     acts = C.case_spec(undated, TODAY)["actions"]
-    assert [a[0] for a in acts] == ["case_draft", "case_delivered", "case_date", "case_decline"]
-    assert acts[0][1] == ":pencil2: Fill it in" and acts[2][2]["part"] == "fp1"
+    assert [a[0] for a in acts] == ["case_draft", "case_date_pick", "case_decline"]
+    assert acts[0][1] == ":pencil2: Fill it in" and acts[1][1] == ":calendar: Pick the date" and "part" not in acts[1][2]
     assert C.case_spec(report(), TODAY)["actions"][0][1] == ":pencil2: Change the draft"
     kept = C.case_spec(review(), TODAY, "local")
     assert not any(ln.startswith("<https://") for ln in kept["lines"]) and "Pat Lee" not in json.dumps(kept)
@@ -398,7 +436,7 @@ def test_the_case_block_offers_what_fits_its_state():
 def test_the_card_plan_asks_once_then_keeps_one_block():
     plan = C.card_plan([new_review(), review()], {}, TODAY)
     assert sorted((p["case"], p["what"]) for p in plan) == [("rv-1", "case"), ("rv-2", "ask")]
-    cards = {"rv-2": {"kind": "ask", "live": True}, "rv-1": {"kind": "case", "live": True}}
+    cards = {"rv-2": {"kind": "ask", "live": True}, "rv-1": {"kind": "case", "live": True, **shown(review())}}
     assert C.card_plan([new_review(), review()], cards, TODAY) == []
     plan = C.card_plan([review()], cards, date(2026, 11, 30))
     assert plan[0]["what"] == "remind" and plan[0]["items"][0]["rung"] == 1
@@ -414,9 +452,16 @@ def test_an_answer_runs_the_stores_verbs_and_one_turn_for_the_rest(monkeypatch):
         calls.append(argv)
         return {"ok": True}
     monkeypatch.setattr(C, "today_local", lambda: TODAY)
+    # The yes sets the one date (the earliest the records state) and says
+    # when the case comes back (a review's lead time: ten days).
     yes = C.answer(new_review(), "yes", question="rq-1", runner=runner)
-    assert yes == {"ok": True, "said": "You said yes. It is on your list with its date."}
-    assert calls[-1] == ["answer", "--question", "rq-1", "--choice", "Yes"]
+    assert yes == {"ok": True, "said": "You said yes, by Mon Dec 14. I bring it back on Fri Dec 4."}
+    assert calls[-1] == ["answer", "--question", "rq-1", "--choice", "Yes", "--date", "2026-12-14"]
+    other = C.answer(new_review(), "yes_date", text="2026-12-10", question="rq-1", runner=runner)
+    assert other["said"] == "You said yes, by Thu Dec 10. I bring it back on Mon Nov 30."
+    assert calls[-1][-2:] == ["--date", "2026-12-10"]
+    assert C.answer(new_review(), "yes_date", text="", question="rq-1", runner=runner) == \
+        {"ok": False, "said": C.PICK_A_DATE}
     no = C.answer(new_review(), "no", question="rq-1", runner=runner)
     assert calls[-1] == ["answer", "--question", "rq-1", "--choice", "No"]
     assert "Write a short decline to Jordan Park as a draft that waits for his Send" in no["turn"]
@@ -429,11 +474,14 @@ def test_an_answer_runs_the_stores_verbs_and_one_turn_for_the_rest(monkeypatch):
     assert not C.answer(review(), "delivered", runner=runner)["ok"]
     undated = form()
     undated["parts"][0]["due"] = ""
+    # One date for the whole case (never a part's, never a turn that asks
+    # which part); words with no day in them change nothing and loop on nothing.
     dated = C.answer(undated, "date", text="Dec 1", runner=runner)
-    assert dated == {"ok": True, "said": "Recorded: due Tue Dec 1."}
-    assert calls[-1] == ["set-due", "--part", "fp1", "--due", "2026-12-01"]
-    asked = C.answer(undated, "date", text="soon", runner=runner)
-    assert "ask for it in one line" in asked["turn"]
+    assert dated == {"ok": True, "said": "The date is Tue Dec 1. I bring it back on Sat Nov 28."}
+    assert calls[-1] == ["set-date", "--case", "fm-1", "--date", "2026-12-01"]
+    n = len(calls)
+    assert C.answer(undated, "date", text="soon", runner=runner) == {"ok": False, "said": C.PICK_A_DATE}
+    assert len(calls) == n and "turn" not in C.answer(undated, "date", text="soon", runner=runner)
     draft = C.answer(review(), "draft", text="be kind about the method", runner=runner)
     assert "His judgment, scores and recommendation are his" in draft["turn"]
     assert "docs/ea/reviews.md" in draft["turn"] and "never goes in a channel post" in draft["turn"]
@@ -486,7 +534,7 @@ def test_the_slack_front_end_draws_both_cards_and_the_folded_block_names_them():
     from botcore.chat import slack_frontend as sf
     from preprocessor import chat as _chat
     for spec in (C.decision_spec(new_review(), TODAY), C.case_spec(report(), TODAY)):
-        actions = [_chat.CardAction(a, lbl, v, st, w, ask=ask) for a, lbl, v, st, w, ask in spec["actions"]]
+        actions = [_chat.CardAction(*a[:5], ask=a[5], date=a[6] if len(a) > 6 else {}) for a in spec["actions"]]
         card = _chat.ConfirmationCard(kind=spec["kind"], title=spec["title"], lines=spec["lines"],
                                       actions=actions, block_id=spec["block_id"])
         text, blocks = sf.render_card(card)
@@ -573,11 +621,15 @@ def _bot(monkeypatch, case_list, questions=()):
     return ns, calls, store
 
 
-def test_the_tick_posts_a_reviews_decision_and_a_forms_block(monkeypatch):
-    ns, calls, store = _bot(monkeypatch, [new_review(), form()])
+def test_the_tick_posts_a_reviews_decision_and_a_forms_date_card(monkeypatch):
+    # A form with a yes and no date anywhere gets one card for its date.
+    undated = form()
+    undated["parts"][0]["due"] = ""
+    ns, calls, store = _bot(monkeypatch, [new_review(), undated])
     assert ns["_post_letter_cards"](force=True) == 2
-    assert [c.kind for c in calls["cards"]] == ["case_ask", "case"]
-    assert store["cards"]["rv-2"]["kind"] == "ask" and store["cards"]["fm-1"]["kind"] == "case"
+    assert [c.kind for c in calls["cards"]] == ["case_ask", "case_ask"]
+    assert store["cards"]["rv-2"]["kind"] == "ask" and store["cards"]["fm-1"]["kind"] == "date"
+    assert calls["cards"][1].title == ":calendar: *When will you fill it in for Compliance Office?*"
     assert ns["_post_letter_cards"](force=True) == 0
     values = [f.value for c in calls["cards"] for f in c.fields]
     assert values and all("" not in v and "" not in v for v in values)
@@ -603,6 +655,8 @@ def test_a_press_on_a_case_card_runs_its_answer_and_turn(monkeypatch):
                                  card=types.SimpleNamespace(channel="dm", id="m9", thread_key="m9"))
     ns["handle_case"](gone)
     assert calls["status"][-1] == ("m9", ns["CASE_CARD_GONE"])
+    # The press changed nothing the block shows: no second block.
+    assert [c.kind for c in calls["cards"]] == ["case"]
     got = ns["_home_case"]("rv-1", "delivered", "rp1")
     assert got["ok"] and calls["answers"][-1] == ("rv-1", "delivered", "rp1", "")
 
@@ -645,18 +699,27 @@ def test_home_lists_one_item_per_case_of_each_kind_in_place_of_its_rows():
     assert not any(x["id"] == "reply:row-fp1" for x in left) and any(x["id"] == "reply:response-x" for x in left)
     assert items["case:rv-2"]["title"] == "Will you do this review? Proposal review for Jordan Park."
     assert items["case:rv-2"]["label"] == "Review request" and items["case:fm-1"]["label"] == "Form"
+    # a yes with no date: Home asks for its one date
+    assert items["case:fm-1"]["title"] == "When will you fill it in for Compliance Office?"
     assert items["case:fm-1"]["detail"] == "due Fri Nov 27."
     assert "row-" not in json.dumps([x for x in H.build(src)["left"] if x["kind"] == "case"])
 
 
 def test_home_quick_briefing_and_choices_for_a_case():
     assert C.home_brief(review(), TODAY) == {
-        "what": "Paper review for Pat Lee.", "asked": "Review it and return 1 report.", "due": "Next due Tue Dec 1.",
+        "what": "Paper review for Pat Lee.", "asked": "Review it and return 1 report.", "due": "Due Tue Dec 1.",
         "standing": ["0 of 1 reports returned."], "next": "Tacitus can draft the report from your points."}
-    assert [c["id"] for c in C.home_choices(new_review(), TODAY)] == ["case:yes", "case:no"]
-    assert C.home_choices(new_review(), TODAY)[0]["label"] == "Yes, I will review it"
-    assert [c["id"] for c in C.home_choices(report(), TODAY)] == ["case:draft", "case:delivered:pp1",
-                                                                  "case:delivered:pp2", "open"]
+    # A new case's yes carries the date; a case whose time came offers
+    # Draft and the date; the deliveries are the ready work's list.
+    assert [c["id"] for c in C.home_choices(new_review(), TODAY)] == ["case:yes", "case:yes_date", "case:no"]
+    assert C.home_choices(new_review(), TODAY)[0]["label"] == "Yes, by Mon Dec 14"
+    started = dict(report(), do_by="2026-12-04")                    # dated, and a draft exists
+    assert [c["id"] for c in C.home_choices(started, TODAY)] == ["case:draft", "case:date_pick", "open"]
+    ready = dict(report(), do_by="2026-12-04")
+    for d in ready["parts"][:2]:
+        d["state"] = "ready"
+    assert [c["id"] for c in C.home_choices(ready, TODAY)] == ["case:delivered:pp1", "case:delivered:pp2",
+                                                               "case:all", "case:draft", "open"]
     assert C.home_choice("case:delivered:pp1") == ("delivered", "pp1")
     assert C.home_choice("case:submitted:pp1") == ("", "")          # a letter's word, not a case's
     assert L.home_choice("case:draft") == ("", "")                  # the letters' layer takes letters only
@@ -690,7 +753,7 @@ def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch, t
     it = I.item(src, "case:rv-1")
     assert it["kind"] == "case" and it["label"] == "Review"
     assert it["brief"]["what"] == "Paper review for Pat Lee."
-    assert [c["id"] for c in it["choices"]] == ["case:draft", "case:delivered:rp1", "open"]
+    assert [c["id"] for c in it["choices"]] == ["case:draft", "case:date_pick", "open"]
     # the briefing on a case (case_briefing), as a letter gets it; with no
     # store to read, from the case itself and kept (no name, no part)
     assert it["deeper"]["state"] == "ready" and "The reports\n- Report 1: due " in it["deeper"]["text"]
@@ -710,9 +773,9 @@ def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch, t
             return "dm"
     h = H.Home(FE(), clock=lambda: F.at(13, 10), sources=lambda tz: src, background=False)
     h.hooks.case = lambda cid, answer, part, words: called.append((cid, answer, part, words)) or \
-        {"ok": True, "said": "Marked as returned."}
-    got, _after = h.act("case:rv-1", "case:delivered:rp1")
-    assert got == {"ok": True, "said": "Marked as returned."} and ("rv-1", "delivered", "rp1", "") in called
+        {"ok": True, "said": "The date is set."}
+    got, _after = h.act("case:rv-1", "case:date_pick", "2026-12-20")
+    assert got == {"ok": True, "said": "The date is set."} and ("rv-1", "date", "", "2026-12-20") in called
     got, _after = h.act("case:rv-1", "done")
     assert got["ok"] is False
     # kept, with no local model: no model call starts, and a step it never

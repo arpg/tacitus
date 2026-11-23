@@ -573,6 +573,35 @@ CREATE TABLE IF NOT EXISTS light_notices(
 """
 
 
+def _picked_day(text: str, spec: dict) -> str:
+    """The day a date action's press sends (CardAction.date): YYYY-MM-DD
+    within the action's min and max, else a 400 that names the range, so
+    no press reaches the bot without a day in it."""
+    lo, hi = str((spec or {}).get("min") or ""), str((spec or {}).get("max") or "")
+    t = (text or "").strip()
+    ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", t))
+    if ok:
+        try:
+            datetime.strptime(t, "%Y-%m-%d")
+        except ValueError:
+            ok = False
+    if not ok or (lo and t < lo) or (hi and t > hi):
+        raise _HttpError(400, f"Pick a day from {_day_words(lo)} to {_day_words(hi, lo)}."
+                         if lo and hi else "Pick a day.")
+    return t
+
+
+def _day_words(iso: str, since: str = "") -> str:
+    """"Tue Nov 24"; with the year when it is not the year of `since`
+    ("Tue Nov 23, 2027")."""
+    try:
+        d = datetime.strptime(iso, "%Y-%m-%d")
+    except ValueError:
+        return iso
+    year = f", {d.year}" if since[:4] and since[:4] != iso[:4] else ""
+    return f"{d:%a %b} {d.day}{year}"
+
+
 def _status_name(status: Status | str) -> str:
     return status.value if isinstance(status, Status) else str(status)
 
@@ -4944,6 +4973,8 @@ class WebFrontend(ChatFrontend):
             value = action.get("value", "")
             selected = ""
             text = action_text(text) if action.get("ask") else ""
+            if action.get("date"):
+                text = _picked_day(text, action["date"])
         elif select and select.get("id") == action_id:
             if selected not in {str(o[1]) for o in select.get("options") or [] if len(o) > 1}:
                 raise _HttpError(400, "no such option")

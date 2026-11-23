@@ -80,7 +80,7 @@ STATES = ("asked", "accepted", "declined", "drafted", "ready", "submitted")
 OPEN_STATES = ("asked", "accepted", "drafted", "ready")
 TERMINAL = ("declined", "submitted")
 ANSWERS = ("yes", "materials", "no")
-CHOICES = ("yes", "yes_ask", "no", "draft", "submitted", "date", "decline")
+CHOICES = ("yes", "yes_ask", "yes_date", "no", "draft", "submitted", "all", "date", "decline")
 
 DRAFT_TASK = "draft_letter"
 UPLOAD_TASK = "upload_letter_of_recommendation"
@@ -313,6 +313,16 @@ class Store:
         self.conn.commit()
         return True
 
+    def set_date(self, case_id, due) -> bool:
+        """The case's one date (letters.set_date); False on a store
+        without it."""
+        fn = getattr(self.mod, "set_date", None)
+        if fn is None:
+            return False
+        fn(self.conn, case_id, due, actor="owner")
+        self.conn.commit()
+        return True
+
     def view(self, case):
         fn = getattr(self.mod, "view", None)
         return fn(case) if fn is not None else case
@@ -371,8 +381,11 @@ def _person(case: dict) -> str:
 
 
 def _next_due(case: dict) -> tuple[str, list[dict]]:
-    """(the nearest due date among the open destinations, those due then)."""
-    dated = sorted((str(d.get("due"))[:10], d) for d in _dests(case, states=OPEN_STATES) if d.get("due"))
+    """(the nearest due date among the open destinations, those due then).
+    Sorted by the date alone: two destinations due the same day must never
+    compare their dicts."""
+    dated = sorted(((str(d.get("due"))[:10], d) for d in _dests(case, states=OPEN_STATES)
+                    if d.get("due")), key=lambda x: x[0])
     if not dated:
         return "", []
     first = dated[0][0]
@@ -783,29 +796,50 @@ def answer(case_id, choice: str, *, dest: str = "", text: str = "", actor: str =
         return {"ok": False, "said": "I could not read this letter case.", "error": str(e)[:200]}
     who = _person(case)
     text = " ".join((text or "").split())
-    quote = f"{text or choice} (Action requests)"
+    by = _dates().parse_words(text, _today()) if choice in ("yes", "yes_ask", "yes_date", "date") else None
+    if choice == "date" and not text:
+        by = _dates().proposed(case)  # the date card's "By Tue Dec 1": the earliest a place states
+    quote = f"{choice if by else (text or choice)} (Action requests)"
 
     def turn(what: str) -> dict:
         return {} if kept(case) else {"turn": _turn(case, what)}
     try:
-        if choice == "yes":
+        if choice in ("yes_date", "date") and not by:
+            # A date answer with no date in it changes nothing and asks
+            # again with the picker; it never loops on free text.
+            return {"ok": False, "said": PICK_A_DATE}
+        if choice in ("yes", "yes_date"):
             _accept(store, case, quote, actor, dest)
             case = _case(store, case_id)
-            due, _ = _next_due(case)
-            return {"ok": True, "said": "You said yes. No email sent."
-                                        + (f" Next due {_due_words(due)}." if due else "")}
+            if dest:
+                due, _ = _next_due(case)
+                return {"ok": True, "said": "You said yes. No email sent."
+                                            + (f" Next due {_due_words(due)}." if due else "")}
+            when, rest = _dated(store, case_id, by)
+            return {"ok": True, "said": f"You said yes, by {_dates().day_words(when)}.{rest}" if when
+                    else "You said yes. Pick its date on the next card."}
+        if choice == "date":
+            when, rest = _dated(store, case_id, by)
+            if not when:
+                return {"ok": False, "said": "I could not record the date. Ask me in Ask Tacitus."}
+            return {"ok": True, "said": f"The date is {_dates().day_words(when)}.{rest}"}
         if choice == "yes_ask":
             _accept(store, case, quote, actor, dest)
             case = _case(store, case_id)
+            yes = "You said yes."
+            if not dest:
+                when, _rest = _dated(store, case_id, by)
+                yes = f"You said yes, by {_dates().day_words(when)}." if when else yes
+                case = _case(store, case_id)
             plan = materials_plan(case)
             have = f" {who[:1].upper() + who[1:]} already sent {_join(plan['already'])}." if plan["already"] else ""
             if not plan["missing"]:
-                return {"ok": True, "said": f"You said yes.{have} Nothing to ask for, so no email."}
+                return {"ok": True, "said": f"{yes}{have} Nothing to ask for, so no email."}
             if kept(case):
-                return {"ok": True, "said": f"You said yes.{have} Still missing: {_join(plan['asks'])}. "
+                return {"ok": True, "said": f"{yes}{have} Still missing: {_join(plan['asks'])}. "
                                             "This case stays on your own model, so ask them yourself."}
             return {"ok": True,
-                    "said": f"You said yes.{have} I will draft a short ask for {_join(plan['asks'])}.",
+                    "said": f"{yes}{have} I will draft a short ask for {_join(plan['asks'])}.",
                     **turn("The owner chose Yes, ask for materials. Run letters_work.py decide "
                            f"--case {case.get('id')} --answer materials --owner-said \"Yes, ask for "
                            "materials\", write the reply through the writer from the brief it gives, "
@@ -835,6 +869,14 @@ def answer(case_id, choice: str, *, dest: str = "", text: str = "", actor: str =
                            f"--case {case.get('id')} --owner-said \"{text or 'Draft the letter'}\", give the "
                            "brief to the email-author subagent in the foreground, then check, render and "
                            "name the PDF path in your reply.")}
+        if choice == "all":
+            dests = _dests(case, states=OPEN_STATES)
+            if not dests:
+                return {"ok": False, "said": "Every place is already closed."}
+            for d in dests:
+                store.set_state(d.get("id"), "submitted", "the owner said all are submitted, in "
+                                "Action requests", actor)
+            return {"ok": True, "said": f"Submitted. All letters for {who} are in. The case is closed."}
         if choice == "submitted":
             dests = _dests(case, dest or text, states=OPEN_STATES)
             if not dests:
@@ -847,26 +889,54 @@ def answer(case_id, choice: str, *, dest: str = "", text: str = "", actor: str =
             if done and len(done) == len(alld):
                 return {"ok": True, "said": f"Submitted. All letters for {who} are in. The case is closed."}
             return {"ok": True, "said": f"Submitted. {len(done)} of {len(alld)} done."}
-        if choice == "date":
-            due = parse_due(text)
-            if not due:
-                return {"ok": False, "said": "I did not find a date in that. Try a date like Dec 1."}
-            targets = _dests(case, dest, states=OPEN_STATES) if dest else \
-                [d for d in _dests(case, states=OPEN_STATES) if not d.get("due")]
-            if len(targets) != 1:
-                return {"ok": True, "said": "I need to know which place that date is for.",
-                        **turn(f"The owner gave the due date {due} but not the place. Ask which place "
-                               "it is for, then set it.")}
-            if not store.set_due(targets[0].get("id"), due):
-                return {"ok": True, "said": "I will set that date.",
-                        **turn(f"Set the due date of destination {targets[0].get('id')} to {due}.")}
-            return {"ok": True, "said": f"Due date set: {_due_words(due)}."}
     except (LetterError, ValueError) as e:
         return {"ok": False, "said": str(e)[:200]}
     return {"ok": False, "said": "That choice is not known."}
 
 
+# A date answer with no date in it (a code typed with other words).
+PICK_A_DATE = "Pick a date with the date button. Nothing was changed."
+
+
+def _dates():
+    try:
+        import case_dates  # noqa: PLC0415
+    except ModuleNotFoundError:
+        from preprocessor import case_dates  # noqa: PLC0415
+    return case_dates
+
+
+def _dated(store, case_id, by) -> tuple:
+    """Set the case's one date (the one given, else the earliest a
+    destination states). Returns (the date set, or None when there is none
+    to set; what follows it in the owner's line: an earlier place's own
+    date, and when the case comes back: " I bring it back on Tue Nov
+    24.")."""
+    D = _dates()
+    case = _case(store, case_id)
+    when = by or D.proposed(case)
+    if not when or not (hasattr(store, "set_date") and store.set_date(case_id, when.isoformat())):
+        return None, ""
+    case = _case(store, case_id)
+    out = ""
+    early = sorted(((D.own_due(d), d.get("name") or "") for d in _dests(case, states=OPEN_STATES)
+                    if D.own_due(d) and D.own_due(d) < when), key=lambda x: x[0])
+    if early and not kept(case):
+        out += f" {early[0][1]} asks by {D.day_words(early[0][0])}."
+    back = D.wake(dict(case, case_kind="letter"))
+    if back and back > _today():
+        out += f" I bring it back on {D.day_words(back)}."
+    else:
+        out += " It is time to start, so it stays on your list."
+    return when, out
+
+
 def parse_due(text: str) -> str:
+    """A date in the owner's words as YYYY-MM-DD ("" for none): the common
+    forms (case_dates.parse_words), then the ledger's own reader."""
+    d = _dates().parse_words(text, _today())
+    if d:
+        return d.isoformat()
     text = (text or "").strip()
     m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
     if m:
@@ -1298,9 +1368,16 @@ def brief(store, case_id, *, dest: str = "", notes_file: str = "", owner_said: s
 
 # ── checks, variants, rendering ───────────────────────────────────────
 
+def _place(d: dict) -> str:
+    """A destination's name as its mail gave it; "" for a name the store
+    made up so the owner can tell places apart (a sender's domain, "Place
+    2"), which never goes into a letter."""
+    return str(d.get("name") or "") if d.get("named", True) else ""
+
+
 def _phrases(case: dict, reqs: dict, d: dict) -> list[str]:
     r = _dest_req(reqs, d.get("id"))
-    return [p for p in (d.get("name"), r.get("program"), r.get("addressee"), r.get("organization"))
+    return [p for p in (_place(d), r.get("program"), r.get("addressee"), r.get("organization"))
             if p and len(str(p).strip()) > 2]
 
 
@@ -1372,10 +1449,10 @@ def check(store, case_id, file: str, *, dest: str = "", record: bool = False) ->
 
 def _fill(text: str, case: dict, reqs: dict, d: dict) -> str:
     r = _dest_req(reqs, d.get("id"))
-    values = {"program": r.get("program") or d.get("name") or "",
-              "destination": d.get("name") or "",
+    values = {"program": r.get("program") or _place(d),
+              "destination": _place(d),
               "addressee": r.get("addressee") or "Selection Committee",
-              "organization": r.get("organization") or d.get("name") or ""}
+              "organization": r.get("organization") or _place(d)}
     return _PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), m.group(0)), text)
 
 
@@ -1410,10 +1487,10 @@ def variants(store, case_id, base: str, *, base_dest: str = "", only: str = "") 
             body = text
         elif src is not None:
             body = text
-            mine = {"name": d.get("name"), **_dest_req(reqs, d.get("id"))}
-            theirs = {"name": src.get("name"), **_dest_req(reqs, src.get("id"))}
+            mine = {"name": _place(d), **_dest_req(reqs, d.get("id"))}
+            theirs = {"name": _place(src), **_dest_req(reqs, src.get("id"))}
             for key in ("program", "addressee", "organization", "name"):
-                old, new = theirs.get(key), mine.get(key) or (d.get("name") if key != "addressee" else "")
+                old, new = theirs.get(key), mine.get(key) or (_place(d) if key != "addressee" else "")
                 if old and new and old != new:
                     body = re.sub(re.escape(old), new.replace("\\", r"\\"), body)
         else:
@@ -1652,7 +1729,7 @@ def submit(store, case_id, dest: str) -> dict:
             f"To: {addr} ({d.get('name')})",
             f"Thread: none; a new email that carries the owner's {kind_words(case.get('kind'))}.",
             "SAY:", f"- Attached is my {kind_words(case.get('kind'))} for {who}"
-            + (f" for {d.get('name')}." if d.get("name") else "."),
+            + (f" for {_place(d)}." if _place(d) else "."),
             "KNOW:", "- The letter is attached. Do not describe it or praise the person here.",
         ]) + "\n")
         body = EA_DIR / "state" / "reply-body.txt"

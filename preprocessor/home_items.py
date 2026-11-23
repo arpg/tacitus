@@ -1265,8 +1265,8 @@ class Acts:
             answer, dest = cs.home_choice(choice, (kind,))
             if case is None or not answer:
                 return {"ok": False, "said": GONE}, None
-            if answer == "date" and not words:
-                return {"ok": False, "said": "Write the date first."}, None
+            if choice.split(":")[1:2] == ["date_pick"] and not words:
+                return {"ok": False, "said": "Pick a date first."}, None
             hook = hooks.letter if kind == "letter" else hooks.case
             if hook is None:
                 return {"ok": False, "said": "Tacitus cannot do that from here."}, None

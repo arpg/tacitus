@@ -88,9 +88,14 @@ closes when every part is returned or declined.
 
 #### 6. Dates
 
-The briefing shows one line per case ("Review for <who>: report due Tue
-Dec 1"). Reminders come 14, 7 and 3 days before; the day before, the day
-itself and the day after are loud. A date passing never closes a review.
+The case has one date, given with the owner's yes or once on its date
+card (`cases.py set-date --case <id> --date YYYY-MM-DD`); never ask for
+a date per part. It stays quiet until 10 days before that date (no
+card, not on Home, only the weekly review), then its block comes back;
+the day before, the day itself and the day after are loud. "Start this
+one now": `cases.py start --case <id>`; "remind me N days before":
+`cases.py lead --case <id> --days N`. A date passing never closes a
+review.
 
 #### Autonomy
 

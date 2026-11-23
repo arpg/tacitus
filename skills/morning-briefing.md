@@ -437,7 +437,8 @@ other side: keep it. A row with a `letter` or `work_case` field in
 own, and never propose to close it because of a reply in its thread.
 Each `letter_cases_finished` or `work_cases_finished` entry is one
 "Quietly handled" clause. Never quote a letter, a review, a form's
-answers or the materials.
+answers or the materials. `quiet_cases` are dated and wait for their
+lead time: never name one here.
 
 ### 8b. Pending RSVPs (from preprocessor)
 

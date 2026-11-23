@@ -282,7 +282,7 @@ def test_cards_are_stored_as_json_and_settle_to_a_status(tmp_path):
         assert row["kind"] == "card" and row["card"]["title"] == c.title
         assert row["card"]["actions"][0] == {"id": "approve_send", "label": "Send",
                                              "value": {"token": "t-1"}, "style": "primary",
-                                             "word": "send", "ask": ""}
+                                             "word": "send", "ask": "", "date": {}}
         assert row["card"]["select"]["options"] == [["A", "a"], ["B", "b"]]
         assert f.update_card(ref, card(title="Changed"))
         assert f.store.message("dm", ref.id)["card"]["title"] == "Changed"

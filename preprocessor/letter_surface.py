@@ -44,8 +44,8 @@ KIND_WORDS = dict(W.subkinds)
 # What the person sent, by the store's material kinds.
 MATERIAL_WORDS = dict(W.material_words)
 KEPT_CASE = W.kept
-# Days before a destination's due date when a reminder fires; 0 is the
-# day itself, -1 the day after.
+# The kind's ladder (its declaration); the loud rungs fire on a case's
+# nearest date: 1 the day before, 0 the day itself, -1 the day after.
 LADDER = W.ladder
 LOUD = W.loud
 SOON_DAYS = _cs.SOON_DAYS
@@ -277,6 +277,37 @@ def join_spec(case: dict, q: dict, lv: str = "full") -> dict:
     return _cs.join_spec(case, q, lv, _w())
 
 
+def date_spec(case: dict, today: date, lv: str = "full") -> dict:
+    """The one card that asks a decided letter case for its date."""
+    return _cs.date_spec(_cs._tag(case, "letter"), today, lv, _w())
+
+
+def ready_spec(case: dict, today: date, lv: str = "full", *, reminder: str = "", news=None) -> dict:
+    """The delivery list once the letter is ready."""
+    return _cs.ready_spec(_cs._tag(case, "letter"), today, lv, reminder=reminder, news=news, w=_w())
+
+
+def stage(case: dict, today: date) -> str:
+    return _cs.stage(_cs._tag(case, "letter"), today)
+
+
+def block_sig(case: dict, today: date) -> str:
+    return _cs.block_sig(_cs._tag(case, "letter"), today)
+
+
+def quiet_words(case: dict, today: date) -> str:
+    return _cs.quiet_words(_cs._tag(case, "letter"), today)
+
+
+def note_text(case: dict, step: dict, today: date, lv: str = "full") -> str:
+    return _cs.note_text(_cs._tag(case, "letter"), step, today, lv)
+
+
+picked_day = _cs.picked_day
+PICK_A_DATE = _cs.PICK_A_DATE
+told_dates = _cs.told_dates
+
+
 def card_plan(cases: list[dict], cards: dict, today: date, sent: dict | None = None,
               news: dict | None = None) -> list[dict]:
     return _cs.card_plan([_cs._tag(c, "letter") for c in cases], cards, today, sent, news)
@@ -288,9 +319,11 @@ find = _cs.find
 
 # ── answers (the bot's handler; letters_work decides) ─────────────────
 
-CHOICES = ("yes", "yes_ask", "no", "draft", "submitted", "date", "decline", "join_same", "join_other")
-ACTION_CHOICE = {"letter_yes": "yes", "letter_yes_ask": "yes_ask", "letter_no": "no",
-                 "letter_draft": "draft", "letter_submitted": "submitted", "letter_date": "date",
+CHOICES = ("yes", "yes_ask", "yes_date", "no", "draft", "submitted", "all", "date", "decline",
+           "join_same", "join_other")
+ACTION_CHOICE = {"letter_yes": "yes", "letter_yes_ask": "yes_ask", "letter_yes_date": "yes_date",
+                 "letter_no": "no", "letter_draft": "draft", "letter_submitted": "submitted",
+                 "letter_all": "all", "letter_date": "date", "letter_date_pick": "date",
                  "letter_decline": "decline", "letter_join_same": "join_same",
                  "letter_join_other": "join_other"}
 # The store's own answers to its questions (letters.WRITE_CHOICES, JOIN_*).
@@ -348,24 +381,45 @@ def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question:
     if letters_work is not None and hasattr(letters_work, "answer"):
         got = letters_work.answer(cid, choice, dest=dest, text=text, actor="owner")
         return got if isinstance(got, dict) else {"ok": False, "said": "Nothing was done."}
-    if choice in ("yes", "yes_ask", "no"):
-        argv = (["answer", "--question", question, "--choice", STORE_ANSWERS[choice]] if question
-                else ["decline" if choice == "no" else "accept", "--case", cid])
-        got = done(run(argv), {"yes": "You will write it. It is on your list with its dates.",
-                               "yes_ask": "I am writing the request for the materials.",
-                               "no": "You will not write it. Nothing is sent."}[choice])
+    if choice in ("yes", "yes_ask", "yes_date", "no", "date"):
+        by = None
+        if choice != "no":
+            by = _cs.picked_day(text, today_local()) if text else (
+                None if choice == "yes_date" else _cs._dates().proposed(case))
+            if (text or choice in ("yes_date", "date")) and not by:
+                return {"ok": False, "said": _cs.PICK_A_DATE}
+        key = "yes" if choice == "yes_date" else choice
+        if choice == "date":
+            argv = ["set-date", "--case", cid, "--date", by.isoformat()]
+        else:
+            argv = (["answer", "--question", question, "--choice", STORE_ANSWERS[key]] if question
+                    else ["decline" if choice == "no" else "accept", "--case", cid])
+            argv += ["--date", by.isoformat()] if by else []
+        when = f", by {day_words(by, today_local())}" if by else ""
+        got = done(run(argv), {"yes": f"You will write it{when}.",
+                               "yes_ask": f"You will write it{when}. I am writing the request for the materials.",
+                               "date": f"The date is {day_words(by, today_local()) if by else ''}.",
+                               "no": "You will not write it. Nothing is sent."}[key])
         if got["ok"] and choice == "yes_ask":
-            got["turn"] = _turn_prompt(case, choice, dest, text)
+            got["turn"] = _turn_prompt(case, choice, dest, "")
         return got
     if choice == "decline":
         return done(run(["decline", "--case", cid]), "Declined. Nothing is sent.")
+    if choice == "all":
+        opn = open_dests(case)
+        for d in opn:
+            if run(["record-submitted", "--dest", str(d.get("id") or ""), "--evidence",
+                    "the owner said all are submitted, in Action requests"]).get("error"):
+                return {"ok": False, "said": "I could not record your answer. Ask me in Ask Tacitus."}
+        return {"ok": bool(opn), "said": "All submitted. The case is closed." if opn
+                else "This changed since the card. Nothing was done."}
     if choice == "submitted":
         if not dest:
             return {"ok": False, "said": "Pick the destination you submitted."}
         return done(run(["record-submitted", "--dest", dest, "--evidence",
                          "the owner said so in Action requests"]), "Marked as submitted.")
-    words = {"draft": "I am writing the letter's draft.", "date": "I am recording the date."}[choice]
-    return {"ok": True, "said": words, "turn": _turn_prompt(case, choice, dest, text)}
+    return {"ok": True, "said": "I am writing the letter's draft.",
+            "turn": _turn_prompt(case, choice, dest, text)}
 
 
 def _cli(argv: list[str]) -> dict:

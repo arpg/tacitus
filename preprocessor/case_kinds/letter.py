@@ -346,5 +346,5 @@ KIND = Kind(
     no_parts_words="no places to send it yet.",
     kept_row_words="Letter request (kept on your own model)",
     response_mode="submission", detect=detect, detect_default=True,
-    autonomy={"draft": "ask-first", "upload": "do-and-tell"}, guide="letters.md",
+    autonomy={"draft": "ask-first", "upload": "do-and-tell"}, guide="letters.md", lead=7,
     model_kinds=("letter",))
