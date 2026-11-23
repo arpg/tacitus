@@ -895,6 +895,14 @@ def ledger_types(lock=None) -> dict:
             if lp.manifest["capabilities"].get("ledger_types")}
 
 
+def case_kinds(lock=None) -> dict:
+    """{plugin name: its case_kinds block} for the enabled plugins that
+    declare kinds of work case (cases.kinds reads them)."""
+    return {lp.name: lp.manifest["capabilities"]["case_kinds"]
+            for lp in managed_plugins(lock=lock)
+            if lp.manifest["capabilities"].get("case_kinds")}
+
+
 def mail_rules(lock=None) -> dict:
     """The enabled plugins' mail rules, merged and sorted."""
     out = {"closure_confirm_senders": set(), "closure_exclude_senders": set(),

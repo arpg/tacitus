@@ -2214,10 +2214,10 @@ def _reopen_mail_row_if_newer(entry_id: str, item: dict, kind: dict) -> bool:
     row = _ledger_mod.get_entry(entry_id)
     if not row or row.get("status") not in ("completed", "closed"):
         return False
-    import letters
-    if letters.is_letter_row(row):
-        # A letter's row ends on its submission; a later mail in its thread
-        # (a thank-you, a reminder) is the letter cases' to read
+    import cases
+    if cases.is_case_row(row):
+        # A work case's row ends on its delivery; a later mail in its
+        # thread (a thank-you, a reminder) is the cases' to read
         # (ingest_letters), never a reopen.
         return False
     closed_at = row.get("closed_at") or row.get("updated_at") or ""
@@ -2410,15 +2410,17 @@ def update_ledger_from_analysis(
 
 
 def ingest_letters(gate, inbox: list) -> list:
-    """Letter requests, reminders and confirmations among the fetched mail
-    (letters.py): a request joins its person's case with the row intake
-    made for it (or a new row, for a portal's automated mail the
-    needs-response detector leaves out), and a confirmation marks its
-    destination submitted. The local model's records decide; kept mail is
-    read too, and its case keeps the mail's keep level. Never raises."""
+    """Work requests, reminders and confirmations among the fetched mail
+    (cases.py, every kind whose detection is on; letters first): a request
+    joins its case with the row intake made for it (or a new row, for a
+    service's automated mail the needs-response detector leaves out), and
+    a confirmation marks its part delivered, or asks which part once. The
+    local model's records decide; kept mail is read too, and its case
+    keeps the mail's keep level. Never raises."""
     if not getattr(gate, "on", False):
         return []
     try:
+        import cases
         import letters
         by_id = (gate.index or {}).get("by_id") or {}
         recs, levels = [], {}
@@ -2432,13 +2434,16 @@ def ingest_letters(gate, inbox: list) -> list:
         if not recs:
             return []
         rows = _letter_rows_for(recs)
-        done = letters.ingest(recs, rows_by_message=rows, levels=levels)
-        acted = [d for d in done if d.get("action") not in ("none", "unmatched")]
+        done = [letters._legacy_result(d) if d.get("kind") == "letter" else d
+                for d in cases.ingest(recs, rows_by_message=rows, levels=levels)]
+        acted = [d for d in done if d.get("action") not in ("none", "unmatched", "waiting")]
         if acted:
-            print(f"  Letters: {len(acted)} mail(s) joined to letter cases", file=sys.stderr)
+            print(f"  Work cases: {len(acted)} mail(s) joined to cases", file=sys.stderr)
+        if any(d.get("action") == "waiting" for d in done):
+            print("  Work cases: waiting for the owner's cases.py migrate --apply", file=sys.stderr)
         return done
     except Exception as e:
-        print(f"  Letters: skipped ({e})", file=sys.stderr)
+        print(f"  Work cases: skipped ({e})", file=sys.stderr)
         return []
 
 

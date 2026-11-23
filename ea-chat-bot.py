@@ -2897,6 +2897,8 @@ _BASH_ONLY_TOOLS = (
     "Bash(python3 {script_dir}/preprocessor/project_store.py *),"
     # Letter cases (letters.py): a person's letter, its places and dates.
     "Bash(python3 {script_dir}/preprocessor/letters.py *),"
+    # Work cases of every kind (cases.py): a review, a form, a report.
+    "Bash(python3 {script_dir}/preprocessor/cases.py *),"
     "Bash(python3 {script_dir}/preprocessor/style_profiles.py *),"
     # JSON from the scripts above is read with jq, which runs no command and
     # writes no file (a `| python3 -c` filter is a general interpreter and is

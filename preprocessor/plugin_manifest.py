@@ -183,7 +183,7 @@ def _empty_capabilities() -> dict:
                                         "letter_confirm_senders": []},
             "network": {"domains": [], "local": []}, "secrets": [],
             "owner_hooks": {"verbs": [], "auth_sources": [], "cron": []},
-            "claude_plugin": "", "mail_triggers": [], "ledger_types": {}}
+            "claude_plugin": "", "mail_triggers": [], "ledger_types": {}, "case_kinds": {}}
 
 
 def _norm_ledger_types(block, errors: list) -> dict:
@@ -297,6 +297,68 @@ def _norm_card(c, i: int, zone: str, errors: list) -> dict | None:
 
 # Card keys a variant may override. Text keys are templates over the
 # item's fields ({title}, {summary}); required and key_fields are lists.
+_CASE_KIND_NAME = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
+_CASE_WORDS = ("noun", "part", "parts", "delivered")
+_CASE_DETECT = ("request", "confirm", "exclude")
+
+
+def _norm_case_kinds(block, errors: list) -> dict:
+    """A plugin's kinds of work case (cases.py) as data: the words the owner
+    reads, the first decision and its answers, and detection rules
+    (patterns and sender patterns) that core's generic detector runs. No
+    code: a kind is a declaration. Detection is off unless the manifest
+    turns it on, and the owner's consent covers it (the summary)."""
+    if block is None:
+        return {}
+    if not isinstance(block, dict):
+        errors.append("capabilities.case_kinds must be an object of kind name to declaration")
+        return {}
+    out = {}
+    for name, spec in block.items():
+        where = f"capabilities.case_kinds.{name}"
+        if not isinstance(name, str) or not _CASE_KIND_NAME.match(name) or not isinstance(spec, dict):
+            errors.append(f"{where}: a kind is a lower-case name with a declaration object")
+            continue
+        words = spec.get("words") if isinstance(spec.get("words"), dict) else {}
+        kind = {"words": {k: str(words[k])[:40] for k in _CASE_WORDS if words.get(k)}}
+        if not kind["words"].get("noun"):
+            errors.append(f"{where}.words.noun: the owner's word for the kind is required")
+        dec = spec.get("decision")
+        if isinstance(dec, dict) and str(dec.get("question") or "").strip():
+            kind["decision"] = {"question": str(dec["question"])[:120],
+                                "choices": _strs(dec.get("choices"))[:4] or ["Yes", "No"]}
+            for k in ("yes", "no"):
+                if dec.get(k):
+                    kind["decision"][k] = _strs(dec.get(k))
+        det = spec.get("detect") if isinstance(spec.get("detect"), dict) else {}
+        detect = {}
+        for k in _CASE_DETECT:
+            pat = str(det.get(k) or "")
+            if not pat:
+                continue
+            try:
+                re.compile(pat)
+            except re.error as e:
+                errors.append(f"{where}.detect.{k}: not a pattern ({e})")
+                continue
+            detect[k] = pat
+        for k in ("senders", "confirm_senders"):
+            vals = [v.strip().lower() for v in _strs(det.get(k)) if v.strip()]
+            for v in vals:
+                if len(v) < 6 or not ("@" in v or "." in v):
+                    errors.append(f"{where}.detect.{k}: {v!r} is too broad")
+            if vals:
+                detect[k] = vals
+        if det.get("automated_only"):
+            detect["automated_only"] = True
+        kind["detect"] = detect
+        kind["detect_default"] = bool(spec.get("detect_default"))
+        if spec.get("guide"):
+            kind["guide"] = _check_relpath(str(spec["guide"]), f"{where}.guide", errors)
+        out[name] = kind
+    return out
+
+
 _CARD_TEXT_KEYS = ("title", "lines", "approve_label", "approve_word", "cancel_label",
                    "cancel_word", "button_noun", "busy_status", "missing_text",
                    "required", "key_fields", "fallback")
@@ -514,6 +576,7 @@ def _normalize_v2(raw: dict, dir_name: str, errors: list) -> dict:
     caps["mail_rules"] = _norm_mail_rules(caps_raw.get("mail_rules"), errors)
     caps["mail_triggers"] = _norm_mail_triggers(caps_raw.get("mail_triggers"), errors)
     caps["ledger_types"] = _norm_ledger_types(caps_raw.get("ledger_types"), errors)
+    caps["case_kinds"] = _norm_case_kinds(caps_raw.get("case_kinds"), errors)
     caps["network"] = _norm_network(caps_raw.get("network"), errors)
     secrets = _strs(caps_raw.get("secrets"))
     for s in secrets:
@@ -636,6 +699,10 @@ def capability_summary(norm: dict) -> dict:
     # when declared, as above.
     if caps.get("ledger_types"):
         summary["ledger_types"] = caps["ledger_types"]
+    # A kind's detection opens cases from mail and changes what closes
+    # their rows: consent, only when declared.
+    if caps.get("case_kinds"):
+        summary["case_kinds"] = caps["case_kinds"]
     return summary
 
 
@@ -696,6 +763,12 @@ def describe(summary: dict) -> list[str]:
     for name, spec in (summary.get("ledger_types") or {}).items():
         on = [t for t, v in (spec.get("traits") or {}).items() if v]
         lines.append(f"ledger type: {name} ({', '.join(on) or 'no traits on'})")
+    for name, spec in (summary.get("case_kinds") or {}).items():
+        det = spec.get("detect") or {}
+        lines.append(f"kind of work: {name} ({(spec.get('words') or {}).get('noun', name)}); "
+                     + ("opens cases from mail" + (" from " + ", ".join(det["senders"])
+                                                   if det.get("senders") else "")
+                        if spec.get("detect_default") else "opened only in chat"))
     for t in summary.get("mail_triggers") or []:
         what = []
         if t["from"]:

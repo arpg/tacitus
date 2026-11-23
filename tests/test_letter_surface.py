@@ -32,10 +32,14 @@ ZONE = ZoneInfo("America/Denver")
 
 
 @pytest.fixture(autouse=True)
-def _no_store(monkeypatch):
-    """No test reads a real letters store or a real letters_work module."""
+def _no_store(monkeypatch, tmp_path):
+    """No test reads a real letters store, a real letters_work module or
+    the machine's ledger: the case briefing reads the ledger's rows, and a
+    live ledger is readable only while a process holds it open."""
     monkeypatch.setattr(L, "_letters", lambda: None)
     monkeypatch.setitem(sys.modules, "letters_work", None)
+    import ledger
+    monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "no-ledger.db")
 
 
 @pytest.fixture

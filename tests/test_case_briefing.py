@@ -97,7 +97,7 @@ def make_case(env, *, level="full", decide=True, drafted=False, person_wrote=Tru
                      ("task-own", "Letter for Rowan Vale", "rowan.vale@example.org", "conv-own", iso(80), "{}",
                       iso(80), iso(80)))
         L.link_row(conn, "task-own", cid, role="case")
-        conn.execute("UPDATE letter_cases SET case_ledger_id = 'task-own' WHERE id = ?", (cid,))
+        conn.execute("UPDATE cases SET case_ledger_id = 'task-own' WHERE id = ?", (cid,))
         set_brief(env, "task-own", [msg("m1", 72, "Rowan Vale <rowan.vale@example.org>",
                                         "Rowan Vale asked for a recommendation letter for two programs.",
                                         files=["Rowan_Vale_CV.pdf"])])
@@ -159,7 +159,7 @@ def test_an_address_or_a_link_in_the_mail_record_never_reaches_a_packet(env):
     set_brief(env, "task-own", [msg("m1", 5, "Rowan Vale <rowan.vale@example.org>",
                                     "Rowan Vale wrote from rowan.v@example.net with the form at "
                                     "https://forms.example.com/r/SECRETKEY.")])
-    env.conn.execute("UPDATE letter_cases SET person_name = '' WHERE id = ?", (cid,))
+    env.conn.execute("UPDATE cases SET counterpart_name = '' WHERE id = ?", (cid,))
     env.conn.commit()
     prep = CB.prepare(one(env, cid), now=NOW)
     text = json.dumps(prep["packet"])
@@ -409,7 +409,8 @@ def test_refresh_writes_once_and_again_on_each_kind_of_change(env):
     # a new mail joined: its message on the case's row, and the store's event
     set_brief(env, "task-own", [msg("m9", 1, "Rowan Vale <rowan.vale@example.org>", "Rowan Vale wrote again.")])
     changed("a new message")
-    L._event(env.conn, cid, "mail", dest_id=p1, evidence={"message": "msg-r", "role": "reminder"})
+    import cases as store  # the letters' events are the case store's
+    store._event(env.conn, cid, "mail", part_id=p1, evidence={"message": "msg-r", "role": "reminder"})
     env.conn.commit()
     changed("a mail joined")
     L.set_state(env.conn, p1, "drafted", "/letters/x.md")
