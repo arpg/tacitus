@@ -2226,7 +2226,7 @@ DISPATCH_TIMEOUT_TTL_S = 2400   # a turn that blew its await window is still run
 
 def _new_run_id() -> str:
     """Short, unique, sortable-ish id for one dispatch."""
-    return f"{int(time.time() * 1000):x}-{uuid.uuid4().hex[:6]}"
+    return f"{int(time.time() * 1000):x}-{uuid.uuid4().hex[:12]}"
 
 
 def _prune_dispatches_locked() -> None:
