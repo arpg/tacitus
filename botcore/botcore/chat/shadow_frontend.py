@@ -290,6 +290,14 @@ class ShadowFrontend(ChatFrontend):
         the same thread."""
         return self.shadow.tagging(tag)
 
+    def quietly(self):
+        """The web side sends the pushes: its mirror of each post is made
+        in the same thread."""
+        return self.shadow.quietly()
+
+    def one_push(self, text_for):
+        return self.shadow.one_push(text_for)
+
     # lifecycle
 
     def start(self) -> None:

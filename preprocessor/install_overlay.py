@@ -158,9 +158,9 @@ def _chat_section(cfg: dict, profile: dict) -> list[str]:
         lines.append(f"- The DM is named {web['card_place']} here and takes button presses "
                      "only: the user types in Ask Tacitus, quick asks too. Where CLAUDE.md, a "
                      f"skill or a guide says the user's DM, say {web['card_place']}.")
-        lines.append(f"- Each confirmation card goes to {web['card_place']} with a one-line "
-                     f"pointer in the thread: say \"{web['confirm_location']}\", never "
-                     "\"above\".")
+        lines.append(f"- Each confirmation card goes to {web['card_place']}, and the bot posts its "
+                     "own one-line pointer to it in the thread: never write where the card is "
+                     f"(\"{web['confirm_location']}\") yourself.")
     else:
         channel = profile.get("slack_channel_name") or ""
         lines.append(f"- Platform: Slack. EA channel: `{channel or 'see user-profile.json'}`.")

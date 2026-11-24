@@ -3636,20 +3636,24 @@ def _repost_send_confirmation(draft_id: str, channel: str, thread_ts: str | None
     if card is None:
         log.warning(f"revised draft ...{draft_id[-12:]} unreadable, old block kept: {err}")
         return False
-    if old_channel and old_ts:
-        try:
-            _replace_buttons_with_status(
-                old_channel, old_ts,
-                ":pencil2: Revised. The new Send card for this draft is below.")
-        except Exception as e:
-            log.warning(f"retiring the old block for ...{draft_id[-12:]} failed: {e}")
+    # The new card first, so the old one's line can say where it is; the
+    # registry then names the new card, so retiring the old one by its
+    # message leaves the new one live.
     try:
-        _post_send_confirmation(channel, thread_ts, draft_id, email_system=system,
-                                gmail_email=gmail_email,
-                                what="The new Send card for the revised draft")
+        where = _post_send_confirmation(channel, thread_ts, draft_id, email_system=system,
+                                        gmail_email=gmail_email,
+                                        what="The new Send card for the revised draft")
     except Exception as e:
         log.error(f"posting the new block for ...{draft_id[-12:]} failed: {e}")
         return False
+    if not where:
+        return False
+    if old_channel and old_ts and (old_channel, old_ts) != where:
+        try:
+            _replace_buttons_with_status(old_channel, old_ts,
+                                         _replaced_card_line(":pencil2: Revised.", where))
+        except Exception as e:
+            log.warning(f"retiring the old block for ...{draft_id[-12:]} failed: {e}")
     return True
 
 
@@ -3724,6 +3728,31 @@ def _with_closed(status: str, announced: list) -> str:
     for the outcome, not one more per row in the thread."""
     return status + "".join(f"\n:white_check_mark: Closed: {_card_short('Closed', d)}"
                             for d in announced)
+
+
+def _quietly():
+    """The posts made inside it notify no device, where the bot sends the
+    notifications itself (the web chat's pushes: ChatFrontend.quietly)."""
+    import contextlib
+    quiet = getattr(FRONTEND, "quietly", None)
+    return quiet() if callable(quiet) else contextlib.nullcontext()
+
+
+def _post_result(channel: str, thread_ts: str | None, confirm_channel: str | None,
+                 confirm_ts: str | None, msg: str) -> None:
+    """The outcome of a press on a :lock: card, beyond the card's own status
+    line: one line in the conversation that asked for the card, so the
+    owner sees there that it went, with no push (he pressed the button a
+    moment ago). None where the card itself is (a conversation in the DM),
+    and none for a card that came from no conversation (a briefing's or a
+    cron run's). With no card, this line is the only report."""
+    if not confirm_ts:
+        FRONTEND.post(channel=channel, thread_ts=thread_ts, text=msg)
+        return
+    if not thread_ts or not channel or channel == confirm_channel:
+        return
+    with _quietly():
+        FRONTEND.post(channel=channel, thread_ts=thread_ts, text=msg)
 
 
 def _propose_ledger_row(entry: dict, why: str, signal: str, evidence_ts: str = "") -> None:
@@ -4134,13 +4163,10 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
             msg = _with_closed(msg, closed)
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
-            # Also confirm in the conversation the draft came from. A draft
-            # with no thread (a briefing card) has its result on the card
-            # alone: a thread-less post would open a "Sent." thread. With no
-            # card either, the channel post is the only report.
-            if thread_ts or not confirm_msg_ts:
-                FRONTEND.post(channel=channel, thread_ts=thread_ts,
-                              text=msg)
+            # The card says it went; the conversation the draft came from
+            # says it once more, never with a push, and a draft from the DM
+            # or from no conversation says it on the card alone.
+            _post_result(channel, thread_ts, confirm_channel, confirm_msg_ts, msg)
             if email_system != "gmail":
                 _file_admissions_after_send(conversation_id)
             return True
@@ -4324,8 +4350,7 @@ def _execute_schedule_send(channel: str, thread_ts: str,
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts,
                                              msg)
-            FRONTEND.post(channel=channel, thread_ts=thread_ts,
-                          text=msg)
+            _post_result(channel, thread_ts, confirm_channel, confirm_msg_ts, msg)
             return True
 
         error_msg = data.get("error", data.get("status", "Unknown error"))
@@ -4419,7 +4444,7 @@ def _execute_event_create(channel: str, thread_ts: str, confirm_msg_ts: str | No
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
             if announce:
-                FRONTEND.post(channel=channel, thread_ts=thread_ts, text=msg)
+                _post_result(channel, thread_ts, confirm_channel, confirm_msg_ts, msg)
             # NO staging-file cleanup here. The file that fed THIS button
             # was claimed and removed when the button was posted; anything
             # at that path now is a DIFFERENT, unconsumed staging write.
@@ -6338,16 +6363,19 @@ def _reply_blocks_up(channel: str, todo: list[tuple], day: str = "") -> int:
             shown += 1
             new.append((row, state))
     # The youngest first, so the oldest is the newest post: the list shows
-    # it on top (action_requests.order).
-    for row, state in reversed(new):
-        rid, sub = row["id"], f"{batch}-{row['id'][-8:]}"
-        try:
-            with _reply_tagged(rid):
-                ref = _post_card(channel, _reply_row_card(sub, row, state))
-        except Exception as e:
-            log.warning(f"Replies block failed for {rid}: {e}")
-            continue
-        posted.append((sub, rid, ref, _reply_shown(sub, row, state)))
+    # it on top (action_requests.order). The new blocks notify once, with
+    # how many replies wait now, those whose block was up already too.
+    before = shown - len(new)
+    with _one_push(lambda n: f"{before + n} replies wait for you."):
+        for row, state in reversed(new):
+            rid, sub = row["id"], f"{batch}-{row['id'][-8:]}"
+            try:
+                with _reply_tagged(rid):
+                    ref = _post_card(channel, _reply_row_card(sub, row, state))
+            except Exception as e:
+                log.warning(f"Replies block failed for {rid}: {e}")
+                continue
+            posted.append((sub, rid, ref, _reply_shown(sub, row, state)))
     with _REPLY_CARDS_LOCK:
         store, cards = _load_reply_cards(), {}
         for k, c in (store.get("cards") or {}).items():
@@ -6626,6 +6654,23 @@ def handle_reply_not_needed(ev: "_chat.ActionEvent"):
     _reply_no_reply(rid, row, ev.card.channel, ev.card.id)
 
 
+def _replaced_card_line(head: str, where) -> str:
+    """The status line of a Send card a new one replaced: `head`, then where
+    the new one is. The web chat's Action requests list the newest first,
+    so there it is a link to the new card; Slack's DM lists them in time,
+    so there the new card is below."""
+    channel, ts = where if isinstance(where, tuple) else ("", "")
+    if not _reply_taps_only():
+        return f"{head} The new Send card for this draft is below."
+    link = ""
+    if channel and ts:
+        try:
+            link = FRONTEND.permalink(channel, ts) or ""
+        except Exception as e:
+            log.debug(f"permalink of the new Send card failed: {e}")
+    return f"{head} Its new Send card: " + (f"<{link}|open it>." if link else f"it is in {_CARDS_HERE}.")
+
+
 def _reply_new_send_card(draft_id: str, channel: str, thread_ts: str | None) -> bool:
     """A new Send card for a draft whose card closed (the 48-hour window, a
     Cancel). False when the draft cannot be read: it is gone. A draft the
@@ -6642,14 +6687,15 @@ def _reply_new_send_card(draft_id: str, channel: str, thread_ts: str | None) -> 
     if card is None:
         log.info(f"Replies card: draft ...{draft_id[-12:]} cannot be read ({err})")
         return False
-    if shown.get("status") == "live" and shown.get("channel") and shown.get("message_ts"):
+    old = (shown.get("channel"), shown.get("message_ts")) \
+        if shown.get("status") == "live" and shown.get("channel") and shown.get("message_ts") else None
+    where = _post_send_confirmation(channel, thread_ts, draft_id, email_system=system,
+                                    gmail_email=acct, what="The new Send card for this draft")
+    if old and where and old != where:
         try:
-            _replace_buttons_with_status(shown["channel"], shown["message_ts"],
-                                         ":lock: The new Send card for this draft is below.")
+            _replace_buttons_with_status(old[0], old[1], _replaced_card_line(":lock:", where))
         except Exception as e:
             log.warning(f"retiring the old Send card of ...{draft_id[-12:]} failed: {e}")
-    _post_send_confirmation(channel, thread_ts, draft_id, email_system=system,
-                            gmail_email=acct, what="The new Send card for this draft")
     return _draft_confirmation_state(draft_id) == "live"
 
 
@@ -6847,6 +6893,14 @@ def _reply_tagged(rid: str):
     import contextlib
     tagging = getattr(FRONTEND, "tagging", None)
     return tagging(f"reply:{rid}") if callable(tagging) else contextlib.nullcontext()
+
+
+def _one_push(text_for):
+    """The new cards posted inside it notify once, where the bot sends the
+    notifications itself (the web chat: ChatFrontend.one_push)."""
+    import contextlib
+    one = getattr(FRONTEND, "one_push", None)
+    return one(text_for) if callable(one) else contextlib.nullcontext()
 
 
 def _load_reply_turns() -> dict:
@@ -7060,7 +7114,7 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
         where = _reply_live_send([(_reply_linked_drafts().get(rid) or ("",))[0]])
         if _reply_end(progress, "drafted" if where[1] else "gone"):
             _reply_status(channel, card_id, _reply_drafted_line(where, channel) if where[1]
-                          else ":information_source: This thread no longer waits for a reply.")
+                          else _reply_gone_line(rid))
         return
     state, draft_id = _reply_state(fresh, _reply_linked_drafts())
     where = _reply_live_send([draft_id]) if draft_id else ("", "")
@@ -7161,6 +7215,27 @@ def _reply_draft_carded(draft_id: str, channel: str, message_ts: str) -> None:
             _reply_status(ch, mid, line)
 
 
+REPLY_NO_LONGER_WAITS = ":information_source: This thread no longer waits for a reply."
+
+
+def _reply_gone_line(rid: str) -> str:
+    """The line of a row's card when its thread is off the reply list: a
+    row moved to later (Later on Home, or on another card) says when it
+    comes back, in Later's own words; only a row that waits no more says
+    so."""
+    row = _ledger_cli("get", "--id", rid) if rid else {}
+    if not isinstance(row, dict) or row.get("status") != "snoozed":
+        return REPLY_NO_LONGER_WAITS
+    from preprocessor import home_items as _hi
+    today = datetime.strptime(_reply_clock()[0], "%Y-%m-%d").date()
+    try:
+        until = datetime.strptime(str(row.get("snooze_until") or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return ":fast_forward: Later."
+    return f":fast_forward: Later. It comes back {_hi._when(until, today)}." if until > today \
+        else ":fast_forward: Later."
+
+
 def _reply_watch_tick(now: float | None = None) -> None:
     """Router tick: a turn still running says "Still writing" after
     REPLY_STILL_S and writes it again every REPLY_REFRESH_S; a turn no
@@ -7205,7 +7280,7 @@ def _reply_watch_tick(now: float | None = None) -> None:
             waiting = {r["id"] for r in queue}
             for rid, ch, mid in live:
                 if rid not in waiting and not _reply_turn_of(rid)[0]:
-                    _reply_status(ch, mid, ":information_source: This thread no longer waits for a reply.")
+                    _reply_status(ch, mid, _reply_gone_line(rid))
 
 
 def _reply_start(row: dict, state: str, channel: str, thread: str, card_id: str, batch: str,
@@ -9983,7 +10058,7 @@ def _post_send_confirmation(channel: str, thread_ts: str, draft_id: str,
     # The owner's DM, top level; never the thread (_owner_card_channel).
     dm_channel = _owner_card_channel(channel, thread_ts, what)
     if not dm_channel:
-        return
+        return None
     confirm_ts = _post_card(dm_channel, card).id
     confirm_channel = dm_channel
 
@@ -9998,6 +10073,7 @@ def _post_send_confirmation(channel: str, thread_ts: str, draft_id: str,
     _note_run_post("send")
     if dm_channel:
         _post_dm_breadcrumb(channel, thread_ts, dm_channel, confirm_ts, what)
+    return dm_channel, confirm_ts
 
 
 def _refresh_send_confirmation(draft_id: str) -> bool:
@@ -10148,6 +10224,28 @@ def _note_run_post(kind: str) -> None:
 
 def _run_posts() -> list:
     return list(_RUN_POSTS.get(None) or [])
+
+
+def _scrub_turn_reply(channel: str, text: str) -> str:
+    """A turn's reply as it is posted: a clause that says where a card's
+    button is goes, since the bot's own pointer says it once
+    (style_guard.strip_card_pointers); in a DM that takes button presses
+    only (the web chat's Action requests, where the reply shows on the
+    request) no script or mail verb names and no full ids either
+    (style_guard.plain_turn_text). A reply that would be left empty stays
+    as it was. Never raises."""
+    try:
+        from preprocessor.style_guard import plain_turn_text, strip_card_pointers
+        out, n = strip_card_pointers(text)
+        if _reply_taps_only() and FRONTEND.is_dm(channel):
+            out, k = plain_turn_text(out)
+            n += k
+        if n:
+            log.info(f"turn reply: {n} pointer or tool phrase(s) taken out")
+        return out if out.strip() else text
+    except Exception as e:
+        log.warning(f"turn reply scrub skipped: {e}")
+        return text
 
 
 def _warn_if_button_promised(channel: str, thread_ts: str | None,
@@ -15409,6 +15507,9 @@ Reminders:
                          f"from response")
         except Exception:
             pass
+        # What the reply said, for the check that a button it names was posted.
+        said_before_scrub = response
+        response = _scrub_turn_reply(channel, response)
 
         # Append usage footer. A reply the on-prem model wrote (the live
         # scheduling agent or the pipeline) is the local tier's, though
@@ -15622,7 +15723,7 @@ Reminders:
         # The reply and the blocks come from different processes; if the
         # reply names a button this turn never posted, say so in the thread.
         try:
-            _warn_if_button_promised(channel, thread_ts, response, "mono")
+            _warn_if_button_promised(channel, thread_ts, said_before_scrub, "mono")
         except Exception as e:
             log.warning(f"promise check failed: {e}")
 
@@ -16387,7 +16488,7 @@ def _proactive_scheduling_prompt(kind: str, name: str, subject: str,
                 f"posted, and create the confirming reply-all draft (create-reply on the thread) that "
                 "says the invite is on its way and answers what the email asked; a phone number only "
                 f"if the thread shows one, otherwise say {first} will include it in the invite. Post ONE "
-                f"line: who accepted which time, and that the Create and Send buttons are in {first}'s DM.\n"
+                "line: who accepted which time (the bot points to the Create and Send buttons itself).\n"
                 f"If the time conflicts, or is not one {first} offered: stage nothing, say so, and name "
                 "the closest offered time that is free.")
     if kind == "reschedule":
@@ -16464,7 +16565,7 @@ def _proactive_acceptance_reply_prompt(name: str, subject: str, conversation_id:
             "create-reply --provider outlook "
             + (f"--message-id {message_id} " if message_id else "") +
             f"--conversation-id {conversation_id} --body-file /home/ea-bot/.ea/state/reply-body.txt\n"
-            f"Post ONE line: the reply is drafted and its Send button is in {first}'s DM.")
+            "Post ONE line: the reply is drafted (the bot points to its Send button itself).")
 
 
 # The keys of a code-staged invite the Create card and its record take.

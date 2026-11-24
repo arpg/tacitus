@@ -270,7 +270,7 @@ def test_promise_check_runs_in_both_lanes_after_detection():
     j = resident.index("_warn_if_button_promised(channel, thread_ts, reply")
     assert i < j, "the resident lane must detect before it judges the reply"
     mono_i = BOT_SRC.index('_claim_event_actions(newer_than=run_started, token=stage_tok),\n                "mono")')
-    mono_j = BOT_SRC.index('_warn_if_button_promised(channel, thread_ts, response, "mono")')
+    mono_j = BOT_SRC.index('_warn_if_button_promised(channel, thread_ts, said_before_scrub, "mono")')
     assert mono_i < mono_j
     # A ContextVar, so parallel dispatches keep separate tallies.
     assert 'contextvars.ContextVar("ea_run_posts"' in BOT_SRC
@@ -280,9 +280,12 @@ def test_prompts_no_longer_say_the_button_is_in_the_thread():
     assert "so the buttons land in this thread" not in BOT_SRC
     assert "pins the confirmation buttons to THIS conversation" not in BOT_SRC
     primer = (REPO / "preprocessor" / "resident_context.py").read_text()
-    assert "in your DM" in primer and "never say the block is above" in primer
+    assert "goes to the user's DM" in primer and "never write where the block or its Send button is" in primer
     claude_md = (REPO / "CLAUDE.md").read_text()
-    assert "posted to the user's DM" in claude_md
+    assert "buttons to the user's DM" in claude_md
+    # the bot's pointer says where a card is; the model never says it too
+    assert "Never write where the card or\nits Send button is" in claude_md
+    assert "say the\nSend button is in the user's DM" not in claude_md
 
 
 def test_security_posture_unchanged():
@@ -370,15 +373,37 @@ def test_approve_send_claims_before_spawning():
     assert 'f"--confirm-token={token}"' in ex
 
 
-def test_a_threadless_send_reports_on_its_card_alone():
-    """A briefing card's draft has no thread. Its Sent line goes on the
-    card; a second top-level post would open a "Sent." thread."""
-    ex = _fn_src("_execute_send")
-    start = ex.index('if send_data.get("status") == "sent":')
-    ok = ex[start:ex.index("return True", start)]
-    assert "if thread_ts or not confirm_msg_ts:" in ok
-    guard = ok.index("if thread_ts or not confirm_msg_ts:")
-    assert ok.index("FRONTEND.post(channel=channel, thread_ts=thread_ts", guard) > guard
+def test_a_press_s_result_is_on_its_card_and_once_in_the_asking_conversation():
+    """The card the owner pressed shows the result. The conversation that
+    asked for the card says it once more, with no push; a conversation in
+    the DM (where the card is) and a draft with no thread (a briefing card)
+    get no second line; with no card the line is the only report."""
+    import contextlib
+    posts, quiet = [], []
+
+    class FE:
+        def post(self, channel=None, thread_ts=None, text=""):
+            posts.append((channel, thread_ts, text, bool(quiet)))
+
+        @contextlib.contextmanager
+        def quietly(self):
+            quiet.append(1)
+            try:
+                yield
+            finally:
+                quiet.pop()
+    ns = {"FRONTEND": FE()}
+    exec(_fn_src("_quietly") + "\n" + _fn_src("_post_result"), ns)
+    post = ns["_post_result"]
+    post("main", "t1", "dm", "c1", "Sent.")               # asked in Ask Tacitus
+    assert posts == [("main", "t1", "Sent.", True)]
+    post("dm", "t2", "dm", "c2", "Sent.")                 # asked in Action requests: the card says it
+    post("main", None, "dm", "c3", "Sent.")               # a briefing card's draft: no thread
+    assert len(posts) == 1
+    post("main", "t4", "dm", None, ":x: Send failed.")    # no card: the line is the report
+    assert posts[-1] == ("main", "t4", ":x: Send failed.", False)
+    for fn in ("_execute_send", "_execute_schedule_send", "_execute_event_create"):
+        assert "_post_result(channel, thread_ts, confirm_channel, confirm_msg_ts, msg)" in _fn_src(fn), fn
 
 
 def test_a_draft_that_leaves_drafts_outside_its_card_is_retired_with_the_right_line():

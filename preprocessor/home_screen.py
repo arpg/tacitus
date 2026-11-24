@@ -546,10 +546,9 @@ def left(src: Sources) -> list[dict]:
       thread shows its subject and the post's fixed words only.
 
     Each is {"id", "kind", "label", "title", "detail", "urgency", "due",
-    "fire", "mins", "href" or "ask"}: a request opens its block in Action
-    requests; anything else starts a new conversation about it in Ask
-    Tacitus (`ask`, the words the composer starts with). A row or thread
-    is listed once."""
+    "fire", "mins", "href"?}: a request opens its block in Action requests;
+    anything else opens in place with its choices, its Ask among them
+    (home_items). A row or thread is listed once."""
     now, today = src.now, _today(src)
     rows = src.rows or {}
     out: list[dict] = []
@@ -625,7 +624,7 @@ def left(src: Sources) -> list[dict]:
                         "kind": "question" if asks else "item", "label": label, "title": title or "An item",
                         "detail": detail if detail != title else "", "urgency": urgency, "due": due,
                         "fire": _fire(urgency, due, now), "mins": MINUTES["question" if asks else "item"],
-                        "ask": f'About "{head or title}": ', "_lid": lid, "_conv": conv})
+                        "_lid": lid, "_conv": conv})
     for e in src.replies or []:
         if not isinstance(e, dict):
             continue
@@ -655,12 +654,12 @@ def left(src: Sources) -> list[dict]:
                         "title": _plain(queued["note"], 200), "detail": " · ".join(
                             x for x in (title, f"From {who}" if who else "", waited) if x),
                         "urgency": urgency, "due": None, "fire": False, "mins": MINUTES["question"],
-                        "ask": f'About the reply to "{title}": ', "_lid": lid, "_conv": conv})
+                        "_lid": lid, "_conv": conv})
             continue
         out.append({"id": f"reply:{lid}", "kind": "reply", "label": "Reply owed", "title": title,
                     "detail": " · ".join(x for x in (f"From {who}" if who else "", waited) if x),
                     "urgency": urgency, "due": None, "fire": False, "mins": MINUTES["reply"],
-                    "ask": f'About the reply to "{title}": ', "_lid": lid, "_conv": conv})
+                    "_lid": lid, "_conv": conv})
     if not kept_views:
         merged = {o.get("id") for o in (src.briefing or {}).get("open_obligations") or []
                   if isinstance(o, dict) and o.get("merged_into")}
@@ -693,7 +692,7 @@ def left(src: Sources) -> list[dict]:
             out.append({"id": f"item:{ref or hashlib.sha1(title.encode()).hexdigest()[:10]}", "kind": "item",
                         "label": "To do", "title": title, "detail": _plain(t.get("reason"), 120),
                         "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
-                        "mins": MINUTES["item"], "ask": f'About "{title}": ', "_lid": ref,
+                        "mins": MINUTES["item"], "_lid": ref,
                         "_conv": str((row or {}).get("conversation_id") or "")})
     out = _cases_left(out, src)
     rank = {"overdue": 0, "soon": 1, "calm": 2}
@@ -750,9 +749,10 @@ def _closed_by(row: dict) -> str:
 
 def done(src: Sources, since: float | None = None) -> list[dict]:
     """What got done today (or after `since`), newest first: the ledger rows
-    closed (one per mail conversation; `by` says whose doing it was), the
-    requests answered in Action requests, and the drafts Tacitus made that
-    wait for the owner's Send (a sent one is the owner's answer).
+    closed (one per mail conversation; `by` says whose doing it was) and the
+    requests answered in Action requests. A draft that waits for the
+    owner's Send is not done: it is left for him (a `request` item) until
+    he sends it, and the send is his answer.
     Each is {"id", "kind", "by", "title", "at", "href"?}."""
     start = since if since is not None else datetime.combine(_today(src), datetime.min.time(), src.zone).timestamp()
     out: list[dict] = []
@@ -776,13 +776,8 @@ def done(src: Sources, since: float | None = None) -> list[dict]:
         if not isinstance(r, dict):
             continue
         card = r.get("card") if isinstance(r.get("card"), dict) else {}
-        posted, changed = _ts(r.get("posted_at")), _ts(r.get("updated_at"))
+        changed = _ts(r.get("updated_at"))
         href = _request_href(r, src.dm)
-        if card.get("kind") in DRAFT_KINDS and r.get("waiting") and posted and start <= posted <= src.now + 60:
-            out.append({"id": f"drafted:{r.get('id')}", "kind": "drafted", "by": "tacitus",
-                        "title": kept_name() if is_kept(r.get("keep_level"))
-                        else _plain(r.get("what"), 120) or "A reply", "at": posted, "href": href,
-                        "_rid": str(r.get("id") or "")})
         if r.get("kind") == "status" and not r.get("waiting") and not r.get("working") and changed \
                 and start <= changed <= src.now + 60:
             _ids, cv = _card_keys(card)
@@ -816,9 +811,6 @@ def since(src: Sources, got: list[dict], gone: list[dict]) -> dict | None:
                       **({"href": first["href"]} if first else {})})
     mine = [d for d in gone if d["kind"] == "closed" and d["by"] == "tacitus"]
     yours = [d for d in gone if d["by"] == "you"]
-    drafted = [d for d in gone if d["kind"] == "drafted"]
-    if drafted:
-        lines.append({"text": f"Tacitus drafted {_n(len(drafted), 'reply', 'replies')}."})
     if mine:
         lines.append({"text": f"Tacitus closed {_n(len(mine), 'item')}."})
     if yours:

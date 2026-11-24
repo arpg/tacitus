@@ -703,6 +703,11 @@ class FE:
     def dm_channel(self, user):
         return "dm"
 
+    def post(self, channel, text, thread_ts=None, **kw):
+        self.posts = getattr(self, "posts", [])
+        self.posts.append((channel, text))
+        return types.SimpleNamespace(channel=channel, id=f"b{len(self.posts)}", thread_key=f"tb{len(self.posts)}")
+
 
 def home(env):
     import home_fixtures as F
@@ -723,13 +728,19 @@ def test_the_home_item_shows_the_stored_briefing_and_its_steps(env):
     cid = make_case(env)
     CB.refresh(store=env.store, daily=None)
     h, fe, _pressed = home(env)
-    d = h.item(f"letter:{cid}")["deeper"]
+    it = h.item(f"letter:{cid}")
+    d = it["deeper"]
     assert d["state"] == "ready" and not d.get("stale") and d["by"] == "local"
     assert d["text"].startswith("Now\n") and "What happened\n- Rowan Vale asked" in d["text"]
-    assert [s["label"] for s in d["steps"]] == ["Draft the letter", "Open the portal", "Set the date",
-                                                "Continue in a conversation"]
+    # its Ask is the card's last choice, which opens this briefing's conversation
+    assert [s["label"] for s in d["steps"]] == ["Draft the letter", "Open the portal", "Set the date"]
+    assert it["choices"][-1] == {"id": "start", "label": "Ask"}
     assert d["steps"][1]["href"] == PORTAL and d["steps"][2]["input"] == "date"
     plain(d["text"])
+    out, _after = h.act(f"letter:{cid}", "start")
+    assert out["ok"] and out["goto"] == "#/main/tb1"
+    ((channel, text),) = fe.posts
+    assert channel == "main" and "What happened" in text and f"letter case {cid}" in text
 
 
 def test_a_step_runs_the_case_cards_own_answer(env):
@@ -758,7 +769,7 @@ def test_a_form_items_briefing_and_step_on_home(env):
     it = h.item(f"case:{cid}")
     assert it["kind"] == "case" and it["deeper"]["state"] == "ready"
     assert "The forms\n- Annual disclosure: due " in it["deeper"]["text"]
-    assert [s["label"] for s in it["deeper"]["steps"]] == ["Fill it in", "Open the link", "Continue in a conversation"]
+    assert [s["label"] for s in it["deeper"]["steps"]] == ["Fill it in", "Open the link"]
     assert h.act(f"case:{cid}", "step:s1")[0]["ok"] and pressed[-1] == ("case", cid, "draft", "", "")
 
 
@@ -855,7 +866,9 @@ def test_a_kept_case_offers_no_conversation(env):
     cid = make_case(env, level="facts")
     CB.refresh(store=env.store, daily=None)
     h, fe, _ = home(env)
-    assert D.CONTINUE not in [s["id"] for s in h.item(f"letter:{cid}")["deeper"]["steps"]]
+    it = h.item(f"letter:{cid}")
+    assert D.CONTINUE not in [s["id"] for s in it["deeper"]["steps"]]
+    assert "start" not in [c["id"] for c in it["choices"]]            # no Ask on a kept case
 
 
 def test_opening_the_item_is_the_owners_look(env):

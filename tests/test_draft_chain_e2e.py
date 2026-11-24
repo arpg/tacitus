@@ -171,7 +171,7 @@ def _reconfirm_helpers(tmp: Path):
     return ns, posted, logged
 
 
-def _with_retire_stub(ns, posted):
+def _with_retire_stub(ns, posted, web=False):
     def retire(channel, ts, text):
         posted.append(("retired", channel, ts, text))
         ns["_retire_confirmation_message"](channel, ts)
@@ -180,22 +180,30 @@ def _with_retire_stub(ns, posted):
     def post(ch, tts, did, **kw):
         posted.append((ch, tts, did, kw.get("what")))
         ns["_note_draft_confirmation"](did, "DM1", "222.2", ch, tts)
+        return "DM1", "222.2"
     ns["_post_send_confirmation"] = post
+    # where the old card says the new one is (Slack: below; the web chat: a link)
+    ns.update(_reply_taps_only=lambda: web, _CARDS_HERE="Action requests",
+              FRONTEND=types.SimpleNamespace(permalink=lambda ch, ts: f"https://chat.example/#/{ch}/{ts}"))
+    _exec_block("def _replaced_card_line(", "def _reply_new_send_card(", ns)
 
 
 def test_s2_a_revision_retires_the_live_block_and_posts_a_new_one():
-    # One live :lock: block per draft: the revised draft's block is new, at
-    # the bottom of the DM, and the old one says where it went.
-    with tempfile.TemporaryDirectory() as td:
-        ns, posted, _ = _reconfirm_helpers(Path(td))
-        _with_retire_stub(ns, posted)
-        ns["_note_draft_confirmation"]("AAMkD=", "DM1", "111.1", "C1", "T1")
-        ns["_reconfirm_updated_drafts"]("C1", "T1", {"AAMkD="}, "test")
-        assert posted[0][:3] == ("retired", "DM1", "111.1") and "new Send card" in posted[0][3]
-        assert posted[1] == ("C1", "T1", "AAMkD=", "The new Send card for the revised draft")
-        assert len(posted) == 2
-        entry = ns["_load_draft_confirms"]()["AAMkD="]
-        assert entry["status"] == "live" and entry["message_ts"] == "222.2"
+    # One live :lock: block per draft: the revised draft's block is posted
+    # first, then the old one says where it went: below in Slack's DM, a
+    # link on the web chat, whose list shows the newest on top.
+    for web, line in ((False, ":pencil2: Revised. The new Send card for this draft is below."),
+                      (True, ":pencil2: Revised. Its new Send card: <https://chat.example/#/DM1/222.2|open it>.")):
+        with tempfile.TemporaryDirectory() as td:
+            ns, posted, _ = _reconfirm_helpers(Path(td))
+            _with_retire_stub(ns, posted, web=web)
+            ns["_note_draft_confirmation"]("AAMkD=", "DM1", "111.1", "C1", "T1")
+            ns["_reconfirm_updated_drafts"]("C1", "T1", {"AAMkD="}, "test")
+            assert posted[0] == ("C1", "T1", "AAMkD=", "The new Send card for the revised draft")
+            assert posted[1] == ("retired", "DM1", "111.1", line)
+            assert len(posted) == 2
+            entry = ns["_load_draft_confirms"]()["AAMkD="]
+            assert entry["status"] == "live" and entry["message_ts"] == "222.2"   # the old card's retire left it live
 
 
 def test_s2_an_unreadable_revision_keeps_the_live_block():

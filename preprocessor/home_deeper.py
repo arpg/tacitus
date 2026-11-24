@@ -132,8 +132,11 @@ CHOICE_OF = {"draft_reply": ("say", "draft"), "ask_sender": ("say", "draft"),
              "mark_done": ("done", "not_needed")}
 # The steps this module runs itself.
 OWN_STEPS = ("work_on_it", "hold_slot")
+# Ask: a conversation about the item, seeded with the briefing, where the
+# owner writes next. One per card: home_items leaves it out where the
+# item's own Ask (a choice) opens the same conversation.
 CONTINUE = "continue"
-CONTINUE_LABEL = "Continue in a conversation"
+CONTINUE_LABEL = "Ask"
 
 UNCHECKED = "Tacitus could not check this."
 SECTIONS = (("history", "What happened", 4), ("stakes", "What is at stake", 3),
@@ -819,10 +822,37 @@ def check_answer(obj: dict, packet: dict, *, allowed, today: date, due: date | N
             "rejected": rejected, "ok": shown > 0}
 
 
+def runs(kind: str, params: dict, choice: str) -> tuple[str, Any]:
+    """What a step that runs as one of home_items' choices does: (that
+    choice, its argument): the reply's words, the day, or None."""
+    if kind == "draft_reply":
+        return choice, params["say"]
+    if kind == "ask_sender":
+        return choice, f"Ask them: {params['question']}"
+    if kind == "propose_times":
+        return choice, "Offer two or three times that work for me."
+    if kind == "wait_until":
+        return choice, params["date"]
+    return choice, None
+
+
+def _repeats(kind: str, params: dict, choice: str, ids: set) -> bool:
+    """True when the step runs a choice the item already shows with nothing
+    of its own: no words (Mark it done is Done, No reply needed is No reply
+    needed), or only a day, which that choice asks for itself (Wait until
+    a day is Later or Waiting on someone)."""
+    if choice not in ids:
+        return False
+    _choice, arg = runs(kind, params, choice)
+    return arg is None or bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(arg)))
+
+
 def offered(steps: list[dict], item: dict | None) -> list[dict]:
     """The steps the item offers now, each with its label: a step that runs
     as one of home_items' choices needs that choice on the item (when the
-    item lists its choices); the owner's own steps need nothing."""
+    item lists its choices), and is left out when it runs that choice with
+    nothing of its own (_repeats): one button per action on the card. The
+    owner's own steps need nothing."""
     ids = {str(c.get("id")) for c in (item or {}).get("choices") or [] if isinstance(c, dict)}
     out = []
     for s in steps or []:
@@ -833,6 +863,11 @@ def offered(steps: list[dict], item: dict | None) -> list[dict]:
             if ids and not hit:
                 continue
             choice = hit[0] if hit else CHOICE_OF[kind][0]
+            try:
+                if _repeats(kind, s.get("params") or {}, choice, ids):
+                    continue
+            except (KeyError, TypeError):
+                continue
         if kind not in CHOICE_OF and kind not in OWN_STEPS:
             continue
         try:
@@ -1940,16 +1975,9 @@ def step(fe, ref: str, step_id: str, item: dict | None = None, *, row: dict | No
             return {"ok": False, "said": NOTE_STEP_GONE}
         p = s["params"]
         kind = s["kind"]
-        if kind == "draft_reply":
-            return {"choice": s["choice"], "arg": p["say"]}
-        if kind == "ask_sender":
-            return {"choice": s["choice"], "arg": f"Ask them: {p['question']}"}
-        if kind == "propose_times":
-            return {"choice": s["choice"], "arg": "Offer two or three times that work for me."}
-        if kind == "wait_until":
-            return {"choice": s["choice"], "arg": p["date"]}
-        if kind == "mark_done":
-            return {"choice": s["choice"], "arg": None}
+        if kind in CHOICE_OF:
+            choice, arg = runs(kind, p, s["choice"])
+            return {"choice": choice, "arg": arg}
         if kind in OWN_STEPS:
             if kept(job.get("level")):
                 return {"ok": False, "said": NOTE_STEP_GONE}

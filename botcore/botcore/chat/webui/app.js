@@ -1321,7 +1321,7 @@ const homeItem = (it) => {
   return h('li', { class: `${row ? '' : `req u-${a && !a.back ? 'done' : it.urgency || 'calm'} `}h-block${open ? ' open' : ''}`, 'data-ref': ref },
     h('button', { type: 'button', class: row ? 'h-row' : 'req-head h-item', 'aria-expanded': String(open), 'aria-controls': id,
       'data-key': `${ref}/head`, onclick: () => toggleItem(ref) }, ...(row ? [h('span', { class: `h-by by-${it.by}` }, it.by === 'you' ? 'You' : 'Tacitus'),
-      h('span', { class: 'h-title' }, `${DONE_WORDS[it.kind] || ''}${it.title}`), h('time', {}, hm(it.at))]
+      h('span', { class: 'h-title' }, it.title), h('time', {}, hm(it.at))]
       : [h('span', { class: 'h-top' }, h('span', { class: 'h-label' }, it.label), word ? h('span', { class: `req-flag u-${it.urgency}` }, word) : null,
         it.project ? h('span', { class: 'req-proj' }, it.project) : null), h('span', { class: 'h-title' }, it.title),
       it.detail ? h('span', { class: 'h-detail' }, it.detail) : null])),
@@ -1345,7 +1345,7 @@ async function vote(how, text) {
   if (S.homeView) renderThreads();
 }
 
-const DONE_WORDS = { drafted: 'Drafted: ' }, DONE_KINDS = new Set(['closed', 'drafted', 'answered']);
+const DONE_KINDS = new Set(['closed', 'answered']);
 const hm = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 function renderHome(box) {
@@ -1516,7 +1516,7 @@ async function deeper(ref) {
 }
 
 // The card: the quick briefing, the deeper briefing (here when it was ready as the card opened), the choices, the line
-// or the date a choice asks for, the bot's line, Ask about this (and the deeper briefing that came later). An act Undo
+// or the date a choice asks for, the bot's line (and the deeper briefing that came later). Ask is one of the choices. An act Undo
 // can take back: the bot's line and Undo.
 function itemBody(it) {
   const ref = refOf(it), a = S.homeActed.get(ref), x = S.homeCards.get(ref) || (it.brief ? it : null), b = (x && x.brief) || {};
@@ -1529,7 +1529,7 @@ function itemBody(it) {
   }
   const part = (name, sig, ...kids) => h('div', { class: `h-${name}`, 'data-part': name, 'data-sig': JSON.stringify(sig) }, ...kids);
   const m = S.homeIn && S.homeIn.ref === ref ? S.homeIn : null, step = Boolean(m && m.id.startsWith('step:'));
-  const none = Boolean(x && !(x.choices || []).length), ask = (x && x.ask) || it.ask, said = S.homeSaid.get(ref) || {};
+  const none = Boolean(x && !(x.choices || []).length), said = S.homeSaid.get(ref) || {};
   const top = S.homeTop.ref === ref && S.homeTop.top, d = (x && x.deeper) || {};
   const deep = x ? part('deeper', [d, step && [m.id, m.mode], cardsOff(), S.showDetails, S.homeMore.has(ref)], deeperPart(it, d, step && m)) : null;
   return [part('brief', [x && b, x && x.error], x ? [...[b.what, b.asked, b.due].filter(Boolean).map((t) => h('p', {}, t)),
@@ -1539,9 +1539,8 @@ function itemBody(it) {
   part('in', !step && m && [m.id, m.mode], !step && m ? inputRow(it, m) : null),
   h('p', { class: 'card-note h-note', 'data-part': 'note', 'data-sig': JSON.stringify(said), 'aria-live': 'polite' }, said.text || '',
     said.goto ? [' ', h('a', { class: 'req-from', href: said.goto }, 'Open it in Action requests')] : null),
-  part('links', [none, ask], none && it.href ? h('a', { class: 'req-from', href: it.href }, 'Open it there') : null,
-    none && it.link ? h('a', { class: 'req-from', href: it.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open in Outlook') : null,
-    ask ? h('button', { type: 'button', class: 'btn plain', onclick: () => askAbout(ask) }, 'Ask about this') : null),
+  part('links', [none], none && it.href ? h('a', { class: 'req-from', href: it.href }, 'Open it there') : null,
+    none && it.link ? h('a', { class: 'req-from', href: it.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open in Outlook') : null),
   top ? null : deep];
 }
 // The choices as buttons, as Action requests' decision draws its answers for an item that waits on one.
@@ -1588,7 +1587,7 @@ function inputRow(it, m) {
   return h('div', { class: 'card-actions' }, f, h('button', { type: 'button', class: 'btn primary', onclick: ok }, 'Draft it'));
 }
 // The deeper briefing: its text (folded past a few lines, with Show more), its next steps as buttons (the last one
-// Continue in a conversation), which model wrote it only where Settings shows agent and model details; while a newer
+// Ask, where the item's own choices have none), which model wrote it only where Settings shows agent and model details; while a newer
 // one is written, the old text and a quiet line, no steps; a failure or the day's limit in the bot's plain words.
 function deeperPart(it, d, m) {
   const ref = refOf(it), x = S.homeCards.get(ref) || {}, busy = ['working', 'none'].includes(d.state) || d.stale;

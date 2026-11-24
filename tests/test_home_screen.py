@@ -45,9 +45,9 @@ def test_left_puts_the_urgent_first_and_each_item_opens_its_place():
     req = got[0]
     assert req["href"] == "#/dm/tw41/w41" and "ask" not in req and req["project"] == "Lab"
     reply = got[1]
-    assert reply["detail"] == "From Alex Kim · Waiting 4 days" and reply["ask"] == 'About the reply to "Data access form": '
+    assert reply["detail"] == "From Alex Kim · Waiting 4 days" and "ask" not in reply  # its Ask is a choice
     item = got[2]
-    assert item["title"] == "Send the workshop review" and item["ask"] == 'About "Send the workshop review": '
+    assert item["title"] == "Send the workshop review" and "ask" not in item
 
 
 def test_a_row_a_card_names_is_listed_once_and_a_closed_item_not_at_all():
@@ -89,7 +89,6 @@ def test_done_says_whose_doing_each_was_and_counts_a_conversation_once():
     assert by["Reply to the visit request"] == ("closed", "you")
     assert by["Room booking for Friday"] == ("closed", "you")
     assert "A sibling row of the visit" not in by
-    assert by["Re: Lab budget"] == ("drafted", "tacitus")  # a draft that waits for Send
     assert ("answered", "you") in by.values()
     assert [d["at"] for d in got] == sorted((d["at"] for d in got), reverse=True)
 
@@ -97,6 +96,18 @@ def test_done_says_whose_doing_each_was_and_counts_a_conversation_once():
 def test_a_sent_draft_is_the_owners_answer_not_another_draft():
     src = F.sources()
     assert not [d for d in H.done(src) if d["kind"] == "drafted" and d["title"] == "A reply"]
+
+
+def test_a_draft_that_waits_for_send_counts_once_left_for_you():
+    """A draft Tacitus made is left for the owner until he sends it: its
+    Send card is a request item, never a Drafted line under So far today
+    as well, and the ring counts it once."""
+    p = F.payload()
+    waiting = [x for x in p["left"] if x["kind"] == "request" and x["title"] == "Re: Lab budget"]
+    assert len(waiting) == 1
+    assert not [d for d in p["done"] if d["title"] == "Re: Lab budget" or d["kind"] == "drafted"]
+    assert p["tally"] == {"done": len(p["done"]), "left": len(p["left"])}
+    assert not [x for x in p["since"]["lines"] if "drafted" in x["text"]]
 
 
 def test_yesterdays_closures_are_not_today():
@@ -217,7 +228,7 @@ def test_a_phone_in_another_time_zone_is_travel_and_an_old_trip_is_over():
 def test_since_counts_from_the_visit_before_and_links_where_it_can():
     p = F.payload()
     lines = [x["text"] for x in p["since"]["lines"]]
-    assert lines == ["2 new requests in Action requests.", "Tacitus drafted 1 reply.", "Tacitus closed 1 item.",
+    assert lines == ["2 new requests in Action requests.", "Tacitus closed 1 item.",
                      "You finished 3 things.", "1 conversation has a new answer."]
     assert p["since"]["lines"][0]["href"] == "#/dm/tw41/w41"
     src = F.sources()
@@ -801,7 +812,7 @@ def test_a_reply_at_summary_or_full_is_an_ordinary_reply(level):
                    {k: v for k, v in _kept_reply("full").items() if k != "keep_level"}]
     k = next(x for x in H.left(src) if x["id"] == "reply:r-k")
     assert (k["title"], k["detail"]) == (SECRET_SUBJECT, f"From {SECRET_WHO} · Waiting 4 days")
-    assert k["ask"] == f'About the reply to "{SECRET_SUBJECT}": ' and "kept" not in k
+    assert "ask" not in k and "kept" not in k
 
 
 @pytest.mark.parametrize("level,title", [

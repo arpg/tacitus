@@ -366,6 +366,11 @@ HANDLER_TIMEOUT_S = 30
 BUNDLE_CHECK_S = 15.0
 # The title of a card's push: the request waits for a tap in Action requests.
 CARD_PUSH_TITLE = "Action request"
+# The title of one push for several new cards (one_push).
+CARDS_PUSH_TITLE = "Action requests"
+# The notifier key a relay notice in the DM opens its thread with: a new
+# device, a handoff (web_push_policy: a notifier's thread in the DM pushes).
+RELAY_ORIGIN = "relay"
 # Threads the Needs you view lists at most.
 NEEDS_CAP = 200
 # Action requests: the answered requests one list carries at most (every
@@ -662,6 +667,23 @@ def tagging(tag: str):
         yield
     finally:
         _POST_TAG.tag = before
+
+
+# What this thread's posts push (quietly, one_push): `quiet` holds every
+# push; `batch`, a list, takes the cards' pushes for one push at its end.
+_PUSH_HOLD = threading.local()
+
+
+@contextlib.contextmanager
+def quietly():
+    """The posts and cards this thread stores inside it push nothing: a
+    line that repeats what the owner pressed a moment ago."""
+    before = getattr(_PUSH_HOLD, "quiet", False)
+    _PUSH_HOLD.quiet = True
+    try:
+        yield
+    finally:
+        _PUSH_HOLD.quiet = before
 
 
 # The places where the owner talks with Tacitus; Action requests (`dm`)
@@ -2942,8 +2964,8 @@ class WebFrontend(ChatFrontend):
         "confirm_location": "the Send button is on the card in Action requests",
         "confirm_sentence": ("The bot posts a :lock: confirmation card with Send and Cancel "
                              "buttons in Action requests (the user's DM on this web chat), "
-                             "with a one-line pointer in this thread; say \"the Send button "
-                             "is on the card in Action requests\", never \"above\"."),
+                             "and its own one-line pointer to it in this thread; never write "
+                             "where the card or its buttons are."),
         # The place where every card waits, as a sentence names it ("is in
         # Action requests"); Slack's is "your DM".
         "card_place": _ts.CARD_PLACE,
@@ -2958,8 +2980,8 @@ class WebFrontend(ChatFrontend):
             "[text](url) links.\n"
             "Use emoji shortcodes (:white_check_mark:, :email:) not unicode emoji."),
         "confirm_sentence_wrapped": (
-            "buttons themselves are posted on a card in Action requests, so say \"the\n"
-            "Send button is on the card in Action requests\", never \"above\"."),
+            "buttons themselves are posted on a card in Action requests, and the bot\n"
+            "points to it in this thread itself: never write where the card is."),
     }
 
     def __init__(self, cfg: dict | None = None, *, store_path: str | Path,
@@ -3111,6 +3133,37 @@ class WebFrontend(ChatFrontend):
         """The posts this thread makes inside it carry `tag` (module
         tagging())."""
         return tagging(tag)
+
+    def quietly(self):
+        """The posts and cards this thread makes inside it push nothing
+        (module quietly())."""
+        return quietly()
+
+    @contextlib.contextmanager
+    def one_push(self, text_for: Callable[[int], str]):
+        """The new cards this thread posts inside it push once, at its end:
+        one card its own push; more, one push under CARDS_PUSH_TITLE whose
+        line is `text_for(n)` ("4 replies wait for you."), which opens the
+        last one posted (the list's top) and goes under its thread's tag."""
+        before = getattr(_PUSH_HOLD, "batch", None)
+        held: list = []
+        _PUSH_HOLD.batch = held
+        try:
+            yield
+        finally:
+            _PUSH_HOLD.batch = before
+            if len(held) == 1:
+                self._card_notify(*held[0])
+            elif held:
+                row = held[-1][0]
+                try:
+                    line = str(text_for(len(held)) or "")
+                except Exception:
+                    log.exception("web chat: the line of a batch's push failed")
+                    line = ""
+                self.notify(CARDS_PUSH_TITLE, line or f"{len(held)} requests wait for you.",
+                            self._permalink(row["channel"], row["thread_key"], row["id"]),
+                            self._push_tag(row), urgency="high", wait=self.writer_only)
 
     def lines_tagged(self, channel: str, thread_key: str, tag: str) -> list[dict]:
         """The bot's text lines in the thread that carry `tag`, oldest
@@ -3468,11 +3521,13 @@ class WebFrontend(ChatFrontend):
     def _relay_notice(self, text: str) -> None:
         """A notice from the relay client (a new device) in the owner's DM.
         In shadow mode the composite sets `notice`, which posts in the
-        primary's DM and mirrors it; standalone, the web DM is `dm`."""
+        primary's DM and mirrors it; standalone, the web DM is `dm`, and the
+        notice opens its thread as a notifier's (RELAY_ORIGIN), so it
+        pushes: a device to approve, or one to remove, needs the owner."""
         if self.notice is not None:
             self.notice(text)
         else:
-            self.post(DM_ID, text)
+            self.post(DM_ID, text, origin=RELAY_ORIGIN)
 
     def loopback_url(self) -> str:
         """This server on loopback, base path included: where the relay
@@ -4227,7 +4282,8 @@ class WebFrontend(ChatFrontend):
         hours (`notify_push.quiet` "queue"), as the push of that message,
         which is dropped if the owner reads it first. A writer-only copy
         (a command-line sender, which exits next) sends before returning."""
-        if not row or row.get("author") != BOT or not web_push.AVAILABLE:
+        if not row or row.get("author") != BOT or not web_push.AVAILABLE \
+                or getattr(_PUSH_HOLD, "quiet", False):
             return
         try:
             push = web_push_policy.message_push(self.store, row, self.push_settings)
@@ -4249,13 +4305,23 @@ class WebFrontend(ChatFrontend):
                     wait=self.writer_only, dedupe=True)
 
     def _push_card(self, row: dict | None, card: ConfirmationCard) -> None:
-        """A new card is pushed at once, at high urgency: "Action request"
-        (the place it waits in), then the card's title. Never a field, a
-        line or the body: they hold addresses and mail text, and a
-        notification shows on a locked screen. Two cards with one title are
-        two pushes: no text check."""
-        if not row:
+        """A new card that waits for a press is pushed at once, at high
+        urgency: "Action request" (the place it waits in), then the card's
+        title. Never a field, a line or the body: they hold addresses and
+        mail text, and a notification shows on a locked screen. Two cards
+        with one title are two pushes: no text check. A note of something
+        already done (`undo`: a close made at once, with Reopen) asks
+        nothing and pushes nothing; nor does a card posted quietly(), and
+        one posted inside one_push() waits for its batch's push."""
+        if not row or card.undo or getattr(_PUSH_HOLD, "quiet", False):
             return
+        held = getattr(_PUSH_HOLD, "batch", None)
+        if held is not None:
+            held.append((row, card))
+            return
+        self._card_notify(row, card)
+
+    def _card_notify(self, row: dict, card: ConfirmationCard) -> None:
         self.notify(CARD_PUSH_TITLE, card.title or "A card to confirm",
                     self._permalink(row["channel"], row["thread_key"], row["id"]),
                     self._push_tag(row), urgency="high", wait=self.writer_only)

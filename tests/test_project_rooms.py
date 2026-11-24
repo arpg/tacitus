@@ -68,7 +68,7 @@ def test_bot_opens_rooms_after_detection_in_both_lanes():
     # both lanes call it after the staged-action claim, before the promise check
     mono_claim = BOT_SRC.index('_claim_event_actions(newer_than=run_started, token=stage_tok),\n                "mono")')
     mono_rooms = BOT_SRC.index('_open_rooms_for_new_projects(channel, thread_ts, run_started, "mono")')
-    mono_warn = BOT_SRC.index('_warn_if_button_promised(channel, thread_ts, response, "mono")')
+    mono_warn = BOT_SRC.index('_warn_if_button_promised(channel, thread_ts, said_before_scrub, "mono")')
     assert mono_claim < mono_rooms < mono_warn
     resident = _fn_src("_resident_post_run_detection")
     assert '_open_rooms_for_new_projects(channel, thread_ts, started_at, "resident")' in resident

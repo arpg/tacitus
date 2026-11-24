@@ -139,7 +139,7 @@ def test_a_letter_item_opens_with_its_briefing_above_the_choices(app, size):
     deeper = block.locator(".h-deeper")
     text = deeper.locator(".text")
     expect(text).to_contain_text("What happened")
-    assert order(block) == ["brief", "deeper", "choices", "links"]       # ready as it opened: above the choices
+    assert order(block) == ["brief", "deeper", "choices"]                # ready as it opened: above the choices
     expect(text.locator("> p")).to_have_text(["Now", "What was asked", "The destinations", "What came in", "Still missing",
                                               "What happened", "What is at stake", "What Tacitus does not know"])
     expect(text.locator("li").first).to_have_text(re.compile(r"^Next due .*, in 6 days: Harbor Tech PhD\.$"))
@@ -149,15 +149,14 @@ def test_a_letter_item_opens_with_its_briefing_above_the_choices(app, size):
     deeper.get_by_role("button", name="Show more").click()
     expect(text).not_to_have_class(re.compile(r"\bh-fold\b"))
     steps = deeper.locator("[role='group'] > *")
-    expect(steps).to_have_text(["Draft the letter", "Open the portal Harbor Tech PhD",
-                                "Set the date", "Continue in a conversation"])
+    expect(steps).to_have_text(["Draft the letter", "Open the portal Harbor Tech PhD", "Set the date"])
     portal = deeper.get_by_role("link", name="Open the portal Harbor Tech PhD")
     expect(portal).to_have_attribute("href", PORTAL)
     expect(portal).to_have_attribute("target", "_blank")
     expect(portal).to_have_attribute("rel", "noopener noreferrer")
     # a yes with no date of the case's own: Home asks for its one date
     expect(block.locator(".h-choices .btn")).to_have_text([f"By {day_words(6)}", "Another date",
-                                                           "Open it in Action requests"])
+                                                           "Open it in Action requests", "Ask"])
     assert PORTAL not in text.inner_text() and "rowan.vale@example.org" not in block.inner_text()
     settled(page)
     assert stub.deeper_posts == []                                         # nothing to write at the tap
@@ -222,9 +221,8 @@ def test_with_nothing_stored_the_facts_show_and_the_rest_comes_in_below(app):
     thumb = [b.bounding_box() for b in block.locator(".h-choices .btn").all()]
     wait_for(lambda: stub.deeper_posts == [REF])                           # asked for on the open
     expect(deeper.locator(".text")).to_contain_text("What happened")       # written, then read again
-    expect(deeper.locator("[role='group'] button")).to_have_text(["Draft the letter", "Set the date",
-                                                                  "Continue in a conversation"])
-    assert order(block) == ["brief", "choices", "links", "deeper"]         # it came later: below everything
+    expect(deeper.locator("[role='group'] button")).to_have_text(["Draft the letter", "Set the date"])
+    assert order(block) == ["brief", "choices", "deeper"]                  # it came later: below everything
     settled(page)
     assert [b.bounding_box() for b in block.locator(".h-choices .btn").all()] == thumb
     assert stub.case_stored["by"] == "local" and [s["kind"] for s in stub.case_stored["steps"]] == ["draft", "set_due"]
@@ -247,7 +245,7 @@ def test_a_form_item_gets_the_same_briefing_in_its_own_words(app):
     expect(text).to_contain_text("The answers.")
     expect(text).not_to_contain_text("letter")
     steps = block.locator(".h-deeper [role='group'] > *")
-    expect(steps).to_have_text(["Fill it in", "Open the link Annual disclosure", "Continue in a conversation"])
+    expect(steps).to_have_text(["Fill it in", "Open the link Annual disclosure"])
     expect(block.locator(".h-deeper").get_by_role("link", name="Open the link Annual disclosure")).to_have_attribute(
         "href", FORM_LINK)
     block.locator(".h-deeper").get_by_role("button", name="Fill it in").click()

@@ -995,7 +995,7 @@ def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch, tmp_pa
     assert it["kind"] == "letter" and it["label"] == "Letter"
     assert it["brief"]["what"] == "Recommendation letter for Avery Quinn."
     assert it["brief"]["due"] == "Next due tomorrow."
-    assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:date_pick", "open"]
+    assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:date_pick", "open", "start"]
     # its briefing is case_briefing's; with no store to read, the case shows
     # from itself alone and fails closed (no name, no place)
     assert it["deeper"]["state"] == "ready" and "What was asked" in it["deeper"]["text"]

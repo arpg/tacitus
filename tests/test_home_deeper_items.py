@@ -83,19 +83,23 @@ def test_the_item_reads_the_stored_briefing_and_a_step_runs_as_its_own_choice(re
     it = h.item(ref)
     block = it["deeper"]
     assert block["state"] == "ready" and block["by"] == "local" and "stale" not in block
-    assert [s["label"] for s in block["steps"]] == ["Mark it done", f"Wait until {D._short_day(TODAY + timedelta(days=4))}",
-                                                    "Continue in a conversation"]
+    # Mark it done and Wait until a day repeat the card's Done and Waiting on
+    # someone, and the card has its own Ask: no step of the briefing's shows
+    assert block["steps"] == [] and [c["label"] for c in it["choices"]] == \
+        ["Ask", "Done", "Waiting on someone", "Later"]
     assert h.deeper(ref) == {"ok": True, "state": "ready"} and len(real) == 1  # a repeat costs nothing
     # the stored briefing's version is the item's own
     rec = D.Store().get("deadline-w1")
     assert rec["version"] == it["row_version"]
-    # Wait runs as the item's Waiting on someone, with its undo, on the day the step named
+    # a repeated step is no way in: refused, nothing written
     out, _after = h.act(ref, "step:s2")
-    assert out["ok"] and out["undo"]
-    clock[0] += I.UNDO_S
-    h.acts.commit_due()
-    args = dict(zip(led.calls[-1][2::2], led.calls[-1][3::2]))
-    assert args.get("--follow-up-after") == WAIT or WAIT in json.dumps(led.calls[-1])
+    assert out["ok"] is False and out["said"] == I.NO_CHOICE and led.calls == []
+    # Ask opens the conversation with the briefing as Tacitus's first message
+    out, _after = h.act(ref, "start")
+    assert out["ok"] and out["goto"].startswith("#/main/")
+    (channel, text, _thread), = fe.posts
+    assert channel == "main" and "The records show the work is still open." in text
+    assert fe.sent == []                                  # nothing as the owner, no turn
 
 
 def test_a_kept_item_with_no_local_model_reads_unavailable_with_its_line(real, monkeypatch):
