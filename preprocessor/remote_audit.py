@@ -13,7 +13,8 @@ skills/weekly-audit.md.
 
 The run:
   1. Code gathers every fact the post shows: the open and snoozed ledger
-     rows (each a ref), the dropped threads, the rows closed in the last
+     rows (each a ref, one per mail conversation), the dropped threads,
+     the rows closed in the last
      seven days, the open reimbursement rows, the project hygiene
      candidates and the closure-automation numbers (closure_metrics).
   2. One remote call, under a strict schema, picks by ref: the critical
@@ -22,7 +23,9 @@ The run:
      proposal draft, a reply to a program officer). A ref the call invents
      is dropped; a row kept from hosted models below Summary (keep_gate)
      is never handed to it, and the post lists it as the owner's.
-  3. Code renders the skill's template. The pre-send review checks it
+  3. Code renders the skill's template, each item once: a hand-off the
+     critical or important list names says so on its line there and is
+     not listed again under the hand-offs. The pre-send review checks it
      against the ledger (briefing_review, the hosted model the routing
      table names for `review`); rows it drops leave the post, a "done"
      becomes a close proposal, and the post ends with what it changed.
@@ -83,8 +86,9 @@ def _date(s) -> date | None:
 # ── the facts ─────────────────────────────────────────────────────────
 
 def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
-    """{ref: item}: the pending ledger rows, soonest deadline first, then
-    the dropped threads no row covers."""
+    """{ref: item}: the pending ledger rows, soonest deadline first, one per
+    mail conversation (two rows on one thread are one item to the reader,
+    as in the briefing), then the dropped threads no row covers."""
     # A work case's parts (a letter's destinations) are one item, its
     # case (the C refs below).
     pending = [o for o in rows if (o.get("status") or "open") in _PENDING
@@ -95,7 +99,13 @@ def candidates(rows: list[dict], b: dict, *, today: date) -> dict[str, dict]:
         return (_date(o.get("deadline")) or far, -(int(o.get("days_stale") or 0)))
     out: dict[str, dict] = {}
     convs: set[str] = set()
-    for n, o in enumerate(sorted(pending, key=order)[:CAPS["L"]], 1):
+    n = 0
+    for o in sorted(pending, key=order):
+        if n >= CAPS["L"]:
+            break
+        if o.get("conversation_id") in convs:
+            continue
+        n += 1
         due = _date(o.get("deadline"))
         brief = o.get("thread_brief") if isinstance(o.get("thread_brief"), dict) else None
         if o.get("conversation_id"):
@@ -294,8 +304,13 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
     if fallback:
         out.append(f"_{fallback}_")
 
+    # Each item once: a hand-off that a list above names says so on its
+    # line there and is not listed again below; a kept one's line there
+    # already says it is the owner's.
+    notes = {h["ref"]: " (handed to Claude)" for h in handed}
+
     def section(title, picks):
-        rows = [_line(cands[p["ref"]], p.get("why") or "") for p in picks
+        rows = [_line(cands[p["ref"]], p.get("why") or "") + notes.get(p["ref"], "") for p in picks
                 if cands[p["ref"]].get("ledger_id") not in drop]
         out.extend(["", title] + (rows or ["• Nothing this week."]))
     section("🔴 Critical (action this week):", plan.get("critical") or [])
@@ -303,6 +318,8 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
     # The cases set for later (dated, before their lead time): only here,
     # by the day each comes back (case_surface.waits).
     shown = {p["ref"] for k in ("critical", "important") for p in plan.get(k) or []}
+    listed = {p["ref"] for k in ("critical", "important") for p in plan.get(k) or []
+              if cands[p["ref"]].get("ledger_id") not in drop}
     later = sorted((r for r, c in cands.items() if r not in shown and case_surface.is_case(c)
                     and case_surface.entry_of(c).get("waits")),
                    key=lambda r: (case_surface.entry_of(cands[r]).get("back_on") or "9999",
@@ -330,10 +347,12 @@ def render(cands: dict[str, dict], plan: dict, *, closed: list[dict], reimb: lis
                       for h in hygiene[:8]]
                    + ["Reply `dormant <id>` (or `dormant all`) to apply, `keep <id>` to leave it active."])
     out.extend([""] + _closure_block(closure))
-    kept = [p for p in plan.get("kept") or [] if cands[p["ref"]].get("ledger_id") not in drop]
+    kept = [p for p in plan.get("kept") or [] if cands[p["ref"]].get("ledger_id") not in drop
+            and p["ref"] not in listed]
     if kept:
         out.extend(["", "🔒 Kept on your own model, so no hosted model works on these:"]
                    + [f"• {rb._kept_text(cands[p['ref']])}" for p in kept])
+    handed = [h for h in handed if h["ref"] not in listed]
     if handed:
         out.extend(["", "🤖 Handed to Claude (one session in the EA channel):"]
                    + [f"• {rb._clean(cands[h['ref']].get('title'), 120)}: {rb._clean(h.get('task'), 140)}"

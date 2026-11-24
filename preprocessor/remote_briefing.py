@@ -48,9 +48,10 @@ The morning run:
      send measure). Escalations it did not drop go to the bot's queue
      (ESCALATIONS); the bot opens one EA topic for a briefing's items,
      and one Claude session reads their threads.
-  7. Each project room with items in the post gets its slice, in a new
-     topic (briefing_rooms), as the review placed them; the EA post names
-     those rooms in one line.
+  7. Where the slices are on (briefing_rooms.enabled: on Slack; on the
+     web chat only when the switch says true), each project room with
+     items in the post gets its slice, in a new topic, as the review
+     placed them; the EA post names those rooms in one line.
   8. The post's sections after the review are kept for the web chat's
      Home (home_view, HOME_FILE, with this run's id), so Home lists what
      the post lists (docs/webchat.md, Home).
@@ -1900,7 +1901,9 @@ def room_slices(agent: str, cands: dict[str, dict], plan: dict, drafts: list[dic
                 matcher=None) -> list[dict]:
     """Post each project room its slice of this post (briefing_rooms);
     returns the posts, each with `ok` once sent. A dry run plans them and
-    sends nothing. Off with `"briefing_rooms": false` in remote-llm.json."""
+    sends nothing. Off on the web chat unless remote-llm.json says
+    `"briefing_rooms": true`, and anywhere it says false
+    (briefing_rooms.enabled)."""
     import briefing_rooms
     if not briefing_rooms.enabled():
         return []

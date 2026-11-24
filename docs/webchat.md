@@ -970,7 +970,8 @@ What the post carried, and where it is now:
 | A reply under the post about an item | Ask on the item (or Ask about it on the briefing): a new conversation about the item, which the next briefing reads among the owner's messages |
 | The question of the day (`:seedling:`) | Home's question card, Answer it (a new conversation with the question named); now on the remote lane too |
 | The push "Your morning briefing is ready" | "Your morning is ready", opening Home |
-| Send cards, the Send-all card, Looks done?, the Replies card, hand-offs, timed alerts, room slices | unchanged: their own cards and posts (Action requests, rooms) |
+| Send cards, the Send-all card, Looks done?, the Replies card, hand-offs, timed alerts | unchanged: their own cards and posts (Action requests, Ask Tacitus) |
+| A project room's slice of the briefing | none: Home lists every item, and the room keeps its conversations. `"briefing_rooms": true` in remote-llm.json brings the slices back (docs/llm-lanes.md, section 1) |
 | The post marker for the sentinel, the update line, the usage tip's day | unchanged: the handed-off post counts as posted |
 
 **The app.** `#/home` is Home; `#/home/morning-briefing` and
@@ -1226,9 +1227,10 @@ so a conversation begun on one device is at hand on another
   default title, which a new session's first words replace; a name lasts
   while the registry keeps the thread, two weeks idle), else the first
   message's card title or first line. A briefing's slice in a project
-  room opens with what it is about (the first item's title, "and N more"
-  for the rest; `briefing_rooms.conversation_name`), so that line titles
-  it once the owner answers it. The bot hands the names to the web
+  room (posted only when the switch turns the slices on) opens with what
+  it is about (the first item's title, "and N more" for the rest;
+  `briefing_rooms.conversation_name`), so that line titles it once the
+  owner answers it. The bot hands the names to the web
   front end (`conversation_names`, read at most once in 30 seconds and
   at once after a rename), and the threads, Needs you and search rows
   carry them too (`title`, a search hit's `thread_title`): the cards and
@@ -1341,6 +1343,14 @@ and what the place does changed.
   Action requests name no script or mail verb and no full draft id
   (`style_guard.plain_turn_text`): "`create-reply` created the draft.
   Draft ID: ..." reads "Created the draft."
+- **Off the reply lists while it is held.** A thread is on no reply list
+  (the cards, Home, the briefing's queue line) while a briefing run's
+  record says its message needs no reply now (`left`: the work is done
+  elsewhere, such as a document in review) or while the Scheduling
+  channel holds it: the bot marks the open scheduling row of each mail
+  conversation it has a Scheduling thread for (`_sched_mark_held`,
+  `ledger.sched_held`), and when that row closes or that thread is done,
+  a reply still owed comes back.
 - **The same two quiet choices on every reply.** Each reply card ends
   with Later and No reply needed, the words and the order of a reply on
   Home. Later takes a day (`CardAction.date`, tomorrow to a year on, as
@@ -1579,8 +1589,9 @@ posts the room's opening context as a thread of its own. A room the
 bot made whose registration failed (the owner record names it, the
 registry does not) is registered when the owner asks for it again. From then on
 the owner's messages there reach the bot with the room's scope, the
-room's specialist session starts on its first thread, the briefing posts
-the room's slice there (`chat_notify` key `room:r<n>`), and the hygiene
+room's specialist session starts on its first thread (the briefing posts
+no slice there: Home lists the items; with `"briefing_rooms": true` in
+remote-llm.json it does, `chat_notify` key `room:r<n>`), and the hygiene
 pass archives the room of a dormant or closed project and reopens it
 when the project is active again. An archived room takes no new
 message from the app. In shadow mode a room is the
@@ -1757,7 +1768,13 @@ open (`<ea_dir>/state/webchat.sqlite`) is one the bot never reads.
   or `post` with a digest key) goes to the digest channel alone. A direct
   message (`chat/direct.py` `send_direct`) goes to the DM unless the
   `notify` map names a channel for `personal`; the notifier's own
-  `personal` key keeps the EA channel as its default. A process that is
+  `personal` key keeps the EA channel as its default. A post about one
+  mail conversation (`post` with `conversation_id`: the priority alert)
+  goes into the thread that conversation already has in that channel (an
+  earlier alert's, a briefing hand-off's; `preprocessor/item_threads.py`,
+  owner-private, kept 14 days), and nowhere when that thread already
+  carries the message; else it opens one and records it. A post held for
+  quiet hours goes into the held digest as before. A process that is
   not the owner's posts nothing
   and says so. `chat_upload.py` in such a process stages its job in the
   outbox instead; the bot's drain finds the channel that holds a web

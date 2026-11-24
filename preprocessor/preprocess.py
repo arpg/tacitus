@@ -1575,6 +1575,7 @@ def detect_priority_emails(
         if is_vip or is_urgent or is_flagged:
             priority.append({
                 "message_id": m["id"],
+                "conversation_id": conv or "",
                 "subject": m.get("subject", ""),
                 "from": from_addr,
                 "from_name": m.get("from", {}).get("emailAddress", {}).get("name", ""),

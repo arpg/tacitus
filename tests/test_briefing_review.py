@@ -879,3 +879,30 @@ def test_the_footer_and_the_packet_name_a_kept_item_in_fixed_words():
     text = "\n".join(br.footer(review, items))
     assert "Left out *A kept message*: it is old." in text and "Left out *Lab order*" in text
     assert "Secret" not in text and "Secret" not in json.dumps(items[-1])
+
+
+def test_with_the_room_slices_off_the_check_moves_nothing_to_a_room(monkeypatch):
+    """On the web chat no room gets a slice (briefing_rooms.enabled), so the
+    check is offered no room, and a move to a room or out of every room is
+    refused: the footer never says it moved an item where nothing posts."""
+    import briefing_rooms
+    item = {"ref": "L1", "section": "top", "line": "*Radar order*: first thing", "ledger_id": "row-1",
+            "conversation_id": "conv-1", "title": "Radar order", "kind": "ledger", "rooms": []}
+    obj = {"items": [{"ref": "L1", "action": "move", "to": "room:none", "why": "Wrong room."}]}
+    verdicts, rejected, _notes = br.check_verdicts(obj, {"items": [item], "rooms": {}},
+                                                   agent="morning-briefing", items=[item])
+    assert verdicts == {} and [(x["ref"], x["why"]) for x in rejected] == [("L1", "unknown room")]
+    verdicts, rejected, _notes = br.check_verdicts(obj, {"items": [item], "rooms": {"room:radar": "ea-radar"}},
+                                                   agent="morning-briefing", items=[item])
+    assert verdicts["L1"]["to"] == "room:none" and rejected == []
+    # the entry point offers the rooms only while the slices are on
+    seen = {}
+    monkeypatch.setattr(briefing_rooms, "enabled", lambda cfg=None: False)
+    monkeypatch.setattr(briefing_rooms, "rooms", lambda **k: pytest.fail("rooms read"))
+    monkeypatch.setattr(br, "enabled", lambda cfg=None: True)
+    monkeypatch.setattr(br, "review_briefing", lambda *a, **k: seen.update(k) or {})
+    b = _briefing()
+    cands, plan, drafts, escalated, _r = _morning(b)
+    br.review_post("morning-briefing", "post", b, cands=cands, plan=plan, drafts=drafts,
+                   escalated=escalated, now=NOW, dry_run=True)
+    assert seen["room_names"] == {} and seen["room_posts"] == []

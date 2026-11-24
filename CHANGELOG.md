@@ -6,6 +6,21 @@ repository that preceded it.
 
 ## Unreleased
 
+- **One item stays in one place.** On the web chat the project rooms get
+  no morning or afternoon briefing post: Home lists every item, and a
+  room keeps its conversations (`"briefing_rooms": true` in
+  remote-llm.json brings the posts back; Slack keeps them). A priority
+  email about a conversation that already has a thread in Ask Tacitus
+  goes into that thread, and a briefing's hand-off joins the thread of an
+  alert that came first, so one mail conversation is one conversation. A
+  thread the Scheduling channel works on, or one a briefing found needs
+  no reply now, is not also a reply that waits; it comes back when the
+  scheduling thread ends with the reply still owed. A hand-off's draft is
+  tied to its item, so the reply list never says "no draft yet" beside it.
+  The weekly review names each item once, and a room post names each
+  thread once. The `briefing_rooms`, `briefing_review` and
+  `briefing_audit` settings in remote-llm.json now take effect.
+
 - **A tap on a Home item opens it right there.** The card shows what it
   is, what they asked for, where it stands and what Tacitus would do
   next, then the fuller briefing with its next steps first, then the

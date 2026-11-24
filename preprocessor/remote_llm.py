@@ -243,6 +243,14 @@ def config() -> dict:
     # The Claude backstop on the scheduling agent's live writes
     # (sched_agent.backstop_review) is on unless the file says false.
     cfg["sched_backstop"] = raw.get("sched_backstop") is not False
+    # The briefing lane's own switches (docs/llm-lanes.md, section 1): a
+    # true or false, and the audit's judge as the file names it; each
+    # reader keeps its default for a value it does not know.
+    for key in ("briefing_rooms", "briefing_review"):
+        if isinstance(raw.get(key), bool):
+            cfg[key] = raw[key]
+    if isinstance(raw.get("briefing_audit"), str) and raw["briefing_audit"].strip():
+        cfg["briefing_audit"] = raw["briefing_audit"].strip()
     # The model A/B (model_arms.py): {"share", "lanes", "from", "until",
     # "arm"}. `arm` is which arm a drawn topic gets, `remote` (the on-prem
     # model in the Claude Code harness) or `pipeline` (sched_pipeline);

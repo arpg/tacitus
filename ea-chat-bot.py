@@ -6099,6 +6099,15 @@ def _reply_carded(row: dict) -> bool:
         age >= REPLY_DECISION_MIN_AGE and queued.get("outcome") == "decision")
 
 
+def _reply_left(row: dict) -> bool:
+    """A briefing run judged that this message needs no reply now (the
+    row's record for it, outcome `left`: the work is done elsewhere, or
+    nothing is asked). Home and the chat's reply scan leave such a thread
+    out, and so do the Replies blocks; a newer message clears the record."""
+    queued = row.get("queued") if isinstance(row.get("queued"), dict) else {}
+    return queued.get("outcome") == "left"
+
+
 def _reply_queue_rows() -> list[dict] | None:
     """The threads the Replies card is about, oldest first (ledger.py
     reply-queue, _reply_carded); None when the ledger gave no answer."""
@@ -6437,6 +6446,7 @@ def _post_reply_queue(force: bool = False) -> int:
     rows = _reply_queue_rows()
     if rows is None:
         return 0    # the ledger gave no answer: the next tick asks again
+    rows = [r for r in rows if not _reply_left(r)]
     linked = _reply_linked_drafts()
     states = [(r, _reply_state(r, linked)[0]) for r in rows]
     todo = [(r, s) for r, s in states if s not in ("card", "sent")]
@@ -6488,7 +6498,8 @@ def handle_review_replies(ev: "_chat.ActionEvent"):
     named = [x for x in v.get("rows") or [] if isinstance(x, str)]
     queue = {r["id"]: r for r in _reply_queue_rows() or []}
     linked = _reply_linked_drafts()
-    todo = [(queue[rid], _reply_state(queue[rid], linked)[0]) for rid in named if rid in queue]
+    todo = [(queue[rid], _reply_state(queue[rid], linked)[0]) for rid in named
+            if rid in queue and not _reply_left(queue[rid])]
     todo = [(r, s) for r, s in todo if s not in ("card", "sent")]
     if not todo:
         _replace_buttons_with_status(ev.card.channel, ev.card.id,
@@ -15823,6 +15834,10 @@ Reminders:
                 _reply_turn_ended(msg_ts, turn_end, run_drafts)
             except Exception as e:
                 log.warning(f"Replies turn {msg_ts}: its outcome was not shown: {e}")
+            try:
+                _handoff_turn_ended(msg_ts, run_drafts)
+            except Exception as e:
+                log.warning(f"hand-off turn {msg_ts}: its draft was not recorded: {e}")
 
 
 @app.event("message")
@@ -16441,6 +16456,45 @@ def _sched_save_seen(s: dict) -> None:
         pass
 
 
+def _sched_thread_ended(thread: str) -> bool:
+    """The Scheduling thread is done (the web chat's thread state); never
+    on a front end that keeps no such state."""
+    store = getattr(FRONTEND, "store", None)
+    try:
+        row = store.thread_state(SCHED_CHANNEL_ID, thread) if store is not None else None
+    except Exception:
+        return False
+    return bool(row) and row.get("state") == "done"
+
+
+def _sched_mark_held() -> int:
+    """Mark the open scheduling rows of each mail conversation this channel
+    has a thread for (ledger.SCHED_THREAD), so no reply list names the
+    thread while the channel holds it (ledger.sched_held); a thread that is
+    done ends the hold, and a reply still owed comes back. Returns the
+    rows changed."""
+    from preprocessor import ledger as _lg
+    threads = {cid: str(row.get("thread") or "") for cid, row in _sched_seen().items()
+               if isinstance(row, dict) and row.get("thread")}
+    if not threads:
+        return 0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    meetings = _lg.types_with("calendar_match")   # the scheduling request's own row
+    changed = 0
+    for r in _lg.get_open_entries():
+        thread = threads.get(str(r.get("conversation_id") or ""))
+        if not thread or _lg.canonical_type(r.get("type")) not in meetings:
+            continue
+        mark = r.get(_lg.SCHED_THREAD) if isinstance(r.get(_lg.SCHED_THREAD), dict) else {}
+        want = {"channel": SCHED_CHANNEL_ID, "thread": thread,
+                "at": mark.get("at") if mark.get("thread") == thread else now}
+        if _sched_thread_ended(thread):
+            want["ended"] = mark.get("ended") or now
+        if want != mark and _lg.set_metadata(r["id"], **{_lg.SCHED_THREAD: want}):
+            changed += 1
+    return changed
+
+
 def _untrusted_field(text, limit: int = 140) -> str:
     """Text from outside (an email's sender name or subject, a document
     title) made safe to quote in a post or an instruction: one line, no
@@ -16739,6 +16793,12 @@ def scheduling_proactive_loop():
             _scheduling_proactive_tick()
         except Exception as e:
             log.warning(f"scheduling proactive loop error: {e}")
+        try:
+            # At night too: a thread opened or ended leaves or rejoins the
+            # reply list within one interval.
+            _sched_mark_held()
+        except Exception as e:
+            log.warning(f"scheduling hold marks not written: {e}")
         time.sleep(SCHED_PROACTIVE_INTERVAL_S)
 
 
@@ -16756,6 +16816,38 @@ REMOTE_ESCALATIONS_SEEN = _private_state("remote-escalations-seen.json")
 REMOTE_ESCALATION_INTERVAL_S = 120
 REMOTE_ESCALATION_BATCH_MAX = 2
 _CONV_ID_RE = re.compile(r"^[A-Za-z0-9=+/_-]{10,400}$")
+# The ledger rows of each hand-off turn, by the message that started it,
+# until the turn ends (_handoff_turn_ended).
+_HANDOFF_TURNS: dict[str, list[str]] = {}
+
+
+def _drafts_naming_rows() -> set[str]:
+    """The drafts the journal says deliver some ledger row (`--ledger-id`)."""
+    out: set[str] = set()
+    try:
+        for ev in _draft_events.read_since(0):
+            if ev.get("draft_id") and _draft_events.parse_ledger_ids(ev.get("ledger_ids") or ()):
+                out.add(ev["draft_id"])
+    except Exception as e:
+        log.warning(f"draft journal unreadable for a hand-off: {e}")
+    return out
+
+
+def _handoff_turn_ended(msg_ts: str, drafts=()) -> None:
+    """A hand-off turn ended. When it worked one item and made one draft
+    that names no ledger row, that draft is the item's reply: it is
+    recorded on the row (ledger.py note-reply, drafted), so a reply list
+    shows the draft, never "no draft yet"."""
+    rows = _HANDOFF_TURNS.pop(str(msg_ts), None)
+    if not rows or len(rows) != 1 or not rows[0] or not drafts:
+        return
+    named = _drafts_naming_rows()
+    loose = [d for d in drafts if d not in named]
+    if len(loose) == 1:
+        out = _ledger_cli("note-reply", "--id", rows[0], "--outcome", "drafted",
+                          "--draft-id", loose[0])
+        if not out.get("ok"):
+            log.warning(f"hand-off draft not recorded on its row: {out.get('error') or 'no answer'}")
 
 
 def _remote_escalations_seen() -> dict:
@@ -16820,9 +16912,15 @@ def _remote_escalation_item(e: dict) -> list[str]:
                  f"get-conversation --conversation-id {cid}"
                  + (" (with sealed mail it returns the remote model's record of each message, "
                     "which is what the brief above holds)" if brief else ""))
-    if lid and re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", lid):
+    # A row id ends in its message id's tail, "=" and "+" included
+    # (draft_events.parse_ledger_ids reads the same set).
+    if lid and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:=+-]{0,119}", lid):
         lines.append(f"Its ledger row (thread_brief included): python3 "
                      f"/home/ea-bot/ea-system/preprocessor/ledger.py get --id {lid}")
+        lines.append(f"A draft for it names the row: --ledger-id {lid} on the draft verb. "
+                     "Other work for it (a document, a form): python3 "
+                     f"/home/ea-bot/ea-system/preprocessor/ledger.py update --id {lid} "
+                     "--last-action \"<date>: <what and where>\".")
     return lines
 
 
@@ -16837,6 +16935,34 @@ def _keep_split(items: list[dict]) -> tuple[list[dict], list[dict]]:
     except Exception as e:
         log.warning(f"remote escalation: keep check unavailable, nothing handed off: {e}")
         return [], []
+
+
+def _item_thread(e: dict) -> dict | None:
+    """The thread in the EA channel that this hand-off's mail conversation
+    already has (an alert's, an earlier hand-off's; item_threads), or None:
+    none, older than its keep window, or off the web chat."""
+    if str(getattr(FRONTEND, "name", "")).split("+", 1)[0] != "web":
+        return None
+    try:
+        from preprocessor import item_threads as _it
+        row = _it.find(str(e.get("conversation_id") or ""))
+    except Exception as ex:
+        log.warning(f"item thread unreadable: {ex}")
+        return None
+    return row if row and row["channel"] == CHANNEL_ID else None
+
+
+def _item_thread_record(batch: list[dict], thread: str) -> None:
+    """Name `thread` as the one thread of each hand-off's mail conversation."""
+    if str(getattr(FRONTEND, "name", "")).split("+", 1)[0] != "web":
+        return
+    try:
+        from preprocessor import item_threads as _it
+        for e in batch:
+            _it.record(str(e.get("conversation_id") or ""), CHANNEL_ID, thread,
+                       [str(e.get("message_id") or "")])
+    except Exception as ex:
+        log.warning(f"item thread not recorded: {ex}")
 
 
 def _remote_escalation_tick() -> None:
@@ -16867,7 +16993,12 @@ def _remote_escalation_tick() -> None:
     # hosted turn, whoever queued it (keep_gate): it is marked seen, with
     # its level, and never posted.
     allowed, kept = _keep_split(fresh)
-    batch = allowed[:REMOTE_ESCALATION_BATCH_MAX]
+    # One mail conversation, one thread: an item whose conversation already
+    # has its thread here (an alert, an earlier hand-off) is handed off in
+    # that thread, alone; the rest share one new thread.
+    joined = _item_thread(allowed[0]) if allowed else None
+    batch = allowed[:1] if joined else \
+        [e for e in allowed if not _item_thread(e)][:REMOTE_ESCALATION_BATCH_MAX]
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for e in kept:
         seen[str(e.get("conversation_id"))] = {"ts": stamp, "kept": str(e.get("keep_level") or "local")}
@@ -16915,8 +17046,12 @@ def _remote_escalation_tick() -> None:
     if not _write_seen():
         return
     try:
-        seed = FRONTEND.post(channel=CHANNEL_ID, text=text)
-        seed_thread = seed.thread_key or seed.id
+        if joined:
+            seed = FRONTEND.post(channel=CHANNEL_ID, thread_ts=joined["thread"], text=text)
+            seed_thread = joined["thread"]
+        else:
+            seed = FRONTEND.post(channel=CHANNEL_ID, text=text)
+            seed_thread = seed.thread_key or seed.id
     except Exception as ex:
         log.warning(f"remote escalation seed post failed: {ex}")
         for cid in cids:
@@ -16926,12 +17061,15 @@ def _remote_escalation_tick() -> None:
     for cid in cids:
         seen[cid] = {"ts": stamp, "thread": seed_thread}
     _write_seen()
+    _item_thread_record(batch, seed_thread)
+    _HANDOFF_TURNS[str(seed.id)] = [str(e.get("ledger_id") or "") for e in batch]
     # The turn's own clocks apply: a batch that keeps working runs to the
-    # ceiling, and the stall clock catches a hang.
-    log.info(f"Remote escalation opened in {seed_thread}: {len(batch)} item(s)")
+    # ceiling, and the stall clock catches a hang. In a thread that was
+    # there already, the turn reads it as its history.
+    log.info(f"Remote escalation {'joined' if joined else 'opened'} {seed_thread}: {len(batch)} item(s)")
     threading.Thread(
         target=handle_message_async,
-        args=(CHANNEL_ID, seed_thread, seed.id, prompt, "remote-escalation", False),
+        args=(CHANNEL_ID, seed_thread, seed.id, prompt, "remote-escalation", bool(joined)),
         daemon=True).start()
 
 

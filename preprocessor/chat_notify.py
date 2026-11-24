@@ -446,10 +446,10 @@ def _web_route(fe, channel_key: str, direct: bool = False) -> str:
 
 
 def _send_web(channel_key: str, parts: list[str], *, channel: str = "",
-              direct: bool = False) -> bool | str:
-    """Post the parts in one new thread: in `channel` when given, else
-    where _web_route sends the key. The new thread's key, False on a
-    failure."""
+              direct: bool = False, thread: str = "") -> bool | str:
+    """Post the parts in one new thread, or into `thread` when given: in
+    `channel` when given, else where _web_route sends the key. The
+    thread's key, False on a failure."""
     try:
         fe = _web_sender()
         if fe is None:
@@ -461,13 +461,43 @@ def _send_web(channel_key: str, parts: list[str], *, channel: str = "",
             return False
         # The key goes with the post, so the push policy reads the thread's
         # origin when it decides (a briefing pushes; another notice does not).
-        first = fe.post(cid, parts[0], origin=channel_key)
+        first = fe.post(cid, parts[0], thread_ts=thread) if thread else \
+            fe.post(cid, parts[0], origin=channel_key)
+        key = thread or first.thread_key
         for part in parts[1:]:
-            fe.post(cid, part, thread_ts=first.thread_key)
-        return first.thread_key or True
+            fe.post(cid, part, thread_ts=key)
+        return key or True
     except Exception as e:
         print(f"Web chat post failed: {e}")
         return False
+
+
+def _send_item(channel_key: str, parts: list[str], conversation_id: str,
+               message_id: str) -> bool | str:
+    """A post about one mail conversation on the web chat (item_threads):
+    into the thread that conversation already has where the key posts,
+    nothing when that thread carries this message already, else a new
+    thread, recorded as the conversation's."""
+    try:
+        import item_threads
+    except ImportError:
+        from preprocessor import item_threads
+    known = item_threads.find(conversation_id)
+    if known and message_id and message_id in known["messages"]:
+        print("[item-threads] its thread already carries this message; nothing posted")
+        return True
+    fe = _web_sender()
+    if fe is None:
+        return False
+    cid = _web_route(fe, channel_key)
+    thread = known["thread"] if known and known["channel"] == cid else ""
+    key = _send_web(channel_key, parts, channel=cid, thread=thread)
+    if isinstance(key, str) and key:
+        try:
+            item_threads.record(conversation_id, cid, key, [message_id])
+        except Exception as e:
+            print(f"[item-threads] thread not recorded: {e}")
+    return key
 
 
 def _send_room(channel_key: str, parts: list[str]) -> bool | str:
@@ -670,7 +700,8 @@ def _home_push(fe, kind: str) -> None:
 
 def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
          priority: str = "normal", _bypass_quiet: bool = False,
-         diagnostic: bool = False, light: str = "", home: str = "", home_run: str = "") -> bool | str:
+         diagnostic: bool = False, light: str = "", home: str = "", home_run: str = "",
+         conversation_id: str = "", message_id: str = "") -> bool | str:
     """Post a message to the configured chat platform.
 
     If `text` contains `SPLIT_MARKER`, splits into multiple top-level
@@ -690,6 +721,11 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     Home on it goes to Home and the call returns True; when Home cannot
     take it, it posts. `home_run` is the run that wrote it, whose list
     (after the pre-send review) Home shows.
+
+    `conversation_id` names the mail conversation a post is about (a
+    priority alert), `message_id` the message: on the web chat it goes into
+    the thread that conversation already has in the channel, or nowhere when
+    that thread carries the message (item_threads, _send_item).
 
     `priority`: "normal" or "urgent". When the user is in local quiet hours
     (see quiet_hours.py / travel mode), a deferrable post is HELD in a queue
@@ -741,6 +777,8 @@ def post(channel_key: str, text: str, *, blocks: Optional[list] = None,
     if name == "slack":
         return _send_slack(channel_key, parts, blocks)
     if name == "web":
+        if conversation_id:
+            return _send_item(channel_key, parts, conversation_id, message_id)
         return _send_web(channel_key, parts)
     if name == "memory":
         for i, part in enumerate(parts):

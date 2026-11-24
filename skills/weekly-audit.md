@@ -206,6 +206,9 @@ Before emitting each section, apply this pre-emission check to every bullet:
   entry with `status in (open, snoozed)` OR be derived directly from the
   current week's briefing. If the source entry is `closed`/`completed`,
   drop the bullet.
+- **Each item once**: one bullet per item in the whole report. Two ledger
+  rows on one mail conversation are one item. An item in Critical is not
+  listed again under Important.
 - **Completed this week**: every item MUST have `closed_at` within the last
   7 days. Older closures are not "this week."
 - **Reimbursement status**: list active items only. An item with `status in
