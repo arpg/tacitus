@@ -168,7 +168,7 @@ def _pick_primary(items: list[tuple[str, str, str]], default: bool = True) -> st
 
 # Words that name the action a cross reaction should pick. The style is
 # not enough: a delete card puts danger on Delete, its primary action.
-CANCEL_WORDS = ("cancel", "keep", "skip", "dismiss", "one by one")
+CANCEL_WORDS = ("cancel", "keep", "skip", "later", "dismiss", "one by one")
 
 
 def _pick_cancel(items: list[tuple[str, str, str]]) -> str | None:

@@ -1221,7 +1221,8 @@ class Stub:
             return said
         self.clicks.append({"channel": channel, "id": msg_id, **body})
         if self.reply_flow and (m.get("card") or {}).get("kind") == "replies" and (
-                body.get("action_id", "").startswith("reply_choice_") or body.get("text")):
+                body.get("action_id", "").startswith("reply_choice_")
+                or body.get("action_id") == "reply_draft" and body.get("text")):
             threading.Timer(0.2, lambda: self.reply_answered(m, body)).start()
             return True
         label = body.get("selected") or body.get("action_id")

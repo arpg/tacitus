@@ -21,7 +21,7 @@ const KIND_ORDER = { main: 0, dm: 1, sched: 2, room: 3, digest: 4 };
 const NEW_THREAD = '+'; // never a thread key: every key opens with a letter or digit
 const PAGE = 50;
 const QUOTED_LABEL = 'Rest of the body: the earlier messages it quotes';
-const CANCEL_WORDS = ['cancel', 'keep', 'skip', 'dismiss', 'one by one'];
+const CANCEL_WORDS = ['cancel', 'keep', 'skip', 'later', 'dismiss', 'one by one'];
 const RECIPIENT_LABELS = new Set(['to', 'cc', 'bcc', 'reply-to', 'from', 'attendees', 'optional']);
 
 // Shortcode -> glyph, under the Slack name and the Zulip name (imported history).
@@ -1178,7 +1178,7 @@ function caseBrief(r) {
 // A question for the owner (a Replies row that waits on a decision, or Tacitus's one more question about it): the
 // question is the headline, with who wrote and how long it has waited, then one "Your answer" control: the quick
 // answers the card offers, each one tap that answers, and a line to type, whose one primary button shows once there
-// are words to send. Each press is one of the card's own actions on the card's own route; Skip and Not needed stay quiet below.
+// are words to send. Each press is one of the card's own actions on the card's own route; Later and No reply needed stay quiet below.
 // A Home item that waits on an answer draws its choices here too, each press sent its own way (`send`).
 function answerCard(msg, send = (body, box) => act(msg, body, box)) {
   const c = msg.card, q = c.question, acts = (c.actions || []).filter(named), words = labelWords;

@@ -1,7 +1,7 @@
 """A Home item opened in place (preprocessor/home_items.py, docs/webchat.md,
 Home items): the quick briefing and the choices of each kind, kept mail,
 the refs Home lists, what each choice runs (the Replies card's draft turn
-and Not needed, the web chat's Mark done and Needs me, the ledger's
+and No reply needed, the web chat's Mark done and Needs me, the ledger's
 snooze), the undo window, a row that changed between the read and the
 choice or the write, the routes and the relay's rule for buttons, and the
 deeper briefing's hook. Made-up data only (tests/home_fixtures.py)."""
@@ -194,7 +194,7 @@ def test_a_reply_owed_says_who_asked_what_and_how_long_it_waited():
     assert it["brief"]["standing"] == ["It has waited 4 days for your reply.", "You last wrote on it 5 days ago."]
     # signing a form is work, not only a reply (mail_completion, the form the ask names)
     assert it["brief"]["next"] == "This needs a form filled in, not just a reply. Ask Tacitus to start it."
-    assert ids(it) == ["draft", "say", "not_needed", "later"]
+    assert ids(it) == ["draft", "say", "later", "not_needed"]
     assert next(c for c in it["choices"] if c["id"] == "say")["input"] == "text"
     assert it["ask"] == 'About the reply to "Data access form": '
     assert it["deeper"] == {"state": "unavailable"}
@@ -250,12 +250,12 @@ def test_a_decision_shows_the_answers_the_replies_card_offers():
     src = decision_sources()
     it = I.item(src, "reply:response-r2")
     assert it["kind"] == "question" and it["title"] == "Do you sign it as the lab's lead?"
-    assert ids(it) == ["answer:1", "answer:2", "answer", "not_needed", "later"]
+    assert ids(it) == ["answer:1", "answer:2", "answer", "later", "not_needed"]
     assert [c["label"] for c in it["choices"][:3]] == ["Yes, I can join", "No, not this term", "Other answer"]
     assert it["brief"]["what"] == 'Tacitus needs your answer before it writes to Alex Kim about "Data access form".'
     assert it["brief"]["next"] == "Once you answer, Tacitus writes the reply. You check it before it goes."
     src = decision_sources(choices=())  # a question with no answers to pick: Answer
-    assert ids(I.item(src, "reply:response-r2")) == ["answer", "not_needed", "later"]
+    assert ids(I.item(src, "reply:response-r2")) == ["answer", "later", "not_needed"]
 
 
 def test_a_question_with_no_reply_behind_it_is_answered_in_a_conversation():
@@ -390,6 +390,26 @@ def test_an_answer_tap_drafts_the_reply_that_says_it():
     assert out == {"ok": False, "said": "Write your answer first."}
 
 
+def test_a_line_that_says_no_reply_is_needed_is_no_reply_needed_never_a_draft(monkeypatch):
+    """Tell Tacitus what to say, or an answer, that says only that no reply
+    is needed runs No reply needed, with its Undo; a longer line is the
+    reply's words."""
+    Ledger(monkeypatch)
+    _fe, h, bot, clock = home()
+    out, _after = h.act("reply:response-r2", "say", "No email necessary.")
+    assert out["said"] == "No reply needed. It is off your list." and out["undo"]
+    assert bot.drafts == []
+    clock[0] += I.UNDO_S
+    h.acts.commit_due()
+    assert bot.closed == [("response-r2", I.NOT_NEEDED_NOTE)]
+    _fe, h, bot, _c = home(src=lambda tz: decision_sources())
+    out, _after = h.act("reply:response-r2", "answer", "Don't reply")
+    assert out["said"] == "No reply needed. It is off your list." and bot.drafts == []
+    _fe, h, bot, _c = home()
+    h.act("reply:response-r2", "say", "No reply needed until Friday, then say yes.")
+    assert bot.drafts == [("response-r2", "No reply needed until Friday, then say yes.", "")]
+
+
 def test_with_no_bot_a_draft_is_refused_plainly():
     _fe, h, _bot, _c = home(hooks=False)
     out, _after = h.act("reply:response-r2", "draft")
@@ -496,7 +516,7 @@ def test_not_needed_runs_the_replies_cards_not_needed_and_logs_no_miss(monkeypat
     led = Ledger(monkeypatch)
     _fe, h, bot, clock = home()
     out, _a = h.act("reply:response-r1", "not_needed")
-    assert out["said"] == "Not needed. No reply goes out."
+    assert out["said"] == "No reply needed. It is off your list."
     clock[0] += I.UNDO_S
     h.acts.commit_due()
     assert bot.closed == [("response-r1", I.NOT_NEEDED_NOTE)]

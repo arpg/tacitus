@@ -126,7 +126,7 @@ STEP_KINDS = ("draft_reply", "ask_sender", "propose_times", "wait_until", "mark_
 # The steps that run as one of the item's own choices (home_items), by the
 # choice ids it may offer, first found first: a reply's words go through
 # Tell Tacitus what to say (Draft a reply with words reads as it), a date
-# through Waiting on someone, else Later; Done, else Not needed.
+# through Waiting on someone, else Later; Done, else No reply needed.
 CHOICE_OF = {"draft_reply": ("say", "draft"), "ask_sender": ("say", "draft"),
              "propose_times": ("say", "draft"), "wait_until": ("waiting", "later"),
              "mark_done": ("done", "not_needed")}
@@ -716,7 +716,7 @@ def _step_label(kind: str, p: dict, choice: str = "") -> str:
     if kind == "wait_until":
         return f"Wait until {_short_day(_date(p['date']))}"
     if kind == "mark_done":
-        return "Not needed" if choice == "not_needed" else "Mark it done"
+        return "No reply needed" if choice == "not_needed" else "Mark it done"
     if kind == "work_on_it":
         return _one(f"Start: {p['ask']}", LABEL_MAX)
     if kind == "hold_slot":

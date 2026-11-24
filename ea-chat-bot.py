@@ -5979,11 +5979,23 @@ def handle_case(ev: "_chat.ActionEvent"):
 # a card per thread in the card's own thread: Draft it starts a turn there
 # that writes the reply (New Send card when the draft exists), in a side
 # session of the row's own so several drafts are written at the same time
-# (_dispatch_reply_draft), Skip snoozes the row for REPLY_SKIP_DAYS, Not
-# needed closes it. On a front end with no buttons a thumbs up drafts and
-# a thumbs down skips. A thread whose Send card is live is counted in the
-# title and gets no card of its own. The next day's tick retires the cards
-# of the day before, so one Replies card is live at a time.
+# (_dispatch_reply_draft). Every row card has the same two quiet choices,
+# in Home's words: Later snoozes the row to a day the owner picks
+# (REPLY_SKIP_DAYS ahead to start), No reply needed closes it. A line
+# typed on the card that says only that no reply is needed
+# (ledger.no_reply_line) runs No reply needed and starts no draft. On a
+# front end with no buttons a thumbs up drafts and a thumbs down is Later.
+# A thread whose Send card is live is counted in the title and gets no
+# card of its own. The next day's tick retires the cards of the day
+# before, so one Replies card is live at a time.
+#
+# The web chat (Action requests) has no Replies card to press first: each
+# thread that waits is its own block there (_reply_blocks_up), posted by
+# the same daily tick, oldest first, at most REPLY_CARD_MAX live at once.
+# A row whose block is still live never gets a second one: the block is
+# drawn again in place, with no push, when what it shows changed. A
+# Replies card from before gives way, and a press on one posts its rows'
+# blocks the same way.
 #
 # A question a run asked the owner may carry two or three answers
 # (`queued.choices`, ledger.reply_choices). Its card shows one button per
@@ -5996,6 +6008,7 @@ def handle_case(ev: "_chat.ActionEvent"):
 # web chat's Mark done on a thread closes the rows its cards name by that
 # key (thread_state.link_keys), and Mark done on this thread is no close.
 _REPLY_CARDS = _private_state("reply-queue-cards.json")
+_REPLY_CARDS_LOCK = threading.Lock()
 REPLY_CARD_HOUR = 8
 REPLY_CARD_MIN_AGE = 3      # ledger.REPLY_NAME_DAYS
 REPLY_DECISION_MIN_AGE = 1  # ledger.REPLY_DRAFT_DAYS
@@ -6009,6 +6022,10 @@ _LAST_REPLY_CHECK = [0.0]
 REPLY_CARD_RETIRED = (":zzz: No answer on this card. A thread that still waits is on the "
                       "next Replies card.")
 REPLY_ROW_GONE = ":information_source: This thread changed since the card. Nothing was done."
+REPLY_SUMMARY_SETTLED = ":information_source: Each reply that waits is its own request now."
+# The two quiet choices of every reply card, in Home's words (home_items),
+# and the name of Later's day field.
+REPLY_LATER, REPLY_NO_REPLY, REPLY_LATER_ASK = "Later", "No reply needed", "The day it comes back"
 # Where the Replies card's own lines say the Send cards are: "this DM" where
 # the DM is a DM (Slack), the web chat's name for the place otherwise.
 _CARDS_HERE = ("this DM" if getattr(FRONTEND, "dm_takes_text", True)
@@ -6193,15 +6210,30 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
                                     value, "primary", "draft",
                                     ask=REPLY_ASK_ANSWER if state == "decision"
                                     else REPLY_ASK_SAY)]
-    actions += [_chat.CardAction("reply_skip", f":fast_forward: Skip {_days(REPLY_SKIP_DAYS)}",
-                                 value, "", "skip"),
-                _chat.CardAction("reply_not_needed", "Not needed", value, "danger",
-                                 "not needed")]
+    actions += _reply_quiet(value)
     return _chat.ConfirmationCard(
         kind="replies", title=title, actions=actions, no_default=bool(picks),
         block_id=f"reply_row_{batch_id}_{row['id'][-8:]}", fallback_text=title,
         question=question,
         problem={"text": one(problem, 300), **facts} if problem else {})
+
+
+def _reply_quiet(value: dict) -> list:
+    """Later and No reply needed, the quiet choices of every row card, in
+    Home's words. Later takes a day (CardAction.date, tomorrow to a year
+    on, as Home's Later): the web chat's day control starts REPLY_SKIP_DAYS
+    ahead; Slack's picker shows its name until a day is picked. A press with
+    no day (a thumbs down) is Later by REPLY_SKIP_DAYS."""
+    from preprocessor import home_items as _hi
+    today = datetime.strptime(_reply_clock()[0], "%Y-%m-%d").date()
+    day = {"min": (today + timedelta(days=1)).isoformat(),
+           "max": (today + timedelta(days=_hi.LATER_MAX_DAYS)).isoformat()}
+    if _reply_taps_only():
+        day["proposed"] = (today + timedelta(days=REPLY_SKIP_DAYS)).isoformat()
+    return [_chat.CardAction("reply_skip", REPLY_LATER, value, "", "later",
+                             ask=REPLY_LATER_ASK, date=day),
+            _chat.CardAction("reply_not_needed", REPLY_NO_REPLY, value, "danger",
+                             "no reply needed")]
 
 
 def _replies_card(batch_id: str, todo: list[tuple], ready: int) -> "_chat.ConfirmationCard":
@@ -6230,11 +6262,116 @@ def _replies_card(batch_id: str, todo: list[tuple], ready: int) -> "_chat.Confir
         block_id=f"replies_{batch_id}", fallback_text="\n".join([title] + lines))
 
 
-def _record_reply_card(store: dict, key: str, rows: list, ref, channel: str) -> None:
+def _record_reply_card(store: dict, key: str, rows: list, ref, channel: str, **shown) -> None:
+    """`shown`, on a one-row card the web chat may draw again in place: its
+    `batch`, `sig` (_reply_sig), `age`, and a could-not card's `problem`
+    and `answer`."""
     store.setdefault("cards", {})[key] = {
         "rows": list(rows), "created": time.time(),
         "channel": getattr(ref, "channel", "") or channel,
-        "card": getattr(ref, "id", "") or ""}
+        "card": getattr(ref, "id", "") or "", **shown}
+
+
+def _reply_card_live(c: dict) -> bool:
+    ch, mid = c.get("channel") or "", c.get("card") or ""
+    reg = _CARDS.by_ref(ch, mid) if ch and mid else None
+    return bool(reg and reg.get("status") == "live")
+
+
+def _reply_sig(row: dict, state: str) -> str:
+    """What a row's card shows, less its age, as a digest: where its reply
+    stands, the mail it answers, the question and its answers, the owner's
+    earlier word."""
+    import hashlib
+    queued = row.get("queued") if isinstance(row.get("queued"), dict) else {}
+    body = [state, row.get("description") or "", row.get("subject") or "", row.get("ask") or "",
+            row.get("from_name") or row.get("from") or "", str(row.get("since") or ""),
+            (queued.get("note") or "") if state == "decision" else "", _reply_choices(row),
+            [d.get("said") for d in row.get("owner_said") or [] if isinstance(d, dict)]]
+    return hashlib.sha1(json.dumps(body, default=str).encode()).hexdigest()[:12]
+
+
+def _reply_shown(batch: str, row: dict, state: str, problem: str = "", answer: str = "") -> dict:
+    """What the card store keeps of a one-row card, to draw it again."""
+    return {"batch": batch, "sig": _reply_sig(row, state), "age": row.get("age_days"),
+            **({"problem": problem, "answer": answer} if problem else {})}
+
+
+def _reply_blocks_up(channel: str, todo: list[tuple], day: str = "") -> int:
+    """The web chat's Replies: each thread in `todo` ((row, state) pairs,
+    oldest first) is its own block in Action requests, with no card to press
+    first. A row with a live card (its block, or the question or could-not
+    card a turn left) never gets a second one: that card is drawn again in
+    place, with no push, when what it shows changed (_reply_sig) or its age
+    did; a could-not card keeps its reason until its row changes. A row
+    whose turn runs gets none. At most REPLY_CARD_MAX are live at once, the
+    oldest first; the rest come on a later day. `day` marks the store as
+    the day's tick.
+    Returns the count posted."""
+    with _REPLY_CARDS_LOCK:
+        cards = dict(_load_reply_cards().get("cards") or {})
+    live: dict = {}
+    for key, c in cards.items():
+        if len(c.get("rows") or []) == 1 and _reply_card_live(c):
+            live.setdefault(c["rows"][0], (key, c))
+    shown = len({r["id"] for r, _s in todo} & set(live))
+    batch, new, posted, redrawn = uuid.uuid4().hex[:12], [], [], {}
+    for row, state in todo:
+        rid = row["id"]
+        if rid in live:
+            key, c = live[rid]
+            same = c.get("sig") == _reply_sig(row, state)
+            if same and c.get("age") == row.get("age_days"):
+                continue
+            keep = {"problem": c["problem"], "answer": c.get("answer") or ""} \
+                if same and c.get("problem") else {}
+            upd = _reply_shown(c.get("batch") or key, row, state, **keep)
+            try:
+                FRONTEND.update_card(_card_ref(c["channel"], c["card"]),
+                                     _reply_row_card(upd["batch"], row, state, **keep))
+            except Exception as e:
+                log.warning(f"Replies block of {rid} was not drawn again: {e}")
+                continue
+            redrawn[key] = upd
+            continue
+        if shown < REPLY_CARD_MAX and not _reply_turn_of(rid)[0]:
+            shown += 1
+            new.append((row, state))
+    # The youngest first, so the oldest is the newest post: the list shows
+    # it on top (action_requests.order).
+    for row, state in reversed(new):
+        rid, sub = row["id"], f"{batch}-{row['id'][-8:]}"
+        try:
+            with _reply_tagged(rid):
+                ref = _post_card(channel, _reply_row_card(sub, row, state))
+        except Exception as e:
+            log.warning(f"Replies block failed for {rid}: {e}")
+            continue
+        posted.append((sub, rid, ref, _reply_shown(sub, row, state)))
+    with _REPLY_CARDS_LOCK:
+        store, cards = _load_reply_cards(), {}
+        for k, c in (store.get("cards") or {}).items():
+            if _reply_card_live(c):
+                cards[k] = {x: v for x, v in c.items() if x not in ("problem", "answer")} \
+                    | redrawn[k] if k in redrawn else c
+        store["cards"] = cards
+        for sub, rid, ref, kept in posted:
+            _record_reply_card(store, sub, [rid], ref, channel, **kept)
+        if day:
+            store["day"] = day
+        _save_reply_cards(store)
+    return len(posted)
+
+
+def _settle_reply_summaries(store: dict) -> None:
+    """A Replies card from before each reply was its own block gives way:
+    its rows come as blocks."""
+    for key, c in (store.get("cards") or {}).items():
+        if len(c.get("rows") or []) > 1 and _reply_card_live(c):
+            try:
+                _replace_buttons_with_status(c["channel"], c["card"], REPLY_SUMMARY_SETTLED)
+            except Exception as e:
+                log.warning(f"Replies card {key} did not give way: {e}")
 
 
 def _retire_reply_cards(store: dict) -> int:
@@ -6256,7 +6393,8 @@ def _retire_reply_cards(store: dict) -> int:
 def _post_reply_queue(force: bool = False) -> int:
     """Router tick: once a local day, retire the Replies cards of the day
     before and post the day's card. No card when no thread waits, or when
-    every one that waits has its Send card up. Returns the count carded."""
+    every one that waits has its Send card up. On the web chat each thread
+    is its own block instead (_reply_blocks_up). Returns the count carded."""
     now = time.time()
     if not force and now - _LAST_REPLY_CHECK[0] < CLOSE_PROPOSAL_CHECK_S:
         return 0
@@ -6275,6 +6413,11 @@ def _post_reply_queue(force: bool = False) -> int:
     states = [(r, _reply_state(r, linked)[0]) for r in rows]
     todo = [(r, s) for r, s in states if s not in ("card", "sent")]
     ready = sum(1 for _r, s in states if s == "card")
+    if _reply_taps_only():
+        _settle_reply_summaries(store)
+        posted = _reply_blocks_up(dm_channel, todo, day)
+        log.info(f"Replies: {posted} new block(s) of {len(todo)} thread(s) that wait")
+        return posted
     _retire_reply_cards(store)
     store = {"day": day, "cards": {}}
     if todo:
@@ -6296,8 +6439,9 @@ def _post_reply_queue(force: bool = False) -> int:
 
 def _reply_click(ev: "_chat.ActionEvent") -> tuple[str, str, dict | None]:
     """(ledger id, batch id, the row as the queue has it now) for a click
-    on a row card; the row is None when the thread no longer waits."""
-    v = ev.value if isinstance(ev.value, dict) else {}
+    on a row card (Later's Slack date picker carries no value: the card
+    registry's); the row is None when the thread no longer waits."""
+    v = _press_value(ev)
     rid = str(v.get("row") or "")
     row = next((r for r in _reply_queue_rows() or [] if r["id"] == rid), None) if rid else None
     return rid, str(v.get("batch") or ""), row
@@ -6305,7 +6449,10 @@ def _reply_click(ev: "_chat.ActionEvent") -> tuple[str, str, dict | None]:
 
 @app.action("review_replies")
 def handle_review_replies(ev: "_chat.ActionEvent"):
-    """One by one: a card per thread, in the Replies card's own thread."""
+    """One by one: a card per thread, in the Replies card's own thread. On
+    the web chat, a Replies card from before each reply was its own block:
+    its rows that still wait come as blocks, as the day's tick posts them,
+    and the card gives way."""
     if not _verify_button_user(ev):
         return
     v = ev.value if isinstance(ev.value, dict) else {}
@@ -6320,9 +6467,13 @@ def handle_review_replies(ev: "_chat.ActionEvent"):
                                      ":information_source: Nothing is left on this card. Each "
                                      "thread is answered, skipped or has its Send card up.")
         return
+    if _reply_taps_only():
+        _replace_buttons_with_status(ev.card.channel, ev.card.id, REPLY_SUMMARY_SETTLED)
+        _reply_blocks_up(ev.card.channel, todo)
+        return
     _replace_buttons_with_status(ev.card.channel, ev.card.id, ":ok_hand: One by one:")
     thread = getattr(ev.card, "thread_key", "") or ev.card.id
-    store = _load_reply_cards()
+    posted = []
     for row, state in todo:
         sub = f"{batch_id}-{row['id'][-8:]}"
         try:
@@ -6331,31 +6482,43 @@ def handle_review_replies(ev: "_chat.ActionEvent"):
         except Exception as e:
             log.warning(f"Replies row card failed for {row['id']}: {e}")
             continue
-        _record_reply_card(store, sub, [row["id"]], ref, ev.card.channel)
-    _save_reply_cards(store)
+        posted.append((sub, row["id"], ref))
+    with _REPLY_CARDS_LOCK:
+        store = _load_reply_cards()
+        for sub, rid, ref in posted:
+            _record_reply_card(store, sub, [rid], ref, ev.card.channel)
+        _save_reply_cards(store)
 
 
 @app.action("reply_skip")
 def handle_reply_skip(ev: "_chat.ActionEvent"):
-    """Skip: the row is snoozed for REPLY_SKIP_DAYS, then it is open again
-    and its thread is on the Replies card of that day."""
+    """Later: the row is snoozed to the day the owner picked (the press's
+    text, a day as Home's Later reads one: home_items.later_day), or with
+    no day REPLY_SKIP_DAYS ahead; then it is open again and its thread
+    waits again."""
     if not _verify_button_user(ev):
         return
     rid, _batch, row = _reply_click(ev)
     if row is None:
         _replace_buttons_with_status(ev.card.channel, ev.card.id, REPLY_ROW_GONE)
         return
+    from preprocessor import home_items as _hi
     day = _reply_clock()[0]
-    until = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=REPLY_SKIP_DAYS)) \
-        .strftime("%Y-%m-%d")
-    out = _ledger_cli("update", "--id", rid, "--status", "snoozed", "--snooze-until", until,
-                      "--last-action",
-                      f"{day}: skipped for {_days(REPLY_SKIP_DAYS)} on the Replies card")
+    today = datetime.strptime(day, "%Y-%m-%d").date()
+    picked = str(getattr(ev, "text", "") or "").strip()
+    until = _hi.later_day(picked, today) if picked else today + timedelta(days=REPLY_SKIP_DAYS)
+    if until is None:
+        _replace_buttons_with_status(ev.card.channel, ev.card.id,
+                                     ":warning: Pick a day after today. It stays on the list.")
+        return
+    out = _ledger_cli("update", "--id", rid, "--status", "snoozed", "--snooze-until",
+                      until.isoformat(), "--last-action",
+                      f"{day}: snoozed until {until.isoformat()} on the Replies card")
     ok = (out.get("entry") or {}).get("status") == "snoozed"
     _replace_buttons_with_status(
         ev.card.channel, ev.card.id,
-        f":fast_forward: Skipped. It comes back in {_days(REPLY_SKIP_DAYS)}." if ok
-        else ":warning: I could not skip it. It stays on the list.")
+        f":fast_forward: Later. It comes back {_hi._when(until, today)}." if ok
+        else ":warning: I could not move it to later. It stays on the list.")
 
 
 REPLY_NOT_NEEDED_NOTE = "No reply needed: the owner's click on the Replies card"
@@ -6388,7 +6551,7 @@ def _reply_close_thread(rid: str, conversation_id: str, out: dict,
 
 
 def _reply_mail_line(out: dict, left: list[dict]) -> str:
-    """What a Not needed close did with the thread's mail, for the card."""
+    """What a No reply needed close did with the thread's mail, for the card."""
     if left:
         desc = _chat.card_text.inert((left[0].get("description") or left[0]["id"]).strip(), 90)
         more = f" and {len(left) - 1} more" if len(left) > 1 else ""
@@ -6404,7 +6567,8 @@ def _reply_mail_line(out: dict, left: list[dict]) -> str:
 
 
 def _reply_not_needed(rid: str, row: dict, channel: str, card_id: str) -> None:
-    """Not needed on a Replies row card: the card says what _reply_close_no_reply did."""
+    """No reply needed on a Replies row card: the card says what
+    _reply_close_no_reply did."""
     _ok, line = _reply_close_no_reply(rid, row)
     _replace_buttons_with_status(channel, card_id, line)
 
@@ -6414,8 +6578,8 @@ def _reply_close_no_reply(rid: str, row: dict,
     """No reply goes out: delete the row's draft and retire its Send card,
     then close the row and the thread's other reply rows on the owner's
     click (`note` is the closing note), which archives the mail. Returns
-    (closed, the line that says where the mail is). The Replies card's Not
-    needed and Home's (_home_not_needed) run it."""
+    (closed, the line that says where the mail is). The Replies card's No
+    reply needed and Home's (_home_not_needed) run it."""
     _state, draft_id = _reply_state(row, _reply_linked_drafts())
     tail = ""
     if draft_id:
@@ -6428,19 +6592,27 @@ def _reply_close_no_reply(rid: str, row: dict,
                 try:
                     _replace_buttons_with_status(
                         shown["channel"], shown["message_ts"],
-                        ":white_check_mark: Not needed. Draft deleted.")
+                        f":white_check_mark: {REPLY_NO_REPLY}. Draft deleted.")
                 except Exception as e:
                     log.warning(f"retiring the Send card of ...{draft_id[-12:]} failed: {e}")
             _mark_draft_confirmation(draft_id, "retired")
             tail = " Draft deleted."
         else:
-            log.warning(f"not needed: delete-draft failed for {rid}: {why}")
+            log.warning(f"no reply needed: delete-draft failed for {rid}: {why}")
             tail = f" I could not delete its draft ({why})."
     out = _ledger_cli("close", "--id", rid, "--signal", "user_handled", "--note", note)
     if out.get("action") != "closed":
         return False, f":warning: I could not close it. It stays on the list.{tail}"
     out, left = _reply_close_thread(rid, str(row.get("conversation_id") or ""), out, note)
     return True, f":white_check_mark: Closed. No reply goes out.{tail}{_reply_mail_line(out, left)}"
+
+
+def _reply_no_reply(rid: str, row: dict, channel: str, card_id: str) -> None:
+    """No reply needed, pressed or typed on a row card (a line that says
+    only that, ledger.no_reply_line): the row closes in the background."""
+    _replace_buttons_with_status(channel, card_id, ":hourglass_flowing_sand: Closing it...")
+    threading.Thread(target=_reply_not_needed, args=(rid, row, channel, card_id),
+                     daemon=True).start()
 
 
 @app.action("reply_not_needed")
@@ -6451,10 +6623,7 @@ def handle_reply_not_needed(ev: "_chat.ActionEvent"):
     if row is None:
         _replace_buttons_with_status(ev.card.channel, ev.card.id, REPLY_ROW_GONE)
         return
-    _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                 ":hourglass_flowing_sand: Closing it...")
-    threading.Thread(target=_reply_not_needed,
-                     args=(rid, row, ev.card.channel, ev.card.id), daemon=True).start()
+    _reply_no_reply(rid, row, ev.card.channel, ev.card.id)
 
 
 def _reply_new_send_card(draft_id: str, channel: str, thread_ts: str | None) -> bool:
@@ -6838,19 +7007,24 @@ def _strip_slack_markup(text: str) -> str:
     return re.sub(r"[*_`~]", "", text).strip()
 
 
-def _reply_post_next(t: dict, card) -> str:
-    """Post the row's next card in its thread, tagged with the row, and
-    record it; its id, or '' when it did not post."""
+def _reply_post_next(t: dict, row: dict, state: str, problem: str = "", answer: str = "") -> str:
+    """Post the row's next card (_reply_row_card of `row` as it is now) in
+    its thread, tagged with the row, and record it; its id, or '' when it
+    did not post."""
     rid = t["row"]["id"]
     try:
         with _reply_tagged(rid):
-            ref = _post_card(t["channel"], card, thread_ts=t["thread"])
+            ref = _post_card(t["channel"], _reply_row_card(t["batch"], row, state, problem=problem,
+                                                           answer=answer),
+                             thread_ts=t["thread"])
     except Exception as e:
         log.warning(f"Replies row {rid}: the next card failed: {e}")
         return ""
-    store = _load_reply_cards()
-    _record_reply_card(store, f"{t['batch']}-next-{ref.id}", [rid], ref, t["channel"])
-    _save_reply_cards(store)
+    with _REPLY_CARDS_LOCK:
+        store = _load_reply_cards()
+        _record_reply_card(store, f"{t['batch']}-next-{ref.id}", [rid], ref, t["channel"],
+                           **_reply_shown(t["batch"], row, state, problem, answer))
+        _save_reply_cards(store)
     return ref.id
 
 
@@ -6902,7 +7076,7 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
     if not _reply_end(progress, shown):
         return
     if kind == "decision":
-        nxt = _reply_post_next(t, _reply_row_card(t["batch"], fresh, "decision"))
+        nxt = _reply_post_next(t, fresh, "decision")
         link = FRONTEND.permalink(channel, nxt) if nxt else ""
         _reply_status(channel, card_id, ":speech_balloon: One more answer is needed: "
                       + (f"<{link}|open it>." if link else "below."))
@@ -6912,7 +7086,7 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
                       + (f": {_chat.card_text.inert(note, 0)}" if note else "."))
     elif kind == "drafted" and state == "draft":
         # The turn made a draft whose Send card is not up: offer it again.
-        nxt = _reply_post_next(t, _reply_row_card(t["batch"], fresh, "draft"))
+        nxt = _reply_post_next(t, fresh, "draft")
         _reply_status(channel, card_id, ":white_check_mark: The reply is drafted"
                       + (f": <{FRONTEND.permalink(channel, nxt)}|show its Send card>." if nxt else "."))
     else:
@@ -6920,8 +7094,8 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
         # its end said; a turn cut short gets the plain words for how.
         why = note if kind == "blocked" and note else REPLY_ENDED_WORDS[how] if how != "done" \
             else _reply_turn_text(channel, t["thread"], progress, rid)
-        nxt = _reply_post_next(t, _reply_row_card(t["batch"], fresh, t["state"], answer=t["said"],
-                                                  problem=why or REPLY_ENDED_WORDS["done"]))
+        nxt = _reply_post_next(t, fresh, state, problem=why or REPLY_ENDED_WORDS["done"],
+                               answer=t["said"])
         link = FRONTEND.permalink(channel, nxt) if nxt else ""
         _reply_status(channel, card_id, ":warning: The reply was not written: "
                       + (f"<{link}|see why>." if link else "see below."))
@@ -7093,13 +7267,18 @@ def handle_reply_discuss(ev: "_chat.ActionEvent"):
 def handle_reply_draft(ev: "_chat.ActionEvent"):
     """Draft it, or New Send card when the row's draft exists. A draft
     that is gone gets a new one. The line the owner added to the click
-    (ActionEvent.text) is what the reply must say."""
+    (ActionEvent.text) is what the reply must say; a line that says only
+    that no reply is needed (ledger.no_reply_line) is No reply needed."""
     if not _verify_button_user(ev):
         return
     _rid, _batch, row = _reply_click(ev)
     channel, card_id = ev.card.channel, ev.card.id
     if row is None:
         _replace_buttons_with_status(channel, card_id, REPLY_ROW_GONE)
+        return
+    from preprocessor.ledger import no_reply_line
+    if no_reply_line(getattr(ev, "text", "")):
+        _reply_no_reply(_rid, row, channel, card_id)
         return
     thread = getattr(ev.card, "thread_key", "") or card_id
     state, draft_id = _reply_state(row, _reply_linked_drafts())
@@ -7165,8 +7344,10 @@ def handle_reply_choice(ev: "_chat.ActionEvent"):
 # bot runs for a choice on one. Draft a reply, Tell Tacitus what to say and
 # an answer start the Replies card's Draft it turn for the row
 # (_dispatch_reply_draft) on a new line in Action requests, where its Send
-# card comes; Not needed is the Replies card's own (_reply_close_no_reply),
-# run once the choice's undo window has passed. The row is the reply
+# card comes; No reply needed is the Replies card's own
+# (_reply_close_no_reply), run once the choice's undo window has passed, and
+# so is a line on Tell Tacitus what to say that says only that no reply is
+# needed (home_items: ledger.no_reply_line). The row is the reply
 # queue's, read again at the press: a thread that no longer waits, a reply
 # that went out or a Send card already up does nothing. One turn per row: a
 # press while the row's turn runs, from Home or a Replies card, starts none.
@@ -7223,7 +7404,7 @@ def _home_draft(rid: str, words: str = "", answer: str = "") -> dict:
 
 
 def _home_not_needed(rid: str, note: str) -> dict:
-    """Home's Not needed, once its undo window has passed: {"ok", "said"}."""
+    """Home's No reply needed, once its undo window has passed: {"ok", "said"}."""
     row, why = _home_queue_row(rid)
     if row is None:
         return {"ok": False, "said": why}

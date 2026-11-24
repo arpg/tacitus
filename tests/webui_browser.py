@@ -241,6 +241,18 @@ def _request(stub, title="Send this reply?", at=None, event="card", **card):
         "ea_channel": W.MAIN, "content_fingerprint": "", "no_default": False, **card})
 
 
+def reply_quiet(value) -> list[dict]:
+    """The two quiet choices of every Replies row card, as the bot posts
+    them on the web chat (ea-chat-bot._reply_quiet): Later, a day from
+    tomorrow to a year on that starts three days on, and No reply needed."""
+    from datetime import date, timedelta
+    day = lambda n: (date.today() + timedelta(days=n)).isoformat()  # noqa: E731
+    return [{"id": "reply_skip", "label": "Later", "value": value, "style": "", "word": "later",
+             "ask": "The day it comes back", "date": {"min": day(1), "max": day(366), "proposed": day(3)}},
+            {"id": "reply_not_needed", "label": "No reply needed", "value": value, "style": "danger",
+             "word": "no reply needed", "ask": ""}]
+
+
 # Chrome's install offer, as a page sees it.
 FAKE_PROMPT = """() => {
     window.__prompted = window.__prompted || 0;

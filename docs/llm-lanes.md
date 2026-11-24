@@ -766,8 +766,8 @@ line; it never falls back to a Claude run.
   No scheduled lane drafts against it. A follow-up on a thread he said
   gets no reply is never a draft or a to-do: it is one quiet question,
   asked once under the item's title ("They asked again. On Nov 14 you
-  said no reply. Still no reply?"); the Replies card's Not needed answers
-  it. Nor does a
+  said no reply. Still no reply?"); the Replies card's No reply needed
+  answers it. Nor does a
   scheduled lane draft a reply whose ask is his choice (the record's
   `decide` state, a yes or no, a whether), a yes or no to taking part in
   something (a program, a committee, a panel, a board), or a reply-all

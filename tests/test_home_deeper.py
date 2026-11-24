@@ -374,7 +374,7 @@ def test_a_step_runs_as_the_items_own_choice_or_not_at_all(env):
     st = D.state(fe, ITEM["ref"], ITEM, row=make_row())
     assert st["state"] == "ready" and st["model"] == "Your own model"
     assert st["steps"] == [{"id": "s1", "label": "Draft a reply: The rover can go out for the field week."},
-                           {"id": "s2", "label": "Not needed"},
+                           {"id": "s2", "label": "No reply needed"},
                            {"id": "s3", "label": "Wait until Fri, Nov 27"},
                            {"id": "continue", "label": "Continue in a conversation"}]
     for s in st["steps"]:
@@ -748,10 +748,10 @@ def test_the_card_adds_the_moments_lines_in_code_and_drops_a_step_whose_day_pass
         plain(line)
     assert st["text"].startswith("Now\n- They wrote 4 days ago and wait for your answer.\n"
                                  "- It is due Friday, December 4.\n\nWhat happened")
-    assert [s["label"] for s in st["steps"]][:2] == ["Wait until Tue, Nov 24", "Not needed"]
+    assert [s["label"] for s in st["steps"]][:2] == ["Wait until Tue, Nov 24", "No reply needed"]
     fe._home_deeper.clock = lambda: NOW + 3 * 86400  # Nov 25: the wait's day passed
     st = D.state(fe, ITEM["ref"], todo, row=make_row())
-    assert [s["label"] for s in st["steps"]] == ["Not needed", "Continue in a conversation"]
+    assert [s["label"] for s in st["steps"]] == ["No reply needed", "Continue in a conversation"]
     assert "They wrote 7 days ago" in st["text"]
 
 

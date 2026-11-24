@@ -18,8 +18,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from webui_browser import (  # noqa: E402,F401  (the fixtures and helpers)
-    PHONE, SIDEWAYS, SIZES, SMALL_TARGETS, _request, app, browser, open_thread, stub_factory,
-    wait_for,
+    PHONE, SIDEWAYS, SIZES, SMALL_TARGETS, _request, app, browser, open_thread, reply_quiet,
+    stub_factory, wait_for,
 )
 
 
@@ -155,7 +155,7 @@ def test_an_answered_request_is_one_quiet_line_and_opens_to_what_happened(app):
 
 def _decision(stub, picks=True, at=None, **question):
     """A Replies row that waits on the owner's decision, as the bot posts it
-    for the web chat: its quick answers, the answer line, Skip and Not
+    for the web chat: its quick answers, the answer line, Later and No reply
     needed, and the question it asks."""
     import webui_stub_server as W
     from datetime import datetime, timedelta
@@ -168,8 +168,7 @@ def _decision(stub, picks=True, at=None, **question):
               "ask": "your answer"}] if picks else
             [{"id": "reply_draft", "label": ":pencil2: Draft the reply", "value": value, "style": "primary",
               "word": "draft", "ask": "your answer"}])
-    acts += [{"id": "reply_skip", "label": ":fast_forward: Skip 3 days", "value": value, "style": "", "word": "skip", "ask": ""},
-             {"id": "reply_not_needed", "label": "Not needed", "value": value, "style": "danger", "word": "not needed", "ask": ""}]
+    acts += reply_quiet(value)
     q = {"text": "Will you review the workshop paper by December 1?", "from": "Pat",
          "since": (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds"), "about": "Review request", **question}
     return stub.add(W.DM, "", kind="card", event="card", at=at, card={
@@ -217,7 +216,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
     expect(go).to_be_enabled()
     field.fill("")
     expect(go).to_be_hidden()
-    expect(card.locator(".answer-more .btn")).to_have_text(["Skip 3 days", "Not needed"])  # quiet, below
+    expect(card.locator(".answer-more .btn")).to_have_text(["Later", "No reply needed"])  # quiet, below
     expect(card).not_to_contain_text("in this thread")
     if size == "phone":
         assert page.evaluate(SMALL_TARGETS) == []
@@ -266,9 +265,42 @@ def test_a_quick_answer_is_one_tap_on_its_own_button_and_skip_stays_quiet(app):
     page.locator(f'.req[data-id="{other["id"]}"] .req-head').click()
     quiet = page.locator(f'.req[data-id="{other["id"]}"] .answer-more .btn')
     assert all("plain" in (quiet.nth(i).get_attribute("class") or "") for i in range(2))
-    quiet.nth(1).click()  # Not needed: the card's own action, as before
+    quiet.nth(1).click()  # No reply needed: one tap, the card's own action
     wait_for(lambda: len(stub.clicks) == 2)
     assert stub.clicks[1]["action_id"] == "reply_not_needed"
+    assert not errors, errors
+
+
+def test_later_asks_its_day_as_homes_later_does_and_no_reply_needed_is_one_tap(app):
+    """The two quiet choices read as on Home. Later opens the day control
+    at three days on, its button says the day; Use sends that day through
+    the card's own action. No line to type a day in."""
+    from datetime import date, timedelta
+    from playwright.sync_api import expect
+    page, stub, errors = app(**PHONE)
+    page.wait_for_selector(".thread-item")
+    m = _decision(stub, picks=False)
+    page.evaluate("location.hash = '#/stream%3A7'")
+    block = page.locator(f'.req[data-id="{m["id"]}"]')
+    block.locator(".req-head").click()
+    card = block.locator(".card.answer")
+    later, no_reply = card.locator(".answer-more .btn").nth(0), card.locator(".answer-more .btn").nth(1)
+    expect(later).to_have_text("Later")
+    expect(no_reply).to_have_text("No reply needed")
+    expect(later).to_have_attribute("aria-expanded", "false")
+    later.click()
+    expect(later).to_have_attribute("aria-expanded", "true")
+    day = date.today() + timedelta(days=3)
+    field = card.get_by_label("The day it comes back")
+    expect(field).to_have_attribute("type", "date")
+    expect(field).to_have_value(day.isoformat())
+    use = card.locator(".day-pick .btn.primary")
+    expect(use).to_have_text(f"Use {day:%a} {day:%b} {day.day}" + (f", {day.year}" if day.year != date.today().year else ""))
+    assert page.evaluate(SMALL_TARGETS) == [] and page.evaluate(SIDEWAYS) == [0, 0]
+    use.click()
+    wait_for(lambda: stub.clicks)
+    assert stub.clicks == [{"channel": m["channel"], "id": m["id"], "action_id": "reply_skip",
+                            "value": {"row": "response-r1", "batch": "b1"}, "text": day.isoformat()}]
     assert not errors, errors
 
 

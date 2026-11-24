@@ -22,7 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from webui_browser import (  # noqa: E402,F401  (the fixtures and helpers)
-    FAKE_HIDDEN, FAKE_VIEWPORT, WATCH_LIVE, app, browser, open_thread, stub_factory, wait_for,
+    FAKE_HIDDEN, FAKE_VIEWPORT, WATCH_LIVE, app, browser, open_thread, reply_quiet, stub_factory,
+    wait_for,
 )
 
 
@@ -178,11 +179,8 @@ def _reply_card(stub, thread_key):
         "kind": "replies", "title": ":inbox_tray: *Reply to the example lab*", "fields": [],
         "lines": [], "body": "", "quoted": "",
         "actions": [{"id": "reply_draft", "label": ":pencil2: Draft it", "value": value,
-                     "style": "primary", "word": "draft", "ask": "what the reply must say"},
-                    {"id": "reply_skip", "label": "Skip 3 days", "value": value, "style": "",
-                     "word": "skip", "ask": ""},
-                    {"id": "reply_not_needed", "label": "Not needed", "value": value,
-                     "style": "danger", "word": "not needed", "ask": ""}],
+                     "style": "primary", "word": "draft", "ask": "what the reply must say"}]
+        + reply_quiet(value),
         "select": None, "block_id": "", "footer": "", "fallback_text": "A reply waits",
         "thread_ts": thread_key, "ea_channel": W.MAIN, "content_fingerprint": "",
         "no_default": False})
@@ -199,7 +197,7 @@ def test_an_action_that_asks_takes_a_line_of_the_owners_words(app):
     tk = stub.messages[0]["thread_key"]
     first = _reply_card(stub, tk)
     box = page.locator(".card[data-kind='replies']")
-    field = box.locator(".card-actions input.card-ask")
+    field = box.locator(".card-actions input.card-ask:not([type='date'])")
     expect(field).to_have_attribute("placeholder", "What the reply must say (optional)")
     assert field.get_attribute("maxlength") == "300"
     field.fill("  Say yes, after the 20th.  ")
@@ -211,15 +209,15 @@ def test_an_action_that_asks_takes_a_line_of_the_owners_words(app):
     expect(page.locator(".card.status:has-text('Done: reply_draft')")).to_be_visible()
     second = _reply_card(stub, tk)
     expect(box).to_have_count(1)
-    box.locator("button.primary").click()                        # no words: a plain press
+    box.locator("button.primary[data-action=reply_draft]").click()  # no words: a plain press
     wait_for(lambda: len(stub.clicks) == 2)
     assert stub.clicks[1] == {"channel": second["channel"], "id": second["id"],
                               "action_id": "reply_draft", "value": {"row": "response-example"},
                               "text": ""}
     expect(page.locator(".card.status:has-text('Done: reply_draft')")).to_have_count(2)
     third = _reply_card(stub, tk)
-    box.locator("input.card-ask").fill("words for another action")
-    box.locator("button:has-text('Not needed')").click()
+    box.locator("input.card-ask:not([type='date'])").fill("words for another action")
+    box.locator("button:has-text('No reply needed')").click()
     wait_for(lambda: len(stub.clicks) == 3)
     assert stub.clicks[2] == {"channel": third["channel"], "id": third["id"],
                               "action_id": "reply_not_needed",
