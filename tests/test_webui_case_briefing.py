@@ -154,9 +154,9 @@ def test_a_letter_item_opens_with_its_briefing_above_the_choices(app, size):
     expect(portal).to_have_attribute("href", PORTAL)
     expect(portal).to_have_attribute("target", "_blank")
     expect(portal).to_have_attribute("rel", "noopener noreferrer")
-    # a yes with no date of the case's own: Home asks for its one date
-    expect(block.locator(".h-choices .btn")).to_have_text([f"By {day_words(6)}", "Another date",
-                                                           "Open it in Action requests", "Ask"])
+    # a yes with no date of the case's own: Home asks for its one date; no
+    # card of its own in Action requests, so no link that would lead nowhere
+    expect(block.locator(".h-choices .btn")).to_have_text([f"By {day_words(6)}", "Another date", "Ask"])
     assert PORTAL not in text.inner_text() and "rowan.vale@example.org" not in block.inner_text()
     settled(page)
     assert stub.deeper_posts == []                                         # nothing to write at the tap

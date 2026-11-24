@@ -134,6 +134,12 @@ one's text kept) and,
 (by default that briefing) with a `home-item` event; a kept item's reads
 home_deeper's line for no local model.
 
+`one_list=True` is the web chat's one list (WebFrontend.one_list): /api/me
+says `one_list`, Action requests and its count leave out the card kinds
+Home holds (HOME_KINDS, as action_requests.listed), Home's `hooks.close`,
+`hooks.reopen` and `hooks.which` record each press in `home_presses`, and
+Settings, Home, Where you answer sets it (`answers`).
+
 The owner's own actions: GET /api/search finds the messages that hold
 every word of `q` (any case, anywhere in the text), newest first, with
 the bot's row shape; POST /api/messages/<ch>/<id>/react toggles one of the
@@ -246,6 +252,8 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' 
        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
 DM, MAIN, SCHED, ROOM, OLD, DIGEST = "stream:7", "stream:9", "stream:11", "r1", "r2", "digests"
+# The card kinds Home holds with one list (botcore's action_requests.HOME_KINDS).
+HOME_KINDS = frozenset({"replies", "close", "closed", "letter", "letter_ask", "case", "case_ask"})
 HEALTH = "r3"  # the health room, with `debug`
 # The install /api/relay/status names; a pairing link for another is refused.
 STUB_INSTALL = "a" * 26
@@ -346,13 +354,19 @@ class Stub:
                  push: bool = False, handoff: bool = False, owner_routes: str | None = None,
                  subscriptions: list | None = None, public_url: str | None = None,
                  rooms: bool | None = None, debug: bool | None = None, status: dict | None = None,
-                 home: dict | None = None, details: bool | None = None, home_src=None):
+                 home: dict | None = None, details: bool | None = None, home_src=None,
+                 one_list: bool = False):
         self.cond = threading.Condition()
         self.status = status
         self.home = home
+        # One list (WebFrontend.one_list): Action requests and its count
+        # leave out the kinds Home holds; /api/me says so; Home's hooks for a
+        # close proposal, a close note and a "which one" question record.
+        self.one_list = one_list
+        self.home_presses: list[tuple] = []
         self.home_gets: list[dict] = []
         self.votes: list[dict] = []
-        self.home_settings = {"tone": "breezy", "briefing": "home"}
+        self.home_settings = {"tone": "breezy", "briefing": "home", **({"answers": "home"} if one_list else {})}
         self.home_posts: list[dict] = []
         self.items: dict[str, dict] = {}
         self.item_gets: list[str] = []
@@ -373,6 +387,7 @@ class Stub:
         self.case_answer: dict | None = None  # the model's answer a start writes
         self.letter_presses: list[tuple] = []  # Home's hooks.letter: (case, answer, place, words)
         self.work: list[dict] = []  # cases of other kinds (made-up), in the store's shape
+        self.questions: list[dict] = []  # open "which one was it?" questions (cases.questions, kind part)
         self.case_presses: list[tuple] = []  # Home's hooks.case: (case, answer, part, words)
         self.real = self._real_home(home_src) if home_src else None
         self.home_src = home_src
@@ -547,7 +562,8 @@ class Stub:
         for m in self.messages:
             c = m.get("card") or {}
             if m["channel"] == channel and m["kind"] == "card" and not m["deleted"] \
-                    and (c.get("actions") or c.get("select")) and not c.get("undo"):
+                    and (c.get("actions") or c.get("select")) and not c.get("undo") \
+                    and not (self.one_list and c.get("kind") in HOME_KINDS):
                 out[m["thread_key"]] = out.get(m["thread_key"], 0) + 1
         return out
 
@@ -625,6 +641,10 @@ class Stub:
 
         def __init__(self, stub):
             self.stub, self.cfg, self.store = stub, {}, self
+
+        @property
+        def one_list(self):
+            return self.stub.one_list
 
         def home_get(self, name):
             return json.loads(json.dumps(self.stub.home_meta.get(name) or {}))
@@ -745,6 +765,7 @@ class Stub:
         dd = D()
         self._put_back = [(I, "_deeper_mod", I._deeper_mod), (wts, "RUN", wts.RUN),
                           (LS, "load_cases", LS.load_cases), (CS, "load_cases", CS.load_cases),
+                          (CS, "part_questions", CS.part_questions),
                           (CB, "_case_of", CB._case_of), (CB, "Store", CB.Store),
                           (CB, "LOCAL", CB.LOCAL), (CB, "_log", CB._log), (dd, "local_ready", dd.local_ready)]
         deeper = Stub._Deeper(self)
@@ -756,6 +777,7 @@ class Stub:
                 [dict(c, case_kind=c.get("kind")) for c in self.work]
             return [c for c in pool if not kinds or c["case_kind"] in kinds]
         CS.load_cases = cases_of
+        CS.part_questions = lambda conn=None: [dict(q) for q in self.questions]
         CB._case_of = lambda case_id, case: None if case is None else {
             "case": CB.general(case), "rows": {}, "events": [], "version": "v1",
             "level": case.get("keep_level") or "full"}
@@ -772,6 +794,10 @@ class Stub:
             {"ok": True, "said": "Tacitus is on it. Its card is in Action requests."}
         home.hooks.case = lambda cid, answer, part, words: self.case_presses.append((cid, answer, part, words)) or \
             {"ok": True, "said": "Tacitus is on it. Its card is in Action requests."}
+        home.hooks.close = lambda lid, keep: self.home_presses.append(("close", lid, keep)) or {"ok": True}
+        home.hooks.reopen = lambda lid: self.home_presses.append(("reopen", lid)) or {"ok": True}
+        home.hooks.which = lambda qid, pick: self.home_presses.append(("which", qid, pick)) or \
+            {"ok": True, "said": "Recorded. That one is marked done."}
         return home
 
     class _CaseStore:
@@ -911,6 +937,8 @@ class Stub:
                 if m["channel"] != DM or m["deleted"] or (m["kind"] not in ("card", "status")
                                                           and firsts[m["thread_key"]] != m["id"]):
                     continue
+                if self.one_list and not ar.listed(m, self.tags.get(m["id"], "")):
+                    continue  # a Home item, or a reply turn's own thread
                 c = m.get("card") or {}
                 live = m["kind"] == "card" and bool(c.get("actions") or c.get("select")) and not c.get("undo")
                 ctx = self.request_context.get(m["id"], {})
@@ -1301,7 +1329,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"owner": "owner", "bot": "bot", "public_url": s.public_url,
                                     "bundle": s.bundle.hash if s.bundle else "",
                                     "settings": s.settings, "push": s.push, "light": s.status is not None,
-                                    "home": s.home is not None,
+                                    "home": s.home is not None, "one_list": s.one_list,
                                     **({"rooms": s.rooms} if s.rooms is not None else {}),
                                     **({"relay": True} if s.relay_pairing else {}),
                                     **({"owner_routes": s.owner_routes, "handoff": s.handoff} if s.owner_routes else {})})
@@ -1474,10 +1502,13 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["settings", "home"] and "home" in s.settings:
             body = json.loads(self._body() or b"{}")
             s.home_posts.append(body)
-            ok = {"tone": ("breezy", "dry", "facts"), "briefing": ("home", "post")}
+            ok = {"tone": ("breezy", "dry", "facts"), "briefing": ("home", "post"),
+                  "answers": ("home", "requests")}
             if not body or any(body[k] not in ok.get(k, ()) for k in body):
                 return self._json(400, {"error": "Home has no such setting."})
             s.home_settings.update(body)
+            if "answers" in body:
+                s.one_list = body["answers"] == "home"  # the bot reads it at once
             return self._json(200, {**s.home_settings, "saved": True})
         if parts == ["settings", "notify"] and "notify" in s.settings:
             body = json.loads(self._body() or b"{}")

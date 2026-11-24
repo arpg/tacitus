@@ -86,10 +86,12 @@ DM (Action requests) and alerts push whatever the block says. The app's Settings
 (Notifications) changes the block: the bot writes it into the
 owner-private `chat.json` and pushes by it at once (`/api/settings/notify`,
 HTTP API). An optional `home` block,
-`{"tone": "breezy" | "dry" | "facts", "briefing": "home" | "post"}`, is
-Home's (Home, below): how its greeting sounds and whether the briefing
-goes to Home (the default) or posts in Ask Tacitus; the app's Settings
-(Home) writes it the same way. An optional `relay` block
+`{"tone": "breezy" | "dry" | "facts", "briefing": "home" | "post", "one_list": true | false}`, is
+Home's (Home, below): how its greeting sounds, whether the briefing
+goes to Home (the default) or posts in Ask Tacitus, and where the owner
+answers (`one_list`, true by default: Home, "One list"; false keeps the
+cards in Action requests); the app's Settings (Home) writes it the same
+way. An optional `relay` block
 turns on the relay (`docs/webchat-relay.md`, Config); it counts only from
 the owner-private `chat.json`.
 `"shadow": "web"` with any primary wraps the primary in `ShadowFrontend`.
@@ -988,8 +990,9 @@ or status in Action requests, on a `light` event, when its stream opens
 again and every five minutes while Home shows; a part the owner opened
 stays open through a redraw. Home in view clears the Home push on every
 device, as a thread in view does (`/api/push/seen`, tag `home`).
-Settings has a Home page with the tone and where the briefing goes,
-each saved on change.
+Settings has a Home page with the tone, where the briefing goes and
+where the owner answers (On Home, the default, or In Action requests:
+One list, below), each saved on change.
 
 **Kept mail.** Home's payload goes to the browser and through the relay,
 and a conversation started from it goes to a hosted model, so an item kept
@@ -1015,6 +1018,66 @@ wrote) as `/api/requests` and the threads do; a relayed device reads it
 the same way, sealed end to end, and may vote. The Settings page changes
 only in the owner's own web chat. The health room and debug-only content
 never reach Home.
+
+### One list
+
+Home is the one place to act (`WebFrontend.one_list`, the web block's
+`home.one_list`, on by default while Home runs; never in shadow mode, and
+never on Slack, which keeps its DM cards). Every card whose press needs no
+confirmation token is a Home item with that card's answers, and a press
+there runs the code the card's button ran, through Home's hooks into the
+bot (`home_items.Hooks`):
+
+| Card it replaces | Home item | Its answers run |
+|---|---|---|
+| A reply that waits (the daily blocks, a turn's question or could-not card) | `reply` or `question`, from its first day | the Replies card's draft turn and No reply needed (`_home_draft`, `_home_not_needed`) |
+| A close proposal | `proposal`, "Looks done": Done (after its Undo), Not done | the close card's Done and Not done (`_home_close`: `ledger.py confirm`, `reject`) |
+| A close made at once (the auto-close note with Not done) | its row in So far today, with Not done | the note's Not done (`_home_reopen`) |
+| A work case's decision, date and block | `letter` or `case`, with "Is this the same person?" first while that is open | the case card's press (`_home_kind`) |
+| "Which one was it?" | `which`, "Answer needed", one button per answer | the card's pick (`_home_which`, `case_surface.answer_which`) |
+
+- **No card.** With one list on, the bot posts none of these in Action
+  requests: the reply tick, the close cards, the close notes (their mail
+  is still archived and the row marked told), the case cards, the date
+  notice and the case notes all leave them to Home. Each card record the
+  case ticks keep stands for a card with none (`home`), so a case is asked
+  once, and a loud rung or a new message notifies again as its card would
+  have.
+- **One push to Home.** What first needs the owner pushes once, opening
+  Home (title "Home", tag `home`, high, at once): "N replies wait for
+  you." from the reply tick's hour, "This looks done." or "N items look
+  done.", a case's card title. Once per reply, proposal or case step
+  (`home-pushed.json`, owner-private).
+- **A reply Home starts stays with its item.** Draft a reply, Tell Tacitus
+  what to say or an answer starts the reply's turn in the item's one
+  conversation (below), not in Action requests; the owner stays on Home.
+  The item says "Drafting the reply." and offers only Ask while
+  the turn runs (`Hooks.turns`, the bot's turn record with no card); once
+  the draft's Send card is up, the request takes the item's place and its
+  ref, so the same block becomes the way to its Send card ("Send email",
+  Open it in Action requests). A turn that wrote no reply shows why on the
+  item for a day ("The reply was not drafted: ..."), with its choices; a
+  question it asked is the item's question. The Send card itself stays in
+  Action requests, behind its token.
+- **One conversation per item.** An item's conversation is kept in
+  `item_threads` (under its mail conversation id, else `row:<id>` or
+  `case:<id>`): Ask opens it when there is one and keeps the one it
+  opens, a reply turn and a case's turn (Draft the letter) run in it. A
+  new one opens in the item's project room, as Ask's does; never for an
+  item kept from hosted models below Summary, which has no Ask and whose
+  case turn opens in Ask Tacitus.
+- **Action requests holds what needs the lock.** Its list and its count
+  leave out the card kinds Home holds (`action_requests.HOME_KINDS`,
+  `listed`) and a reply turn's own thread; in practice it is the gated
+  cards: Send, Schedule, Send all, Create, Reschedule, Delete, Publish,
+  and a plugin's.
+- **Turning it on.** Each card of those kinds still live in Action
+  requests gives way once with one line, "This is on Home now."
+  (`_settle_for_home`), and its row or case is a Home item.
+- **Turning it back.** Settings, Home, Where you answer: In Action
+  requests (`"one_list": false`). The bot reads it at once: the next ticks
+  post the cards again (the replies the same day, a proposal Home held, a
+  case Home asked), and Home lists them as requests as before.
 
 ### Home items
 
@@ -1061,7 +1124,9 @@ it in Action requests), which read nothing of it.
 | question (no reply) | Answer, Later, Ask | a new conversation with the owner's answer, sent; Ask as on an item |
 | item | Ask, Done, Later: waiting on them, Later | Ask: a new conversation in Ask Tacitus (the row's project room when it has one) that opens with Tacitus's message about the item (the deeper briefing when it is ready, else the quick briefing) and waits for the owner's words; nothing runs until he writes |
 | request | Open it in Action requests | nothing: Send and Create stay there |
-| closed today | Not done | the web chat's Not done (reopen) |
+| proposal (one list) | Done, Not done, Ask | the close card's Done (after the Undo window) and Not done |
+| which (one list) | its answers | the "Which one was it?" card's pick |
+| closed today | Not done | the web chat's Not done (reopen); with one list, a row Tacitus closed: the auto-close note's Not done |
 
 Done is the thread header's Done: a row Tacitus proposed is confirmed;
 any other closes on the owner's word ("marked done in the web chat") and
@@ -1242,7 +1307,10 @@ The DM (kind `dm`, id `dm`) is "Action requests" in the app: the one
 place where something waits for a tap (Send, Create, Reschedule, Delete,
 Schedule, Publish, a close proposal, the Replies card, a plugin's
 button). The id, the kind and the store are as they were; only the name
-and what the place does changed.
+and what the place does changed. With one list on (Home, "One list", the
+default), it holds what needs the lock: the replies, the close proposals
+and notes and the case cards are Home items, and the bullets below about
+them hold where one list is off.
 
 - **Button presses only.** Its conversations show no composer and the
   place no New conversation; a line in the composer's place says to ask
@@ -2419,6 +2487,7 @@ their own:
 |---|---|---|---|---|
 | A new card that waits for a press (`post_card`, `mirror_card` for a new row) | "Action request" and the card's title | high | at once | none |
 | The day's new reply blocks (`_reply_blocks_up`, inside `one_push`) | one push: "Action requests" and "N replies wait for you." (N counts the blocks up already too), opening the newest block under its thread's tag; one block alone is its own card push | high | at once | none |
+| One list: a Home item that first needs the owner, where its card would have posted (`_home_push`: the day's replies, a close proposal, a case's card) | "Home" and "N replies wait for you.", "This looks done." or the card's title; tag `home`, opening `#/home`; once per item | high | at once | none |
 | A bot message in a `dm` thread a notifier opened (`thread_origin`: a direct message, a key `web.notify` routes to the DM, the relay's notice of a new device or a handoff, origin `relay`), or the answer in a DM thread the owner wrote in (once per turn) | "Tacitus" and the first line | high for a direct message (`send_direct`, origin `personal`), else normal | at once | none |
 | The opening of a morning briefing or an afternoon update in the EA channel: a thread a notifier opened (`thread_origin`), the owner never wrote in, whose first three lines carry the title (Home off, or Home not running) | "Your morning briefing is ready" or "Afternoon update", no body | normal | waits | `briefings` |
 | A morning briefing or an afternoon update handed to Home (`chat_notify`, Home) | "Your morning is ready" and "Tap to see your day.", or "Your afternoon update is ready" and "Tap to see what is left today."; tag `home`, opening `#/home` | normal | waits | `briefings` |

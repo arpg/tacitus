@@ -6,6 +6,19 @@ repository that preceded it.
 
 ## Unreleased
 
+- **You answer on Home; Action requests holds only what needs your lock.**
+  On the web chat a reply that waits, something that looks done, a
+  letter, a form, a review or a report, and a "which one was it?"
+  question are Home items with the same buttons their cards had (Done
+  and Not done for what looks done, with Undo), and nothing of the kind
+  comes to Action requests, which keeps Send, Create, Publish and the
+  other locked presses. A reply you start from Home says "Drafting the
+  reply." and then turns, in the same place, into the way to its Send
+  card; it is written in the item's own conversation, which Ask opens. A
+  card of those kinds still waiting when this arrives gives way with one
+  line, "This is on Home now.", and one notification opens Home where a
+  card's used to. Settings, Home, Where you answer: In Action requests
+  brings the cards back. Slack is unchanged.
 - **Six words for every button.** The buttons and the lines after a tap
   use six verbs: Send, Draft, Done, Later, Not done and Ask. Close, Mark
   done, Handled and Sent myself are Done (Done: I sent it on a Send

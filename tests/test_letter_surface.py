@@ -718,7 +718,8 @@ def _bot(monkeypatch, case_list, store=None):
           "log": types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
           "_verify_button_user": lambda ev: True, "_resolve_dm_channel": lambda: "dm",
           "_post_card": post_card, "_replace_buttons_with_status": replace, "FRONTEND": Frontend(),
-          "handle_message_async": lambda *a, session_key="": calls["turns"].append((a, session_key))}
+          "handle_message_async": lambda *a, session_key="": calls["turns"].append((a, session_key)),
+          "_one_list": lambda: False}
     exec(compile(src[start:end], "bot[letters]", "exec"), ns)
     ns["_load_letter_cards"] = lambda: json.loads(json.dumps(store))
     ns["_letter_levels"] = lambda cs: {str(c["id"]): "full" for c in cs}
@@ -995,7 +996,7 @@ def test_home_opens_a_letter_item_with_its_brief_and_choices(monkeypatch, tmp_pa
     assert it["kind"] == "letter" and it["label"] == "Letter"
     assert it["brief"]["what"] == "Recommendation letter for Avery Quinn."
     assert it["brief"]["due"] == "Next due tomorrow."
-    assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:date_pick", "open", "start"]
+    assert [c["id"] for c in it["choices"]] == ["letter:draft", "letter:date_pick", "start"]
     # its briefing is case_briefing's; with no store to read, the case shows
     # from itself alone and fails closed (no name, no place)
     assert it["deeper"]["state"] == "ready" and "What was asked" in it["deeper"]["text"]

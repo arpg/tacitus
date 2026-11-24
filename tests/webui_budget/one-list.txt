@@ -1,0 +1,1 @@
++6  One list: Home reads an open item again when it turns into another kind (its reply being written, then its Send card), and Settings, Home has Where you answer (On Home, In Action requests)

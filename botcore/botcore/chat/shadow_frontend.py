@@ -285,6 +285,11 @@ class ShadowFrontend(ChatFrontend):
     def dm_takes_text(self) -> bool:
         return getattr(self.primary, "dm_takes_text", True)
 
+    @property
+    def one_list(self) -> bool:
+        """The primary's DM holds the cards: the web shadow keeps its copy."""
+        return False
+
     def tagging(self, tag: str):
         """The web side keeps the tag: its mirror of each post is made in
         the same thread."""

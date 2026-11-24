@@ -1081,6 +1081,10 @@ class WebStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.files_dir = self.path.parent / FILES_DIR
+        # One list (WebFrontend.one_list): a callable the front end sets; while
+        # it answers True, Action requests and its count leave out the cards
+        # Home holds (action_requests.listed, HOME_KINDS).
+        self.gated_only: Callable[[], bool] | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fresh = not self.path.exists()
         self._lock = threading.RLock()
@@ -1263,17 +1267,28 @@ class WebStore:
             out["waiting"] = sum(self.waiting_cards(cid).values())
         return out
 
+    def one_list(self) -> bool:
+        """The front end's one-list switch, False without one or when it fails."""
+        try:
+            return bool(self.gated_only and self.gated_only())
+        except Exception:
+            return False
+
     def waiting_cards(self, channel: str) -> dict[str, int]:
         """{thread key: how many cards there wait for a tap}: a card whose
         buttons still act (thread_state._live: no outcome yet, an action or a
-        select, no undo mark, younger than the card registry keeps it)."""
+        select, no undo mark, younger than the card registry keeps it). With
+        one list on, a card of a kind Home holds waits there, not here
+        (action_requests.on_home)."""
         now = time.time()
+        gated = self.one_list()
         out: dict[str, int] = {}
         for r in self._all("SELECT thread_key, kind, card, posted_at FROM messages WHERE channel=? "
                            "AND kind='card' AND deleted_at IS NULL AND posted_at > ?",
                            (channel, now - _ts.CARD_LIVE_S)):
-            if _ts.is_live_card({"kind": r["kind"], "card": _loads(r["card"]),
-                          "posted_at": r["posted_at"]}, now):
+            card = _loads(r["card"])
+            if _ts.is_live_card({"kind": r["kind"], "card": card, "posted_at": r["posted_at"]}, now) \
+                    and not (gated and _requests.on_home(card)):
                 out[r["thread_key"]] = out.get(r["thread_key"], 0) + 1
         return out
 
@@ -1645,7 +1660,7 @@ class WebStore:
             return {"threads": rows, "as_of": self.max_event_seq()}
         return self._snapshot(read)
 
-    def requests(self, channel: str, limit: int = REQUESTS_LIMIT) -> dict:
+    def requests(self, channel: str, limit: int = REQUESTS_LIMIT, *, every: bool = False) -> dict:
         """Action requests' items in one snapshot, {"waiting", "done",
         "as_of"}: each card and status line of the channel (at the top or in
         a thread) and each thread there that opens with a plain message (a
@@ -1658,7 +1673,11 @@ class WebStore:
         `next`: the request in this place a status line links to (the
         draft's Send request); `lines`: the bot's lines in its thread that
         belong to it (action_requests.lines_of: by tag, never by text). Every waiting one, newest first; of the rest
-        the newest `limit`. It moves no read mark."""
+        the newest `limit`. With one list on, only what action_requests.listed
+        keeps: no card of a kind Home holds, no thread a reply turn opened;
+        `every` reads them all (the bot's own read). It moves no read mark."""
+        gated = self.one_list() and not every
+
         def read() -> dict:
             now = time.time()
             kinds = {r["id"]: (r["kind"], r["name"]) for r in self._all("SELECT id, kind, name FROM channels")}
@@ -1675,6 +1694,8 @@ class WebStore:
                     "('card', 'status') OR seq IN (SELECT MIN(seq) FROM messages WHERE channel=? "
                     "GROUP BY thread_key)) ORDER BY seq DESC", (channel, channel)):
                 j = self._msg_json(r, 0)
+                if gated and not _requests.listed(j, tags.get(j["id"], "")):
+                    continue  # a Home item, or a reply turn's own thread
                 j["waiting"] = _ts.is_live_card(j, now)
                 j["working"] = _requests.working(j, now)
                 nxt = _requests.next_request(j, channel)
@@ -3119,6 +3140,18 @@ class WebFrontend(ChatFrontend):
         self.thread_states: _ts.ThreadStates | None = None
         self._labels_lock = threading.Lock()
 
+    @property
+    def one_list(self) -> bool:  # type: ignore[override]
+        """One list (docs/webchat.md, Home): every card whose press needs no
+        token is a Home item, Action requests holds the gated cards alone and
+        Needs you is part of Home. On while Home runs and the web block's
+        `home` says no `"one_list": false`; never in shadow mode, where the
+        primary's DM holds the cards."""
+        if self.home is None or self.inbound is not None:
+            return False
+        block = self.cfg.get("home") if isinstance(self.cfg, dict) else None
+        return not (isinstance(block, dict) and block.get("one_list") is False)
+
     def rooms_on(self) -> bool:
         """The host's answer to "does this install open project rooms";
         True when the host set no rooms_enabled or its answer failed."""
@@ -3327,6 +3360,7 @@ class WebFrontend(ChatFrontend):
             if self._store is None:
                 self._store = WebStore(self.store_path)
                 self._store.on_owner = self._owner_wrote
+                self._store.gated_only = lambda: self.one_list
             return self._store
 
     @property
@@ -5479,7 +5513,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  "rooms": fe.rooms_on(),
                                  "settings": sorted(fe.settings_pages),
                                  "light": fe.light is not None,
-                                 "home": fe.home is not None})
+                                 "home": fe.home is not None,
+                                 "one_list": fe.one_list})
                 return None
             if n == 2 and segs[0] == "modals":
                 # The window a card click opened, once the core opens it.

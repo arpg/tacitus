@@ -511,15 +511,36 @@ def test_the_settings_page_checks_and_saves_the_web_blocks_home(monkeypatch):
     fe.cfg = dict(block["web"])
     fe.home = H.Home(fe, sources=lambda tz: F.sources(), background=False)
     page = H.HomeSettings(fe)
-    assert page.get() == {"tone": "dry", "briefing": "home"}
-    assert page.save({"briefing": "post"}) == {"tone": "dry", "briefing": "post", "saved": True}
-    assert block["web"] == {"port": 1, "home": {"tone": "dry", "briefing": "post"}}
-    assert fe.home.settings == {"tone": "dry", "briefing": "post"} and fe.changed == 1
-    for bad in ({}, {"tone": "loud"}, {"briefing": "slack"}, {"colour": "red"}, "tone"):
+    assert page.get() == {"tone": "dry", "briefing": "home", "answers": "home"}
+    assert page.save({"briefing": "post"}) == {"tone": "dry", "briefing": "post", "answers": "home", "saved": True}
+    assert block["web"] == {"port": 1, "home": {"tone": "dry", "briefing": "post", "one_list": True}}
+    assert fe.home.settings == {"tone": "dry", "briefing": "post", "one_list": True} and fe.changed == 1
+    for bad in ({}, {"tone": "loud"}, {"briefing": "slack"}, {"colour": "red"}, {"answers": "both"},
+                {"one_list": False}, "tone"):
         with pytest.raises(ValueError) as e:
             page.save(bad)
         plain(str(e.value))
-    assert H.home_settings({"home": {"tone": "nope", "briefing": "nope"}}) == {"tone": "breezy", "briefing": "home"}
+    assert H.home_settings({"home": {"tone": "nope", "briefing": "nope"}}) == \
+        {"tone": "breezy", "briefing": "home", "one_list": True}
+
+
+def test_where_you_answer_turns_one_list_off_and_on(monkeypatch):
+    """Settings, Home, Where you answer: In Action requests writes
+    `"one_list": false` in the web block's `home` (the front end reads it at
+    once), and On Home writes it back to true; the tone and the briefing
+    stay as they were."""
+    import web_notify_settings as wns
+    block = {"web": {"home": {"tone": "facts", "briefing": "post"}}}
+    monkeypatch.setattr(wns, "_rewrite", lambda change, what: change(block))
+    fe = FakeFE()
+    fe.cfg = dict(block["web"])
+    fe.home = H.Home(fe, sources=lambda tz: F.sources(), background=False)
+    page = H.HomeSettings(fe)
+    assert page.save({"answers": "requests"})["answers"] == "requests"
+    assert block["web"]["home"] == {"tone": "facts", "briefing": "post", "one_list": False}
+    assert fe.cfg["home"]["one_list"] is False and page.get()["answers"] == "requests"
+    assert page.save({"answers": "home"})["answers"] == "home"
+    assert block["web"]["home"]["one_list"] is True
 
 
 # ── the briefing on Home ─────────────────────────────────────────────
