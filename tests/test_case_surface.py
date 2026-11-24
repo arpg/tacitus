@@ -612,7 +612,8 @@ def _bot(monkeypatch, case_list, questions=()):
           "_verify_button_user": lambda ev: True, "_resolve_dm_channel": lambda: "dm",
           "_post_card": post_card, "_replace_buttons_with_status": replace, "FRONTEND": Frontend(),
           "handle_message_async": lambda *a, session_key="": calls["turns"].append((a, session_key)),
-          "OWNER_SLACK_USER_ID": "U1"}
+          "OWNER_SLACK_USER_ID": "U1",
+          "_one_list": lambda: False}
     exec(compile(src[start:end], "bot[cases]", "exec"), ns)
     ns["_load_case_cards"] = lambda: json.loads(json.dumps(store))
     ns["_load_letter_cards"] = lambda: {}
@@ -753,7 +754,12 @@ def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch, t
     it = I.item(src, "case:rv-1")
     assert it["kind"] == "case" and it["label"] == "Review"
     assert it["brief"]["what"] == "Paper review for Pat Lee."
-    assert [c["id"] for c in it["choices"]] == ["case:draft", "case:date_pick", "open", "start"]
+    # no card of its own in Action requests (one list, or none up yet): no
+    # Open it in Action requests, a button that would lead nowhere
+    assert [c["id"] for c in it["choices"]] == ["case:draft", "case:date_pick", "start"]
+    f = I.find(src, "case:rv-1")
+    f.item["href"] = "#/dm/t1/m1"
+    assert [c["id"] for c in I.choices(f, src)] == ["case:draft", "case:date_pick", "open", "start"]
     # the briefing on a case (case_briefing), as a letter gets it; with no
     # store to read, from the case itself and kept (no name, no part)
     assert it["deeper"]["state"] == "ready" and "The reports\n- Report 1: due " in it["deeper"]["text"]

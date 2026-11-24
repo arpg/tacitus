@@ -89,7 +89,7 @@ GREETING_EVERY_S = 300
 PURPOSE = "chat-home"
 # Rough minutes per item, for "that is enough for ...": a tap, a reply, a
 # task from the briefing's list.
-MINUTES = {"request": 2, "reply": 10, "item": 20, "question": 3}
+MINUTES = {"request": 2, "reply": 10, "item": 20, "question": 3, "proposal": 2}
 # A gap this long is said as "nothing until", not as a count of minutes.
 LONG_GAP_MIN = 180
 # Meetings with less than this between them are one busy stretch: the
@@ -223,6 +223,14 @@ class Sources:
     # The refs of the items a choice on Home took off the list while its
     # undo window runs (home_items.Acts): left out of the payload.
     hidden: set = field(default_factory=set)
+    # One list (WebFrontend.one_list): Home is the one place to act. A close
+    # proposal is an item of its own, and a request that stands for one row
+    # takes that row's item's place (and its ref).
+    one_list: bool = False
+    # The reply turns Home started, by ledger id (the bot's hook,
+    # Hooks.turns): {"state": "writing"} while one runs, {"state":
+    # "failed", "why"} when it wrote no reply.
+    turns: dict = field(default_factory=dict)
 
 
 def _today(src: Sources) -> date:
@@ -563,12 +571,19 @@ def left(src: Sources) -> list[dict]:
             named_ids.add(lid)
         if conv:
             named_convs.add(conv)
+    # With one list, a request that stands for one row takes that row's
+    # item's place once the list is built (its ref too, so an item the
+    # owner opened, a reply being written, turns into its Send card).
+    stand_ins: list[dict] = []
     for r in (src.requests or {}).get("waiting") or []:
         if not isinstance(r, dict) or r.get("working") or not r.get("waiting", True):
             continue
         ids, convs = _card_keys(r.get("card"))
-        named_ids.update(ids)
-        named_convs.update(convs)
+        # a Send card names its mail thread alone; a row card its row
+        one = src.one_list and (len(ids) == 1 or (not ids and len(convs) == 1))
+        if not one:
+            named_ids.update(ids)
+            named_convs.update(convs)
         due = _ts(r.get("at")) if r.get("why") in ("due", "starts", "expires") else None
         urgency = str(r.get("urgency") or "calm")
         base = {"id": f"request:{r.get('id')}", "kind": "request",
@@ -577,14 +592,17 @@ def left(src: Sources) -> list[dict]:
                 "_rid": str(r.get("id") or ""), "_lid": ids[0] if len(ids) == 1 else "", "_conv": convs[0] if convs else ""}
         if is_kept(r.get("keep_level")):
             card = r.get("card") if isinstance(r.get("card"), dict) else {}
-            out.append({**base, "title": kept_title(r["keep_level"], subject=_plain(r.get("what"), 100),
-                                                    draft=card.get("kind") in DRAFT_KINDS),
-                        "detail": "", "kept": r["keep_level"]})
-            continue
-        what = _plain(r.get("what") or r.get("text"), 120)
-        detail = " · ".join(x for x in (_plain(r.get("who"), 80), _plain(r.get("when"), 60)) if x)
-        out.append({**base, "title": what or "A request", "detail": detail,
-                    "project": _plain(r.get("project"), 60)})
+            it = {**base, "title": kept_title(r["keep_level"], subject=_plain(r.get("what"), 100),
+                                              draft=card.get("kind") in DRAFT_KINDS),
+                  "detail": "", "kept": r["keep_level"]}
+        else:
+            what = _plain(r.get("what") or r.get("text"), 120)
+            detail = " · ".join(x for x in (_plain(r.get("who"), 80), _plain(r.get("when"), 60)) if x)
+            it = {**base, "title": what or "A request", "detail": detail,
+                  "project": _plain(r.get("project"), 60)}
+        (stand_ins if one else out).append(it)
+    if src.one_list:
+        _proposals(out, src, taken, take)
     kept_views = views(src)
     gone_ids, gone_convs = set(), set()
     for v in kept_views:
@@ -694,11 +712,70 @@ def left(src: Sources) -> list[dict]:
                         "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
                         "mins": MINUTES["item"], "_lid": ref,
                         "_conv": str((row or {}).get("conversation_id") or "")})
+    for it in stand_ins:
+        out = _stand_in(out, it)
     out = _cases_left(out, src)
+    if src.one_list:
+        _writing(out, src)
     rank = {"overdue": 0, "soon": 1, "calm": 2}
-    kinds = {"request": 0, "question": 1, "reply": 2, "item": 3, "letter": 3, "case": 3}
+    kinds = {"request": 0, "proposal": 1, "which": 1, "question": 1, "reply": 2, "item": 3, "letter": 3,
+             "case": 3}
     out.sort(key=lambda x: (rank.get(x["urgency"], 2), kinds[x["kind"]], x["due"] or float("inf")))
     return out[:LEFT_MAX]
+
+
+def _proposals(out: list[dict], src: Sources, taken, take) -> None:
+    """One list: each open row Tacitus proposes to close (its
+    `close_proposal`, as `ledger.py proposals` lists them) is an item of
+    kind `proposal`, "Looks done", answered with Done or Not done in place
+    of the close card. It takes its row and thread from the other parts."""
+    rows = src.rows or {}
+    found = [(lid, row) for lid, row in rows.items()
+             if isinstance(row, dict) and isinstance(row.get("close_proposal"), dict)
+             and str(row.get("status") or "open") in ("open", "snoozed", "follow_up")
+             and not row.get("source")]
+    found.sort(key=lambda kv: str(kv[1]["close_proposal"].get("first_at") or kv[1]["close_proposal"].get("at") or ""))
+    for lid, row in found:
+        conv = str(row.get("conversation_id") or "")
+        if taken(lid, conv):
+            continue
+        take(lid, conv)
+        base = {"id": f"proposal:{lid}", "kind": "proposal", "label": "Looks done", "urgency": "calm",
+                "due": None, "fire": False, "mins": MINUTES["proposal"], "_lid": lid, "_conv": conv}
+        if is_kept(row.get("keep_level")):
+            brief = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else {}
+            out.append({**base, "title": kept_title(row["keep_level"], day=_mail_day(row.get("date_identified"), src.zone),
+                                                    who=_plain(row.get("from_name") or row.get("from_email"), 60),
+                                                    subject=_plain(brief.get("subject"), 100)),
+                        "detail": "", "kept": row["keep_level"]})
+            continue
+        out.append({**base, "title": _plain(row.get("description"), 120) or "An item",
+                    "detail": _plain(row["close_proposal"].get("why"), 160)})
+
+
+def _stand_in(out: list[dict], req: dict) -> list[dict]:
+    """One list: a request that stands for one row (a Send card for its
+    reply) takes the place and the ref of that row's item, and any other
+    item of its row or thread goes; with no such item it is one of its own."""
+    lid, conv = req.get("_lid") or "", req.get("_conv") or ""
+    mine = [i for i, x in enumerate(out) if (lid and x.get("_lid") == lid) or (conv and x.get("_conv") == conv)]
+    if not mine:
+        return out + [req]
+    first = mine[0]
+    return [dict(req, id=x["id"]) if i == first else x for i, x in enumerate(out) if i == first or i not in mine]
+
+
+def _writing(out: list[dict], src: Sources) -> None:
+    """One list: a reply or question whose reply Tacitus is writing now
+    (the bot's record of the turn Home started) says so on its line."""
+    for x in out:
+        t = (src.turns or {}).get(x.get("_lid") or "") if x.get("kind") in ("reply", "question") else None
+        if isinstance(t, dict) and t.get("state") == "writing" and not x.get("kept"):
+            x["detail"] = WRITING_LINE
+
+
+# The line of an item whose reply is being written (one list).
+WRITING_LINE = "Drafting the reply."
 
 
 def _cases_left(out: list[dict], src: Sources) -> list[dict]:
@@ -806,7 +883,7 @@ def since(src: Sources, got: list[dict], gone: list[dict]) -> dict | None:
     fresh = [r for r in reqs if isinstance(r, dict) and (_ts(r.get("posted_at")) or 0) > prev
              and not r.get("working")]
     if fresh:
-        first = next((x for x in new_reqs if x["id"] == f"request:{fresh[0].get('id')}"), None)
+        first = next((x for x in new_reqs if x.get("_rid") == str(fresh[0].get("id") or "")), None)
         lines.append({"text": f"{_n(len(fresh), 'new request')} in Action requests.",
                       **({"href": first["href"]} if first else {})})
     mine = [d for d in gone if d["kind"] == "closed" and d["by"] == "tacitus"]
@@ -1252,12 +1329,27 @@ class _Briefing:
 
 def home_settings(cfg: dict | None) -> dict:
     """The web block's `home` settings with their defaults: {"tone",
-    "briefing"}."""
+    "briefing", "one_list"}. `one_list` (true unless the block says false)
+    is where the owner answers: on Home, with Action requests holding only
+    what needs the lock (WebFrontend.one_list), or the cards in Action
+    requests as before."""
     block = (cfg or {}).get("home") if isinstance(cfg, dict) else None
     block = block if isinstance(block, dict) else {}
     tone = block.get("tone") if block.get("tone") in TONES else DEFAULT_TONE
     place = block.get("briefing") if block.get("briefing") in BRIEFING_PLACES else DEFAULT_BRIEFING
-    return {"tone": tone, "briefing": place}
+    return {"tone": tone, "briefing": place, "one_list": block.get("one_list") is not False}
+
+
+# The Settings page's words for one list (a radio's value), and back.
+ANSWER_PLACES = {"home": True, "requests": False}
+
+
+def _page(settings: dict) -> dict:
+    """The settings as the Settings page reads them: `answers` "home" or
+    "requests" for one list."""
+    out = {k: v for k, v in settings.items() if k != "one_list"}
+    out["answers"] = "home" if settings.get("one_list", True) else "requests"
+    return out
 
 
 class Home:
@@ -1304,8 +1396,14 @@ class Home:
         now = self.clock()
         fe, store = self.fe, self.fe.store
         src = Sources(now=now, zone=zone, device_zone=device_zone if _valid_zone(device_zone) else "",
-                      tone=self.settings["tone"], dm=fe.dm_channel(fe.owner_id))
+                      tone=self.settings["tone"], dm=fe.dm_channel(fe.owner_id),
+                      one_list=bool(getattr(fe, "one_list", False)))
         src.briefing = self._briefing.read()
+        if src.one_list and self.hooks.turns is not None:
+            try:
+                src.turns = dict(self.hooks.turns() or {})
+            except Exception as e:
+                log.warning("home: the reply turns could not be read: %s", e)
         try:
             src.requests = fe.requests()
         except Exception as e:
@@ -1652,7 +1750,7 @@ class HomeSettings:
 
     def get(self) -> dict:
         h = self._home()
-        return dict(h.settings if h else home_settings(getattr(self.fe, "cfg", {})))
+        return _page(h.settings if h else home_settings(getattr(self.fe, "cfg", {})))
 
     def save(self, body: Any, who: dict | None = None) -> dict:
         if not isinstance(body, dict) or not body:
@@ -1667,6 +1765,10 @@ class HomeSettings:
                 if v not in BRIEFING_PLACES:
                     raise ValueError("The briefing goes to Home or to Ask Tacitus.")
                 changes[k] = v
+            elif k == "answers":
+                if v not in ANSWER_PLACES:
+                    raise ValueError("You answer on Home or in Action requests.")
+                changes["one_list"] = ANSWER_PLACES[v]
             else:
                 raise ValueError(f"Home has no setting named {str(k)[:40]!r}.")
         try:
@@ -1696,4 +1798,4 @@ class HomeSettings:
                 pass
         if isinstance(getattr(self.fe, "cfg", None), dict):
             self.fe.cfg["home"] = dict(merged)
-        return {**merged, "saved": True}
+        return {**_page(merged), "saved": True}

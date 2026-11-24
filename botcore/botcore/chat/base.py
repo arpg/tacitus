@@ -215,6 +215,9 @@ class ChatFrontend(ABC):
     # False where the owner's DM with the bot takes button presses only (the
     # web chat's Action requests): the core asks for words elsewhere.
     dm_takes_text: bool = True
+    # True where Home is the one place to act (the web chat's one list): a
+    # card whose press needs no token is a Home item, never a card in the DM.
+    one_list: bool = False
 
     def tagging(self, tag: str):
         """A context in which this thread's posts carry `tag`, where the

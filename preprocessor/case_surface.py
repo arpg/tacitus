@@ -2330,6 +2330,10 @@ def home_items(src, cases=None, *, rows: dict | None = None) -> tuple[list[dict]
         nm = name(c, lv, w)
         title = f"{w.question} {nm}." if f["new"] else (
             f"{w.when_q}{' for ' + _who(c, lv, w) if _who(c, lv, w) else ''}?" if st == "undated" else nm)
+        join = home_join(c)
+        if join:
+            # who it is comes first (card_plan): the item asks that, as its card did
+            title = _clean(join.get("text"), 300) if lv in ("full", "summary") else w.join_kept
         got_news = news(c, rows, lv=lv, now=datetime.fromtimestamp(now, timezone.utc)) if rows else []
         full = line(c, today, lv=lv, news=got_news, w=w)
         detail = rest_of(full, head(c, lv, w)) or full
@@ -2364,6 +2368,11 @@ def home_left(out: list[dict], src, *, cases=None) -> list[dict]:
     except Exception as e:
         print(f"case_surface: no case items on Home: {str(e)[:160]}", file=sys.stderr)
         return out
+    if getattr(src, "one_list", False):
+        try:
+            out = out + home_which(src, found=getattr(src, "questions", None))
+        except Exception as e:
+            print(f"case_surface: no question items on Home: {str(e)[:160]}", file=sys.stderr)
     if not items:
         return out
     shown = {it["_case"] for it in items}
@@ -2379,6 +2388,35 @@ def home_left(out: list[dict], src, *, cases=None) -> list[dict]:
             continue  # the case's rows, threads, cards and its today_top entry
         kept.append(x)
     return kept + items
+
+
+def home_join(case: dict) -> dict | None:
+    """The case's open "is this the same one?" question (`join`), which
+    comes before anything else on it, or None."""
+    return next((q for q in questions(case, "join") if isinstance(q, dict) and q.get("id")), None)
+
+
+def home_which(src, *, found=None) -> list[dict]:
+    """One list: each open "which one was it?" question (a delivery notice
+    that matched no part for sure) is a Home item of its own, kind
+    `which`, in place of its card: its choices are the question's, in the
+    store's words at the cases' keep level."""
+    out = []
+    for q in (part_questions() if found is None else found):
+        choices = [str(c) for c in q.get("choices") or [] if str(c).strip()]
+        if not choices or not q.get("id"):
+            continue
+        out.append({"id": f"which:{q['id']}", "kind": "which", "label": "Answer needed",
+                    "title": _clean(q.get("text"), 300) or "A delivery notice", "detail": "",
+                    "urgency": "calm", "due": None, "fire": False, "mins": 2, "_question": str(q["id"])})
+    return out
+
+
+def which_choices(q: dict) -> list[dict]:
+    """A "which one?" item's choices: one per answer, by its place, as
+    the card's buttons and its menu named them."""
+    return [{"id": f"which:{i}", "label": _clean(c, 70)}
+            for i, c in enumerate(str(c) for c in q.get("choices") or [] if str(c).strip())]
 
 
 def home_brief(case: dict, today: date, lv: str = "full", news=None) -> dict:
@@ -2416,7 +2454,16 @@ def home_brief(case: dict, today: date, lv: str = "full", news=None) -> dict:
     by, nd = _dates().do_by(case), f["next_due"]
     due = (f"Due {day_words(nd, today)}." if nd and nd == by else
            f"Next due {day_words(nd, today)}." if nd else "No due date yet.")
+    if home_join(case):
+        nxt = "Tacitus waits for your answer: " + card_text_plain(w.join_title)
     return {"what": f"{nm}.", "asked": asked, "due": due, "standing": standing[:4], "next": nxt}
+
+
+def card_text_plain(text: str) -> str:
+    """A card title's words as plain text: no emoji code, no marks."""
+    t = re.sub(r":[a-z0-9_+-]+:", "", str(text or ""))
+    t = re.sub(r"[*_`~]", "", t).strip()
+    return t[:1].lower() + t[1:] if t else ""
 
 
 def home_choices(case: dict, today: date, lv: str = "full") -> list[dict]:
@@ -2435,6 +2482,12 @@ def home_choices(case: dict, today: date, lv: str = "full") -> list[dict]:
     f = facts(case, today)
     st = stage(case, today)
     p = w.prefix
+    join = home_join(case)
+    if join:
+        # who it is comes first, as on its card (join_spec): two answers
+        same, other = join_choices(join, w) if w.kind != "letter" else w.join_choices
+        return [{"id": f"{p}:join_same", "label": same, "style": "primary"},
+                {"id": f"{p}:join_other", "label": other}]
     D = _dates()
     prop = D.proposed(case)
     pick = D.date_spec(today, prop)

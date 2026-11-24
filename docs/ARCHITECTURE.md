@@ -631,7 +631,14 @@ card at the top of Action requests (`_reply_blocks_up`), oldest first, at
 most ten live at once, and never a second card for a row whose card is
 still live (that card is drawn again in place, with no push, when what it
 shows changed: `_reply_sig`). The new cards push once, with how many
-replies wait (`ChatFrontend.one_push`).
+replies wait (`ChatFrontend.one_push`). With one list on (the web chat's
+default, `ChatFrontend.one_list`; docs/webchat.md, Home, "One list") the
+tick posts no card: each reply is a Home item with the same choices, one
+push opens Home, and a turn Home starts runs in the item's one
+conversation with a card-less turn record Home reads (`_home_turns`). The
+close cards, the close notes and the case cards give way to Home items the
+same way, each press through Home's hooks into the code the card's button
+ran.
 "Draft" starts a turn there that writes the reply for that one row; for
 a draft that exists it posts a new Send card instead. "Draft" takes one
 line of the owner's words (`CardAction.ask`): the turn writes the reply

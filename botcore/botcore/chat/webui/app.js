@@ -1266,7 +1266,8 @@ async function loadHome(checkin = false) {
   if (checkin) S.homeAt = Date.now();
   S.homeStale = false;
   if (S.homeView && !S.search && S.ready) renderThreads();
-  if (((S.homeCards.get(S.homeOpen) || {}).deeper || {}).state === 'working') loadItem(S.homeOpen); // an event the stream missed
+  const c = S.homeCards.get(S.homeOpen) || {}, o = S.homeOpen && listed(S.homeOpen); // a deeper briefing the stream missed, or an item that
+  if ((c.deeper || {}).state === 'working' || (o && c.kind && !c.pending && (o.kind !== c.kind || o.detail !== c.detail))) loadItem(S.homeOpen); // turned (written, now its Send card)
 }
 // A change the page hears of: Home is read again in a moment while it shows, and on the next visit otherwise.
 const homeSoon = () => {

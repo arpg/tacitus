@@ -402,7 +402,7 @@ def _bot(monkeypatch, conn, clock):
           "_post_card": post_card, "_replace_buttons_with_status": replace, "FRONTEND": Frontend(),
           "_card_ref": lambda ch, mid: _chat.MessageRef(ch, mid, mid),
           "handle_message_async": lambda *a, session_key="": calls["turns"].append((a, session_key)),
-          "OWNER_SLACK_USER_ID": "U1"}
+          "OWNER_SLACK_USER_ID": "U1", "_one_list": lambda: False}
     exec(compile(src[start:end], "bot[quiet-cases]", "exec"), ns)
     ns["_load_letter_cards"] = lambda: json.loads(json.dumps(store))
     ns["_load_case_cards"] = lambda: {}

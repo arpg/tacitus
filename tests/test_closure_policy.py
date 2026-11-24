@@ -495,7 +495,8 @@ def _bot_ns(calls: dict):
           "_verify_button_user": lambda ev: True,
           "_resolve_dm_channel": lambda: "dm",
           "_post_card": post_card,
-          "_replace_buttons_with_status": replace}
+          "_replace_buttons_with_status": replace,
+          "FRONTEND": types.SimpleNamespace(), "threading": __import__("threading")}
     exec(compile(src[start:end], "bot[close-proposals]", "exec"), ns)
     ns["_load_close_batches"] = lambda: store.get("d", {})
     return ns

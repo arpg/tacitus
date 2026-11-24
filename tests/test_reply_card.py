@@ -156,7 +156,8 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
           "_body_file_path": lambda ts, step=None:
               f"/state/reply-body-{ts}{'.' + step if step else ''}.txt",
           "_active_threads": set(), "_active_lock": _threading.Lock(),
-          "_item_context": lambda rid: f"Ledger item {rid}: made up"}
+          "_item_context": lambda rid: f"Ledger item {rid}: made up",
+          "_one_list": lambda: False}
     pv = BOT_SRC.index("def _press_value(")
     exec(compile(BOT_SRC[pv:BOT_SRC.index("def _case_card_failed(")], "bot[press]", "exec"), ns)
     exec(compile(BOT_SRC[start:end], "bot[replies]", "exec"), ns)

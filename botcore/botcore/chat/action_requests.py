@@ -41,6 +41,19 @@ ACTIONS = {
     "letter_ask": "Letter request", "letter": "Letter",
     "case_ask": "Work request", "case": "Work",
 }
+# The card kinds whose press passes the bot's confirmation gate (a token,
+# `_reject_if_stale_confirmation` or `request-confirm`): the lock in the app
+# (GATED in app.js).
+GATED = frozenset({"send", "bulk", "schedule", "event", "event_update", "event_delete",
+                   "plugin", "publish", "browser"})
+# The card kinds Home holds with one list (the web block's `home.one_list`):
+# a reply that waits, a close proposal, a close note and a work case's
+# cards. None needs the token; Home lists each as an item with the card's
+# answers, and Action requests leaves out any still stored.
+HOME_KINDS = frozenset({"replies", "close", "closed", "letter", "letter_ask", "case", "case_ask"})
+# The tag a reply turn's lines carry (the bot's _reply_tagged): a thread
+# that opens with one is that turn's, never a request of its own.
+REPLY_TAG = "reply:"
 # The labelled fields each part reads, first found wins.
 WHO = ("To", "Attendees", "Organizer", "From")
 WHAT = ("Subject", "Event")
@@ -123,6 +136,23 @@ def block(msg: dict) -> dict:
             "who": f"{label} {_people(who)}".strip() if who else "",
             "what": what or (title if title != action else ""),
             "when": when}
+
+
+def on_home(card: Any) -> bool:
+    """A card (its JSON, or a status line that kept it) of a kind Home
+    holds with one list."""
+    return isinstance(card, dict) and str(card.get("kind") or "") in HOME_KINDS
+
+
+def listed(msg: dict, tag: str = "") -> bool:
+    """With one list on, whether a stored message is a request in Action
+    requests: a card or status line of a kind Home does not hold (in
+    practice the gated ones), or a thread that opens with a plain message
+    (a notice, a device to approve, the owner's words from before), never
+    one a reply turn's tagged line opens (`tag`)."""
+    if msg.get("kind") in ("card", "status"):
+        return not on_home(msg.get("card"))
+    return not str(tag or "").startswith(REPLY_TAG)
 
 
 def _epoch(value: Any, *, end_of_day: bool) -> float | None:

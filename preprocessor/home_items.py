@@ -155,6 +155,9 @@ WAITING = {"id": "waiting", "label": "Later: waiting on them"}
 OPEN = {"id": "open", "label": "Open it in Action requests", "style": "primary"}
 OUTLOOK = {"id": "outlook", "label": "Open in Outlook", "style": "primary"}
 REOPEN = {"id": "reopen", "label": "Not done"}
+# A close proposal's answers on Home (one list): Done confirms it, after the
+# Undo window; Not done keeps the row open and vetoes the evidence.
+NOT_DONE = {"id": "not_done", "label": "Not done"}
 
 GONE = "This is not on your list any more."
 CHANGED = "This changed since you opened it. Here it is as it is now."
@@ -221,12 +224,24 @@ class Hooks:
     case(case id, answer, part id, words) -> {"ok", "said", "channel"?, "id"?}
         the same for a case of any other kind (a review, a form, a
         report: case_surface.answer).
+    turns() -> {ledger id: {"state": "writing"} or {"state": "failed", "why"}}
+        one list: the reply turns of the rows, read for Home's list.
+    close(row id, keep) -> {"ok", "said"}
+        one list: the close card's answer, Done (`keep` False) or Not done.
+    reopen(row id) -> {"ok", "said"}
+        one list: the auto-close note's Not done, on a row Tacitus closed.
+    which(question id, pick) -> {"ok", "said"}
+        one list: a pick on a "which one was it?" question (case_which).
     """
     draft: Callable[[str, str, str], dict] | None = None
     not_needed: Callable[[str, str], dict] | None = None
     outlook: Callable[[str], str] | None = None
     letter: Callable[[str, str, str, str], dict] | None = None
     case: Callable[[str, str, str, str], dict] | None = None
+    turns: Callable[[], dict] | None = None
+    close: Callable[[str, bool], dict] | None = None
+    reopen: Callable[[str], dict] | None = None
+    which: Callable[[str, str], dict] | None = None
 
 
 # ── finding the item ────────────────────────────────────────────────
@@ -243,6 +258,9 @@ class Found:
     view: dict | None = None
     closed: dict | None = None
     keep: str = ""
+    # One list: the row's reply turn as the bot keeps it ({"state":
+    # "writing"} or {"state": "failed", "why"}); {} with none.
+    turn: dict | None = None
 
 
 def find(src, ref: str) -> Found | None:
@@ -271,8 +289,10 @@ def find(src, ref: str) -> Found | None:
                 None) if str(hit.get("id") or "").startswith("item:") else None
     closed = next((r for r in src.closed or [] if isinstance(r, dict) and str(r.get("id") or "") == lid),
                   None) if kind == "closed" else None
+    turn = (getattr(src, "turns", None) or {}).get(lid) if kind in ("reply", "question") else None
     f = Found(item=hit, lid=lid, conv=conv, row=rows.get(lid) if lid else None,
-              reply=reply, request=request, view=view, closed=closed)
+              reply=reply, request=request, view=view, closed=closed,
+              turn=turn if isinstance(turn, dict) else None)
     level = hit.get("kept") or ""
     for obj in (f.reply, f.row, f.request, f.view, f.closed):
         if isinstance(obj, dict) and hs.is_kept(obj.get("keep_level")):
@@ -680,6 +700,8 @@ def _next(f: Found) -> str:
         if sched not in ("", "none"):
             return "Draft a reply with two or three times from your calendar."
         return "Draft a short reply for you to check. Nothing goes out without your Send."
+    if kind == "proposal":
+        return "Close it once you say it is done."
     if kind == "item":
         if isinstance(row.get("close_proposal"), dict):
             return "Close it once you say it is done."
@@ -787,11 +809,27 @@ def _case(f: Found):
     return cs, cs.find(cs.load_cases(kinds=kinds), cid)
 
 
+def _which(f: Found, src) -> dict | None:
+    """The open "which one was it?" question a `which` item stands for."""
+    if __package__:
+        from . import case_surface as cs
+    else:
+        import case_surface as cs
+    qid = str(f.item.get("_question") or "")
+    found = getattr(src, "questions", None)
+    return next((q for q in (cs.part_questions() if found is None else found)
+                 if str(q.get("id") or "") == qid), None) if qid else None
+
+
 def brief(f: Found, src) -> dict:
     """The quick briefing: {"what", "asked", "due", "standing", "next"}, each
     "" (or []) where nothing is known. A kept item has none of it."""
     out = {"what": "", "asked": "", "due": "", "standing": [], "next": ""}
     if f.keep:
+        return out
+    if f.item.get("kind") == "which":
+        out["what"] = "A delivery notice matches more than one of your open requests."
+        out["standing"] = ["Nothing is marked done until you answer."]
         return out
     if f.item.get("kind") in CASE_ITEMS:
         cs, case = _case(f)
@@ -858,7 +896,18 @@ def brief(f: Found, src) -> dict:
     out["due"] = _due_words(due, today)
     out["standing"] = _standing(f, src)
     out["next"] = _next(f)
+    turn = f.turn or {}
+    if turn.get("state") == "writing":
+        out["next"] = _hs().WRITING_LINE
+    elif turn.get("state") == "failed":
+        why = _plain(turn.get("why"), SAID_MAX)
+        out["standing"] = ([f"The reply was not drafted: {why}" if why else "The reply was not drafted."]
+                           + out["standing"])[:STANDING_MAX]
     return out
+
+
+def _writing(f: Found) -> bool:
+    return (f.turn or {}).get("state") == "writing"
 
 
 # ── the choices ─────────────────────────────────────────────────────
@@ -890,14 +939,29 @@ def choices(f: Found, src) -> list[dict]:
     if kind in CASE_ITEMS:
         # a work case's own answers (case_surface.home_choices): no mail
         # text in them, so a kept case has them too, in fixed words; Ask
-        # last, but never on a kept case
+        # last, but never on a kept case. Open it in Action requests only
+        # where its card is (none with one list).
         cs, case = _case(f)
         got = cs.home_choices(case, today, f.keep or "full") if case else []
+        got = [c for c in got if c.get("id") != OPEN["id"] or f.item.get("href")]
         return got + ([dict(ASK)] if got and not f.keep else [])
+    if kind == "which":
+        if __package__:
+            from . import case_surface as cs
+        else:
+            import case_surface as cs
+        q = _which(f, src)
+        return cs.which_choices(q) if q else []
     acts = _open_row(f)
+    if kind == "proposal":
+        # the close card's answers, here (one list): Done waits for its Undo
+        return ([dict(DONE, style="primary"), dict(NOT_DONE)] if acts else []) + \
+            ([] if f.keep else [dict(ASK)])
     if f.keep:  # keep_gate's line alone: open it in Outlook, or settle it here
         return ([dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []) + \
             ([dict(DONE), later_choice(today)] if acts else [])
+    if kind in ("reply", "question") and _writing(f):
+        return [dict(ASK)]  # its reply is being written: its Send card comes next
     if kind == "reply":
         return [dict(DRAFT), dict(SAY)] + ([later_choice(today), dict(NOT_NEEDED)] if acts else []) + [dict(ASK)]
     if kind == "question":
@@ -1131,13 +1195,19 @@ def _route(fe, channel: str, mid: str) -> str:
 def _room(fe, f: Found) -> str:
     """The project room of the item's row, where it has one and rooms are on;
     else Ask Tacitus."""
+    return place(fe, f.lid, f.conv)
+
+
+def place(fe, lid: str = "", conv: str = "") -> str:
+    """The channel an item's conversation opens in: the project room of its
+    row or mail thread, where it has one and rooms are on; else Ask Tacitus."""
     main = getattr(fe, "main_channel", "main")
-    if not f.lid and not f.conv:
+    if not lid and not conv:
         return main
     try:
         if callable(getattr(fe, "rooms_on", None)) and not fe.rooms_on():
             return main
-        pid = _project_of(f.lid, f.conv)
+        pid = _project_of(lid, conv)
         if not pid:
             return main
         if __package__:
@@ -1151,6 +1221,57 @@ def _room(fe, f: Found) -> str:
     except Exception as e:
         log.debug("home: no project room for an item: %s", e)
     return main
+
+
+# ── an item's one conversation (one list) ───────────────────────────
+# With one list, an item has one conversation: Ask opens it, a reply turn
+# Home starts runs in it, and Edit on its draft's Send card asks there. It
+# is kept in item_threads (owner-private, beside the alerts' and hand-offs'
+# threads) under the mail conversation id, else `row:<id>` or `case:<id>`.
+
+def _threads():
+    if __package__:
+        from . import item_threads as mod
+    else:
+        import item_threads as mod
+    return mod
+
+
+def thread_key(f: Found) -> str:
+    """The key an item's conversation is kept under."""
+    if f.item.get("_case"):
+        return f"case:{f.item['_case']}"
+    return f.conv or (f"row:{f.lid}" if f.lid else "")
+
+
+def conversation(fe, key: str) -> tuple[str, str] | None:
+    """(channel, thread) of the item's conversation, where one is kept and
+    its channel is there and not archived; else None."""
+    if not key:
+        return None
+    try:
+        got = _threads().find(key)
+        if not got:
+            return None
+        ch = fe.store.channel(got["channel"])
+        return (got["channel"], got["thread"]) if ch and not ch.get("archived") else None
+    except Exception as e:
+        log.debug("home: no conversation kept for an item: %s", e)
+        return None
+
+
+def keep_conversation(key: str, channel: str, thread: str) -> None:
+    """Name `thread` as the item's one conversation."""
+    if not (key and channel and thread):
+        return
+    try:
+        _threads().record(key, channel, thread)
+    except Exception as e:
+        log.warning("home: the item's conversation was not kept: %s", e)
+
+
+def _conversation_route(channel: str, thread: str) -> str:
+    return f"#/{quote(str(channel), safe='')}/{quote(str(thread), safe='')}"
 
 
 def _project_of(lid: str, conv: str) -> str:
@@ -1280,11 +1401,31 @@ class Acts:
                 return {"ok": False, "said": "Tacitus could not find its link. Look for it in Outlook."}, None
             return {"ok": True, "said": "Opening it in Outlook.", "goto": link}, None
         if choice == "reopen":
-            done = _wts().run_writeback({"ops": [("reopen", f.lid)]})
-            ok = any(d.get("ok") for d in done)
+            if hooks.reopen is not None and getattr(fe, "one_list", False) and f.item.get("by") != "you":
+                # a row Tacitus closed: the auto-close note's Not done (one list)
+                got = hooks.reopen(f.lid) or {}
+                ok = bool(got.get("ok"))
+            else:
+                done = _wts().run_writeback({"ops": [("reopen", f.lid)]})
+                ok = any(d.get("ok") for d in done)
             home.changed()
             return {"ok": ok, "said": "Not done. It is back on your list." if ok
                     else "Nothing was done. Try again in a minute."}, None
+        if choice.startswith("which:"):
+            if hooks.which is None:
+                return {"ok": False, "said": "Tacitus cannot do that from here."}, None
+            got = hooks.which(str(f.item.get("_question") or ""), choice.split(":", 1)[1]) or {}
+            home.changed()
+            return {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or "Nothing was done."}, None
+        if choice == "not_done":
+            if hooks.close is None:
+                return {"ok": False, "said": "Tacitus cannot do that from here."}, None
+            got = hooks.close(f.lid, True) or {}
+            home.changed()
+            log.info("home: not done on %s: %s", f.lid, "kept open" if got.get("ok") else "refused")
+            return {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or
+                    ("Not done. It stays on your list."
+                     if got.get("ok") else "Nothing was done. Try again in a minute.")}, None
         words = one_line(arg)
         if choice.startswith(("letter:", "case:")):
             cs, case = _case(f)
@@ -1332,10 +1473,13 @@ class Acts:
             out = {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or
                    ("Drafting the reply. Its Send card comes to Action requests." if got.get("ok")
                     else "The draft did not start. Try again in a minute.")}
+            # one list: the item itself says what comes next (`home`), no link
             route = _route(fe, str(got.get("channel") or ""), str(got.get("id") or "")) \
-                if got.get("ok") or got.get("channel") else ""
+                if (got.get("ok") or got.get("channel")) and not got.get("home") else ""
             if route:
                 out["goto"] = route
+            if out["ok"]:
+                home.changed()  # one list: its line says the reply is being written
             log.info("home: %s on %s: %s", choice, f.lid, "started" if out["ok"] else "refused")
             return out, None
         if choice == "start":
@@ -1359,12 +1503,25 @@ class Acts:
     def _ask(self, f: Found, it: dict) -> dict:
         """Ask: the item's conversation opens with Tacitus's first message
         and waits for the owner's words. A ready deeper briefing seeds it
-        (home_deeper's own Ask); else the quick briefing does."""
+        (home_deeper's own Ask); else the quick briefing does. With one list
+        the item has one conversation: Ask opens the one it has (where its
+        reply was written), and keeps the one it opens."""
         fe = self.home.fe
+        one = bool(getattr(fe, "one_list", False))
+        key = thread_key(f) if one else ""
+        had = conversation(fe, key) if key else None
+        if had:
+            log.info("home: Ask opened the conversation of %s", f.lid or f.item.get("id"))
+            return {"ok": True, "said": "Opened its conversation. Write what you need.",
+                    "goto": _conversation_route(*had)}
         d = it.get("deeper") or {}
         if d.get("state") == "ready" and not d.get("stale") and not f.keep:
             got = deeper_step(fe, f, it, "continue", "")
             if got.get("ok"):
+                parts = str(got.get("goto") or "").split("/")
+                if key and len(parts) == 3 and parts[0] == "#":
+                    from urllib.parse import unquote
+                    keep_conversation(key, unquote(parts[1]), unquote(parts[2]))
                 return {k: v for k, v in got.items() if k in ("ok", "said", "goto")}
         channel = _room(fe, f)
         try:
@@ -1372,16 +1529,17 @@ class Acts:
         except Exception as e:
             log.warning("home: Ask did not open a conversation: %s", e)
             return {"ok": False, "said": "Nothing was done. Try again in a minute."}
-        key = getattr(ref, "thread_key", None) or getattr(ref, "id", "")
+        thread = getattr(ref, "thread_key", None) or getattr(ref, "id", "")
+        channel = getattr(ref, "channel", "") or channel
+        keep_conversation(key, channel, thread)
         log.info("home: Ask opened a conversation for %s", f.lid or f.item.get("id"))
         return {"ok": True, "said": "Opened a conversation about it. Write what you need.",
-                "goto": f"#/{quote(str(getattr(ref, 'channel', '') or channel), safe='')}/"
-                        f"{quote(str(key), safe='')}"}
+                "goto": _conversation_route(channel, thread)}
 
     def _defer(self, f: Found, src, it: dict, choice: str, arg: str) -> dict:
         today = _today(src)
         rec = {"ref": it["ref"], "op": choice, "lid": f.lid, "version": it["version"],
-               "at": self.home.clock(), "due": self.home.clock() + UNDO_S}
+               "at": self.home.clock(), "due": self.home.clock() + UNDO_S, "kind": it.get("kind") or ""}
         if choice == "later":
             day = later_day(arg, today)
             if day is None:
@@ -1469,12 +1627,15 @@ class Acts:
         today = _today(src).isoformat()
         wts = _wts()
         try:
-            if op == "done":
+            hooks = getattr(self.home, "hooks", None) or Hooks()
+            if op == "done" and rec.get("kind") == "proposal" and hooks.close is not None:
+                # the close card's Done, as its press runs it (one list)
+                ok = bool((hooks.close(lid, False) or {}).get("ok"))
+            elif op == "done":
                 proposal = isinstance((f.row or {}).get("close_proposal"), dict)
                 done = wts.run_writeback({"ops": [("confirm" if proposal else "close", lid)]})
                 ok = any(d.get("ok") for d in done)
             elif op == "not_needed":
-                hooks = getattr(self.home, "hooks", None) or Hooks()
                 if hooks.not_needed is None:
                     log.warning("home: no reply needed on %s not written: no bot to run it", lid)
                     return {"op": op, "id": lid, "ok": False, "why": "no hook"}

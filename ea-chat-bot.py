@@ -5009,6 +5009,60 @@ CLOSE_CARD_EXPIRED = (":zzz: No answer in 7 days. It stays on your list, on the 
                       "Looks done? line.")
 
 
+# One list (ChatFrontend.one_list, the web chat's default; docs/webchat.md,
+# Home): every card whose press needs no token is a Home item, never a card
+# in Action requests. The ticks below then post no close card, no close
+# note, no reply block and no case card: Home lists the same rows and cases
+# (home_screen, home_items), and a press there runs the same code a press
+# on the card ran (the hooks set on Home below). What first needs the owner
+# notifies once, opening Home (_home_push). Slack, and the web chat with
+# `"one_list": false` in its `home` block, keep the cards.
+_HOME_PUSHED = _private_state("home-pushed.json")
+_HOME_PUSHED_LOCK = threading.Lock()
+HOME_PUSH_TITLE = "Home"
+HOME_PUSH_KEEP_S = 60 * 86400
+
+
+def _one_list() -> bool:
+    return bool(getattr(FRONTEND, "one_list", False))
+
+
+def _home_push(keys, line: str) -> bool:
+    """One list: one notification that opens Home, for something that
+    first needs the owner there (what a card's own push said before). Once
+    per key in `keys`: a key pushed before pushes nothing again. True when
+    it went."""
+    keys = [str(k) for k in keys or () if k]
+    if not _one_list() or not keys:
+        return False
+    now = time.time()
+    with _HOME_PUSHED_LOCK:
+        try:
+            done = json.loads(_HOME_PUSHED.read_text())
+            done = done if isinstance(done, dict) else {}
+        except Exception:
+            done = {}
+        new = [k for k in keys if k not in done]
+        if not new:
+            return False
+        done = {k: v for k, v in done.items() if now - float(v or 0) < HOME_PUSH_KEEP_S}
+        done.update({k: now for k in new})
+        try:
+            _atomic.write_json(_HOME_PUSHED, done, mode=0o600)
+        except Exception as e:
+            log.warning(f"Home push record failed: {e}")
+    notify = getattr(FRONTEND, "notify", None)
+    if not callable(notify):
+        return False
+    try:
+        notify(HOME_PUSH_TITLE, _chat.card_text.one_line(line, 200),
+               f"{FRONTEND.app_url()}#/home", "home", urgency="high")
+    except Exception as e:
+        log.warning(f"Home push failed: {e}")
+        return False
+    return True
+
+
 def _load_close_batches() -> dict:
     try:
         return json.loads(_CLOSE_BATCHES.read_text())
@@ -5210,6 +5264,13 @@ def _post_close_proposals(force: bool = False) -> int:
                         or (r.get("proposal") or {}).get("at") or "") for r in rows)
     if not force and now - oldest < CLOSE_CARD_WINDOW_S:
         return 0
+    if _one_list():
+        # Each is a Home item ("Looks done": Done, Not done). They stay
+        # uncarded, so the cards come back if the owner turns one list off.
+        n = len(rows)
+        _home_push([f"close:{r['id']}" for r in rows],
+                   "This looks done." if n == 1 else f"{n} items look done.")
+        return 0
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
         return 0
@@ -5298,6 +5359,13 @@ def _note_promoted_closes(force: bool = False) -> int:
     rows = (_ledger_cli("promoted").get("entries") or [])[:PROMOTED_NOTE_MAX]
     if not rows:
         return 0
+    if _one_list():
+        # Home's So far today lists each with Not done (the note's own);
+        # no note, and no push: it asks nothing.
+        told = [r["id"] for r in rows if r.get("id")]
+        _ledger_cli("promoted", "--noted", *told)
+        log.info(f"Promoted closes noted on Home: {len(told)}")
+        return len(told)
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
         return 0
@@ -5347,6 +5415,41 @@ def handle_close_all_proposed(ev: "_chat.ActionEvent"):
 
 def _confirm_proposed(rid: str) -> bool:
     return _ledger_cli("confirm", "--id", rid).get("action") == "closed"
+
+
+def _keep_open_proposed(rid: str) -> bool:
+    """Not done on a close card (and on Home): the row stays open
+    and the evidence is vetoed for it."""
+    return bool(_ledger_cli("reject", "--id", rid).get("ok"))
+
+
+def _reopen_closed(rid: str) -> bool:
+    """Not done on a promoted close's note (and on Home): the row opens
+    again through the ledger's reopen, which vetoes the signal for the
+    row, and the hill climb moves the signal back to proposing."""
+    day = datetime.now().strftime("%Y-%m-%d")
+    out = _ledger_cli("update", "--id", rid, "--status", "open", "--last-action",
+                      f"{day}: reopened by the owner from the close note")
+    return (out.get("entry") or {}).get("status") in _LEDGER_OPEN_STATUSES and not out.get("warning")
+
+
+def _home_close(rid: str, keep: bool) -> dict:
+    """Home's Done (once its Undo window passed) or Not done on a close
+    proposal: the close card's own Done or Not done."""
+    if keep:
+        ok = _keep_open_proposed(rid)
+        return {"ok": ok, "said": "Not done. It stays on your list." if ok
+                else "Nothing was done. Try again in a minute."}
+    ok = _confirm_proposed(rid)
+    return {"ok": ok, "said": "Done. It is off your list." if ok
+            else "It changed since you opened it. Nothing was done."}
+
+
+def _home_reopen(rid: str) -> dict:
+    """Home's Not done on a row Tacitus closed: the auto-close note's Not done."""
+    ok = _reopen_closed(rid)
+    return {"ok": ok, "said": "Not done. It is back on your list." if ok
+            else "It changed since you opened it. Nothing was done."}
 
 
 @app.action("review_proposed")
@@ -5403,7 +5506,7 @@ def handle_keep_open_proposed(ev: "_chat.ActionEvent"):
         return
     rid, batch_id, _ids = _proposal_value(ev)
     if rid:
-        _ledger_cli("reject", "--id", rid)
+        _keep_open_proposed(rid)
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
                                  ":pushpin: Not done. It stays on your list.")
     _close_batch_answered(batch_id)
@@ -5420,10 +5523,7 @@ def handle_reopen_closed(ev: "_chat.ActionEvent"):
     rid = str(v.get("ledger_id") or "")
     if not rid:
         return
-    day = datetime.now().strftime("%Y-%m-%d")
-    out = _ledger_cli("update", "--id", rid, "--status", "open", "--last-action",
-                      f"{day}: reopened by the owner from the close note")
-    ok = (out.get("entry") or {}).get("status") in _LEDGER_OPEN_STATUSES and not out.get("warning")
+    ok = _reopen_closed(rid)
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
                                  ":leftwards_arrow_with_hook: Not done. It is back on your list. "
                                  "Next time I ask first." if ok
@@ -5598,11 +5698,14 @@ def _tell_stated_dates(stores: list) -> int:
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
         return 0
-    try:
-        FRONTEND.post(channel=dm_channel, text=_cs.stated_line(items, _cs.today_local()))
-    except Exception as e:
-        log.warning(f"stated dates line not posted: {e}")
-        return 0
+    if not _one_list():
+        # One list: no line in Action requests; the yes on Home said its
+        # date, and the case comes back on Home at its time with it.
+        try:
+            FRONTEND.post(channel=dm_channel, text=_cs.stated_line(items, _cs.today_local()))
+        except Exception as e:
+            log.warning(f"stated dates line not posted: {e}")
+            return 0
     for data, save, todo in marks:
         cards = data.setdefault("cards", {})
         for c in todo:
@@ -5612,12 +5715,28 @@ def _tell_stated_dates(stores: list) -> int:
     return 1
 
 
+def _cards_back(cards: dict) -> None:
+    """One list turned off: a case or question Home held gets its card on
+    the next tick. Its record from one list stands for no card: it goes,
+    and what the owner was told (a date, its parts) stays."""
+    for key in [k for k, r in cards.items() if r.get("home")]:
+        rest = {k: v for k, v in cards[key].items()
+                if k not in ("kind", "live", "card", "channel", "posted", "home", "sig", "asked_date")}
+        if rest:
+            cards[key] = rest
+        else:
+            del cards[key]
+
+
 def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, closed: str) -> int:
     """One store's tick: `surface` is letter_surface (the letters) or
     case_surface (every other kind); `load` and `save` its card record;
     `closed` the status line of a retired card."""
     data = load()
     cards, sent = data.setdefault("cards", {}), data.setdefault("sent", {})
+    home = _one_list()
+    if not home:
+        _cards_back(cards)
     for cid, rec in cards.items():
         if rec.get("live") and rec.get("card"):
             row = _CARDS.by_ref(rec.get("channel") or "", rec["card"])
@@ -5643,15 +5762,16 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
         rec = cards.get(cid) or {}
         gone = {"retire": closed, "date": ":calendar: One date for all of it: a new card asks for it.",
                 "case": ":white_check_mark: Answered. A new card has the next step."}
-        if rec.get("live") and rec.get("card") and (
+        if rec.get("live") and (rec.get("card") or rec.get("home")) and (
                 what in ("retire", "remind", "news", "date", "quiet")
                 or (what == "case" and rec.get("kind") in ("ask", "date"))):
             case = surface.find(cases, cid)
             try:
-                _replace_buttons_with_status(
-                    rec.get("channel") or dm_channel, rec["card"],
-                    surface.quiet_words(case, today) if what == "quiet" and case is not None
-                    else gone.get(what) or ":information_source: A newer card for this is in the list.")
+                if rec.get("card"):  # one list has no card to retire
+                    _replace_buttons_with_status(
+                        rec.get("channel") or dm_channel, rec["card"],
+                        surface.quiet_words(case, today) if what == "quiet" and case is not None
+                        else gone.get(what) or ":information_source: A newer card for this is in the list.")
             except Exception as e:
                 log.warning(f"case card {cid}: not retired: {e}")
             rec["live"] = False
@@ -5665,7 +5785,7 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
         if what == "note":
             case = surface.find(cases, cid)
             text = surface.note_text(case, p, today, levels.get(cid, "local")) if case is not None else ""
-            if text:
+            if text and not home:  # one list: the case's item on Home says it
                 try:
                     FRONTEND.post(channel=rec.get("channel") or dm_channel,
                                   thread_ts=rec.get("card") if rec.get("live") else None, text=text)
@@ -5678,7 +5798,9 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
             continue
         if what == "update":
             case = surface.find(cases, cid)
-            if case is not None and rec.get("card"):
+            if home and rec.get("home"):
+                rec["sig"] = p.get("sig") or rec.get("sig")  # Home draws it as it is now
+            elif case is not None and rec.get("card"):
                 try:
                     FRONTEND.update_card(_card_ref(rec.get("channel") or dm_channel, rec["card"]),
                                          _letter_card(surface.case_spec(case, today, levels.get(cid, "local"))))
@@ -5695,6 +5817,13 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
         if what == "join":
             q = next((x for x in surface.questions(case, "join") if str(x.get("id")) == p["question"]), None)
             if q is None:
+                continue
+            if home:
+                # its case's item on Home asks it first (case_surface.home_join)
+                spec = surface.join_spec(case, q, lv)
+                _home_push([f"case:{p['key']}"], _strip_slack_markup(spec["title"]))
+                cards[p["key"]] = {"kind": "join", "live": True, "card": "", "home": True,
+                                   "channel": dm_channel, "posted": now}
                 continue
             try:
                 ref = _post_card(dm_channel, _letter_card(surface.join_spec(case, q, lv)))
@@ -5714,15 +5843,22 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
             reminder = surface.reminder_text(case, p.get("items") or [], today, lv) if what == "remind" else ""
             spec = surface.case_spec(case, today, lv, reminder=reminder,
                                      news=fresh.get("items") if what == "news" else None)
-        try:
-            ref = _post_card(dm_channel, _letter_card(spec))
-        except Exception as e:
-            log.warning(f"case card {cid}: not posted: {e}")
-            continue
-        posted += 1
+        if home:
+            # One list: the case is a Home item (case_surface.home_items) with
+            # this card's answers; one push says it needs the owner, where
+            # the card's own push did. The record stands for the card.
+            _home_push([f"case:{cid}:{what}:{now:.0f}"], _strip_slack_markup(spec["title"]))
+            ref = None
+        else:
+            try:
+                ref = _post_card(dm_channel, _letter_card(spec))
+            except Exception as e:
+                log.warning(f"case card {cid}: not posted: {e}")
+                continue
+            posted += 1
         kind = "date" if what == "date" else ("ask" if spec["kind"].endswith("_ask") else "case")
         cards[cid] = dict(rec, kind=kind, live=True, card=getattr(ref, "id", "") or "",
-                          channel=getattr(ref, "channel", "") or dm_channel, posted=now)
+                          channel=getattr(ref, "channel", "") or dm_channel, posted=now, home=home)
         if what == "date":
             cards[cid]["asked_date"] = True  # the date is asked once
         if kind == "case":
@@ -5741,6 +5877,8 @@ def _post_which_cards(surface, now: float) -> int:
     questions = surface.part_questions()
     data = _load_case_cards()
     cards = data.setdefault("cards", {})
+    if not _one_list():
+        _cards_back(cards)
     plan = surface.which_plan(questions, cards)
     if not plan:
         return 0
@@ -5763,6 +5901,12 @@ def _post_which_cards(surface, now: float) -> int:
             continue
         q = next((x for x in questions if str(x.get("id")) == p["question"]), None)
         if q is None:
+            continue
+        if _one_list():
+            # a Home item of its own (case_surface.home_which), asked once
+            _home_push([f"case:{key}"], _strip_slack_markup(surface.which_spec(q)["title"]))
+            cards[key] = {"kind": "which", "live": True, "card": "", "home": True,
+                          "channel": dm_channel, "posted": now}
             continue
         try:
             ref = _post_card(dm_channel, _letter_card(surface.which_spec(q)))
@@ -5804,14 +5948,27 @@ def _home_kind(surface, cases: list, case_id: str, answer: str, part: str, words
     case = surface.find(cases, case_id)
     if case is None or (part and not any(str(d.get("id")) == part for d in surface.open_parts(case))):
         return {"ok": False, "said": "It changed since you opened it. Nothing was done."}
-    q = next(iter(surface.questions(case, question_kind)), None) if question_kind else \
+    joins = answer in ("join_same", "join_other")
+    q = next(iter(surface.questions(case, "join")), None) if joins else \
+        next(iter(surface.questions(case, question_kind)), None) if question_kind else \
         surface.decision_question(case)
     got = surface.answer(case, answer, dest=part, text=words,
                          question=str((q or {}).get("id") or "")
-                         if answer in ("yes", "yes_ask", "yes_date", "no") else "")
+                         if joins or answer in ("yes", "yes_ask", "yes_date", "no") else "")
     out = {"ok": bool(got.get("ok")), "said": str(got.get("said") or "")}
     dm = _resolve_dm_channel()
-    if got.get("turn") and dm and OWNER_SLACK_USER_ID:
+    if got.get("turn") and dm and OWNER_SLACK_USER_ID and _one_list():
+        # One list: the turn runs in the case's one conversation (Ask on its
+        # item opens it), and Home keeps the owner where he pressed.
+        kept = surface.level(case, _case_rows()) in ("local", "facts")
+        channel, thread = _item_conversation(f"case:{case_id}", case_rows=surface.ledger_ids(case),
+                                             room=not kept)
+        ts = _letter_turn(str(got["turn"]), channel, thread, OWNER_SLACK_USER_ID, case_id, out["said"])
+        if ts and not thread:
+            _keep_item_conversation(f"case:{case_id}", channel, ts)
+        if not ts:
+            out.update(ok=False, said="It did not start. Try again in a minute.")
+    elif got.get("turn") and dm and OWNER_SLACK_USER_ID:
         ts = _letter_turn(str(got["turn"]), dm, "", OWNER_SLACK_USER_ID, case_id, out["said"])
         out.update({"channel": dm, "id": ts} if ts else {"ok": False,
                                                           "said": "It did not start. Try again in a minute."})
@@ -6119,6 +6276,13 @@ def _reply_queue_rows() -> list[dict] | None:
     rows = out.get("entries")
     return [r for r in rows if isinstance(r, dict) and r.get("id") and _reply_carded(r)] \
         if isinstance(rows, list) else None
+
+
+def _reply_queue_all() -> list[dict] | None:
+    """Every thread that waits for the owner's reply, from its first day
+    (Home's list); None when the ledger gave no answer."""
+    rows = _ledger_cli("reply-queue", "--min-age", "0").get("entries")
+    return [r for r in rows if isinstance(r, dict) and r.get("id")] if isinstance(rows, list) else None
 
 
 def _reply_linked_drafts() -> dict:
@@ -6442,7 +6606,11 @@ def _post_reply_queue(force: bool = False) -> int:
     _LAST_REPLY_CHECK[0] = now
     day, hour, quiet = _reply_clock()
     store = _load_reply_cards()
-    if not force and (store.get("day") == day or hour < REPLY_CARD_HOUR or quiet):
+    home = _one_list()
+    # One list marks its own day, so a turn back to the cards posts them
+    # the same day.
+    if not force and (store.get("home_day" if home else "day") == day or hour < REPLY_CARD_HOUR
+                      or quiet):
         return 0
     dm_channel = _resolve_dm_channel()
     if not dm_channel:
@@ -6455,6 +6623,17 @@ def _post_reply_queue(force: bool = False) -> int:
     states = [(r, _reply_state(r, linked)[0]) for r in rows]
     todo = [(r, s) for r, s in states if s not in ("card", "sent")]
     ready = sum(1 for _r, s in states if s == "card")
+    if home:
+        # One list: each reply that waits is a Home item with the card's
+        # choices; one push for the day's new ones, as the blocks' own was.
+        todo = [(r, s) for r, s in todo if not _reply_turn_of(r["id"])[0]]
+        n = len(todo)
+        if n:
+            _home_push([f"reply:{r['id']}" for r, _s in todo],
+                       "A reply waits for you." if n == 1 else f"{n} replies wait for you.")
+        store["home_day"] = day
+        _save_reply_cards(store)
+        return 0
     if _reply_taps_only():
         _settle_reply_summaries(store)
         posted = _reply_blocks_up(dm_channel, todo, day)
@@ -6477,6 +6656,44 @@ def _post_reply_queue(force: bool = False) -> int:
         log.info(f"Replies card posted for {len(todo)} thread(s) (batch {batch_id})")
     _save_reply_cards(store)
     return len(todo)
+
+
+HOME_SETTLED = ":house: This is on Home now."
+_LAST_HOME_SETTLE = [0.0]
+
+
+def _settle_for_home(force: bool = False) -> int:
+    """One list: each card still live in Action requests of a kind Home
+    holds (a reply, a close proposal or note, a work case's card) gives way
+    with one plain line, once. Its row or case is a Home item from now on,
+    with the card's answers, and the list and its count leave the kind out.
+    Returns the count."""
+    now = time.time()
+    if not _one_list() or (not force and now - _LAST_HOME_SETTLE[0] < CLOSE_PROPOSAL_CHECK_S):
+        return 0
+    _LAST_HOME_SETTLE[0] = now
+    dm = _resolve_dm_channel()
+    store = getattr(FRONTEND, "store", None)
+    if not dm or store is None:
+        return 0
+    try:
+        from preprocessor.chat import _botcore_path  # noqa: F401
+        from botcore.chat import action_requests as _ar
+        live = [j for j in store.requests(dm, every=True).get("waiting") or []
+                if j.get("kind") == "card" and j.get("waiting") and _ar.on_home(j.get("card"))]
+    except Exception as e:
+        log.warning(f"the cards Home holds could not be read: {e}")
+        return 0
+    settled = 0
+    for j in live:
+        try:
+            _replace_buttons_with_status(dm, j["id"], HOME_SETTLED)
+            settled += 1
+        except Exception as e:
+            log.warning(f"card {j.get('id')} did not give way to Home: {e}")
+    if settled:
+        log.info(f"One list: {settled} card(s) in Action requests gave way to Home")
+    return settled
 
 
 def _reply_click(ev: "_chat.ActionEvent") -> tuple[str, str, dict | None]:
@@ -6958,6 +7175,8 @@ def _reply_unclaim(rid: str) -> None:
 
 
 def _reply_status(channel: str, card_id: str, text: str) -> None:
+    if not card_id:
+        return  # a turn Home started (one list): Home reads it from the record
     try:
         _replace_buttons_with_status(channel, card_id, text)
     except Exception as e:
@@ -6996,16 +7215,17 @@ def _reply_failed(row: dict, state: str, channel: str, card_id: str, batch: str,
         _reply_status(channel, card_id, ":warning: The draft did not start.")
 
 
-def _reply_end(progress: str, outcome: str) -> dict | None:
+def _reply_end(progress: str, outcome: str, **more) -> dict | None:
     """Close the turn's record once, with its outcome (drafted, question,
-    problem, done, gone): its record, or None when it was closed already
-    (an outcome is shown once; a late draft corrects it, _reply_draft_carded)."""
+    problem, done, gone) and `more` (a Home turn's `why`): its record, or
+    None when it was closed already (an outcome is shown once; a late draft
+    corrects it, _reply_draft_carded)."""
     with _REPLY_TURNS_LOCK:
         turns = _load_reply_turns()
         t = turns.get(progress)
         if not t or t.get("ended"):
             return None
-        t.update(ended=time.time(), outcome=outcome)
+        t.update(ended=time.time(), outcome=outcome, **more)
         _save_reply_turns(turns)
         return t
 
@@ -7115,7 +7335,9 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
         if _reply_end(progress, "drafted"):
             _reply_status(channel, card_id, _reply_drafted_line(where, channel))
         return
-    queue = _reply_queue_rows()
+    # A turn Home started reads the whole queue: Home lists a reply from its
+    # first day, before the cards' ladder names it.
+    queue = _reply_queue_rows() if card_id else _reply_queue_all()
     if queue is None:
         # The ledger gave no answer: the turn has ended, its outcome is read
         # again on the next tick (_reply_watch_tick).
@@ -7143,6 +7365,16 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
     note = _chat.card_text.one_line(str(rec.get("note") or ""), 300)
     shown = ("question" if kind == "decision" else "done" if kind in ("left", "escalated")
              else "drafted" if kind == "drafted" and state == "draft" else "problem")
+    if not card_id:
+        # A turn Home started (one list): its item reads the outcome from the
+        # row (a question, no reply needed) and from this record (why it
+        # wrote none); nothing is posted in its conversation.
+        why = ""
+        if shown == "problem":
+            why = (note if kind == "blocked" and note else REPLY_ENDED_WORDS[how] if how != "done"
+                   else _reply_turn_text(channel, t["thread"], progress, rid)) or REPLY_ENDED_WORDS["done"]
+        _reply_end(progress, shown, **({"why": why} if why else {}))
+        return
     if not _reply_end(progress, shown):
         return
     if kind == "decision":
@@ -7482,6 +7714,30 @@ def _home_draft(rid: str, words: str = "", answer: str = "") -> dict:
     if (progress and _reply_running(progress)) or not _reply_claim(rid):
         return {"ok": False, "said": "This reply is being written already."}
     got: list = []
+    if _one_list():
+        # One list: the turn runs in the item's one conversation (Ask on the
+        # item opens it; Edit on its Send card asks there), and its record
+        # has no card: Home's item says it is being written, then becomes
+        # the way to its Send card.
+        conv = str(row.get("conversation_id") or "")
+        key = conv or f"row:{rid}"
+        channel, thread = _item_conversation(key, rid=rid, conv=conv)
+
+        def began(ts: str) -> None:
+            got.append(ts)
+            _reply_begin(row, state, channel, thread or ts, "", "", answer or words, ts)
+            if not thread:
+                _keep_item_conversation(key, channel, ts)
+        try:
+            ok = _dispatch_reply_draft(row, channel, thread, OWNER_SLACK_USER_ID, answer, words,
+                                       started=began)
+        finally:
+            _reply_unclaim(rid)
+        if not ok or not got:
+            return {"ok": False, "said": "The draft did not start. Try again in a minute."}
+        _HOME_TURNS[rid] = got[0]
+        return {"ok": True, "home": True,
+                "said": f"Drafting the reply. Its Send card comes to {_CARDS_HERE}."}
     try:
         ok = _dispatch_reply_draft(row, dm, "", OWNER_SLACK_USER_ID, answer, words,
                                    started=got.append)
@@ -7492,6 +7748,63 @@ def _home_draft(rid: str, words: str = "", answer: str = "") -> dict:
     _HOME_TURNS[rid] = got[0]
     return {"ok": True, "channel": dm, "id": got[0],
             "said": f"Drafting the reply. Its Send card comes to {_CARDS_HERE}."}
+
+
+def _item_conversation(key: str, *, rid: str = "", conv: str = "", case_rows=(),
+                       room: bool = True) -> tuple[str, str]:
+    """(channel, thread) of an item's one conversation: the one kept for
+    it (item_threads, under its mail conversation id, `row:<id>` or
+    `case:<id>`), else (its place, ""): a new thread in its project room,
+    or in Ask Tacitus. `room` False never opens one in a room: an item
+    kept from hosted models below Summary never reaches a room."""
+    from preprocessor import home_items as _hi
+    found = _hi.conversation(FRONTEND, key)
+    if found:
+        return found
+    if not room:
+        return CHANNEL_ID, ""
+    return _hi.place(FRONTEND, rid or next(iter(case_rows or ()), ""), conv), ""
+
+
+def _keep_item_conversation(key: str, channel: str, thread: str) -> None:
+    from preprocessor import home_items as _hi
+    _hi.keep_conversation(key, channel, thread)
+
+
+def _home_turns() -> dict:
+    """One list: {ledger id: {"state": "writing"}} for each row whose
+    reply turn runs, and {"state": "failed", "why"} for a row whose last
+    turn Home started wrote no reply in the last day."""
+    out: dict = {}
+    now = time.time()
+    turns = sorted(_load_reply_turns().values(), key=lambda t: float(t.get("started") or 0))
+    for t in turns:
+        rid = (t.get("row") or {}).get("id")
+        if not rid:
+            continue
+        if not t.get("ended"):
+            out[rid] = {"state": "writing"}
+        elif t.get("outcome") == "problem" and not t.get("card") and now - float(t["ended"]) < 86400:
+            out[rid] = {"state": "failed", "why": str(t.get("why") or "")}
+        else:
+            out.pop(rid, None)  # a later turn ended another way
+    return out
+
+
+def _home_which(qid: str, pick: str) -> dict:
+    """One list: a pick on a "which one was it?" item, as its card's press
+    runs it (case_surface.answer_which)."""
+    from preprocessor import case_surface as _cs
+    q = next((x for x in _cs.part_questions() if str(x.get("id")) == qid), None) if qid else None
+    if q is None:
+        return {"ok": False, "said": "It changed since you opened it. Nothing was done."}
+    got = _cs.answer_which(q, pick)
+    data = _load_case_cards()
+    rec = (data.get("cards") or {}).get(f"q:{qid}")
+    if rec:
+        rec["live"] = False
+        _save_case_cards(data)
+    return {"ok": bool(got.get("ok")), "said": str(got.get("said") or "")}
 
 
 def _home_not_needed(rid: str, note: str) -> dict:
@@ -7517,6 +7830,10 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         _home_of.hooks.outlook = _home_outlook
         _home_of.hooks.letter = _home_letter
         _home_of.hooks.case = _home_case
+        _home_of.hooks.turns = _home_turns
+        _home_of.hooks.close = _home_close
+        _home_of.hooks.reopen = _home_reopen
+        _home_of.hooks.which = _home_which
 
 
 def _toggle_quoted(ev: "_chat.ActionEvent", show: bool):
@@ -16172,6 +16489,10 @@ def resident_router_loop():
                 _reconcile_vanished_drafts()
             except Exception as e:
                 log.warning(f"vanished draft check failed: {e}")
+            try:
+                _settle_for_home()
+            except Exception as e:
+                log.warning(f"one list: the cards did not give way to Home: {e}")
             try:
                 _post_close_proposals()
             except Exception as e:
