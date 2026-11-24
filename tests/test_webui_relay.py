@@ -223,7 +223,13 @@ def test_a_forged_error_never_sends_a_message_twice(browser, relay_bot):
                           body=json.dumps({"id": "x", "k": "err", "e": "session"}))
         page.route(re.compile(r".*/r/[a-z2-7]{26}/c$"), relay_c)
         page.locator("#new-thread").click()
-        forge["armed"] = True
+        # The frames are sealed, so the route cannot tell the send from a
+        # read the page makes on its own. The page arms the forge itself,
+        # as the send leaves.
+        page.expose_function("__armForge", lambda: forge.update(armed=True))
+        page.evaluate("""() => { const api = RELAY.api; RELAY.api = async (method, path, body) => {
+            if (method === 'POST' && path.endsWith('/messages')) await window.__armForge();
+            return api(method, path, body); }; }""")
         page.fill("#text", "Sent once through the relay")
         page.press("#text", "Enter")
         expect(page.locator("#composer-note")).to_contain_text("may have it anyway", timeout=10000)
