@@ -224,12 +224,22 @@ def test_a_forged_error_never_sends_a_message_twice(browser, relay_bot):
         page.route(re.compile(r".*/r/[a-z2-7]{26}/c$"), relay_c)
         page.locator("#new-thread").click()
         # The frames are sealed, so the route cannot tell the send from a
-        # read the page makes on its own. The page arms the forge itself,
-        # as the send leaves.
+        # read the page makes on its own. The page holds its other relay
+        # calls while the send is out, and arms the forge once none is in
+        # flight: the next frame the route sees is the send.
         page.expose_function("__armForge", lambda: forge.update(armed=True))
-        page.evaluate("""() => { const api = RELAY.api; RELAY.api = async (method, path, body) => {
-            if (method === 'POST' && path.endsWith('/messages')) await window.__armForge();
-            return api(method, path, body); }; }""")
+        page.evaluate("""() => { const api = RELAY.api; let busy = 0, hold = null;
+            RELAY.api = async (method, path, body) => {
+                if (method === 'POST' && path.endsWith('/messages')) {
+                    let free; hold = new Promise((r) => { free = r; });
+                    while (busy) await new Promise((r) => setTimeout(r, 20));
+                    await window.__armForge();
+                    try { return await api(method, path, body); } finally { hold = null; free(); }
+                }
+                while (hold) await hold;
+                busy += 1;
+                try { return await api(method, path, body); } finally { busy -= 1; }
+            }; }""")
         page.fill("#text", "Sent once through the relay")
         page.press("#text", "Enter")
         expect(page.locator("#composer-note")).to_contain_text("may have it anyway", timeout=10000)
