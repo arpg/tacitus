@@ -66,6 +66,12 @@ def day_words(d: date | None, today: date | None = None) -> str:
     return f"{d:%a %b} {d.day}"
 
 
+def on_day(d: date | None, today: date | None = None) -> str:
+    """The day after a verb: "today", "tomorrow", "on Tue Dec 1"."""
+    w = day_words(d, today)
+    return w if w in ("", "today", "tomorrow") else f"on {w}"
+
+
 def parts(c: dict) -> list[dict]:
     got = c.get("parts")
     if not isinstance(got, list):

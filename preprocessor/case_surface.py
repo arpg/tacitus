@@ -2031,7 +2031,7 @@ def quiet_words(c: dict, today: date) -> str:
     """The status line a card gives way to when its case goes quiet."""
     back = wake(c)
     by = _dates().do_by(c)
-    return (f":zzz: Set for {day_words(by, today)}. I bring it back on {day_words(back, today)}."
+    return (f":zzz: Set for {day_words(by, today)}. I bring it back {_dates().on_day(back, today)}."
             if back and by else ":zzz: Set. It is off your lists until its time.")
 
 
@@ -2113,7 +2113,7 @@ def dated_words(case: dict, by: date, today: date) -> str:
                     if D.own_due(d) and D.own_due(d) < by), key=lambda x: x[0])
     out = f" {_clean(early[0][1], 60)} asks by {day_words(early[0][0], today)}." if early else ""
     back = D.wake(c)
-    return out + (f" I bring it back on {day_words(back, today)}." if back and back > today
+    return out + (f" I bring it back {_dates().on_day(back, today)}." if back and back > today
                   else " It is time to start, so it stays on your list.")
 
 
