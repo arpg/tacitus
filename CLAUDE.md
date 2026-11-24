@@ -343,9 +343,9 @@ email (only `delete-draft` exists).
 intent is clear. Do not preview the body in chat. Post a SHORT
 confirmation (":email: Draft created to [recipient] re: [subject].").
 The bot posts the `:lock:` card with To, CC, Subject, Body and the
-buttons; the card is posted to the user's DM, with a one-line pointer in
-the thread. That card IS the review step. If you mention it, say the
-Send button is in the user's DM, never above or in this thread.
+buttons to the user's DM, and its own one-line pointer to the card in
+the thread. That card IS the review step. Never write where the card or
+its Send button is: the pointer says it.
 
 **NEVER guess contact names.** Take names exactly from headers, the
 ledger or prior mail. With no full name, use the first name only.

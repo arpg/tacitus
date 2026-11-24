@@ -198,6 +198,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 WEBUI = Path(__file__).resolve().parent.parent / "botcore" / "botcore" / "chat" / "webui"
@@ -653,6 +654,11 @@ class Stub:
             m = self.stub.post(channel, text, thread_key)
             return {"channel": m["channel"], "id": m["id"], "thread_key": m["thread_key"]}, None
 
+        def post(self, channel, text, thread_ts=None, **kw):
+            """The bot's own post (Ask's first message): a new thread, no turn."""
+            m = self.stub.add(channel, text, thread_key=thread_ts, event="message")
+            return SimpleNamespace(channel=m["channel"], id=m["id"], thread_key=m["thread_key"])
+
     class _Deeper:
         """home_deeper as home_items calls it (state, start, step), with no
         model: home_deeper's own steps filter, labels and lines."""
@@ -700,10 +706,11 @@ class Stub:
 
         def step(self, fe, ref, step_id, item=None, *, row=None, arg=None):
             d, job = D(), self.job(ref, item)
-            if step_id == d.CONTINUE:
-                row, _after = fe.web_message(MAIN, f"Let's go on with this: {(item or {}).get('title')}", None)
-                return {"ok": True, "said": "Opened a conversation about it, with the briefing.",
-                        "goto": f"#/{quote(MAIN, safe='')}/{quote(row['thread_key'], safe='')}"}
+            if step_id == d.CONTINUE:  # as home_deeper.open_conversation: Tacitus's first message, no turn
+                ref_ = fe.post(MAIN, f"*{(item or {}).get('title')}*\n{job.get('text') or ''}\n\nFrom Home. "
+                                     "Write here what to do next.")
+                return {"ok": True, "said": "Opened a conversation with the briefing.",
+                        "goto": f"#/{quote(MAIN, safe='')}/{quote(ref_.thread_key, safe='')}"}
             st = next((x for x in d.offered(job.get("steps") or [], item) if x["id"] == step_id), None)
             if st is None:
                 return {"ok": False, "said": d.NOTE_STEP_GONE}

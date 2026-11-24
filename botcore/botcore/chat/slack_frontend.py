@@ -539,8 +539,8 @@ class SlackFrontend(ChatFrontend):
         "card_place": "your DM",
         "confirm_sentence": (
             "Every :lock: block (Send, Create, Schedule) is posted to the user's DM "
-            "with the bot, with a one-line pointer in this thread; say \"the Send "
-            "button is in your DM\", never \"above\"."),
+            "with the bot, and the bot's own one-line pointer to it in this thread; "
+            "never write where the block or its buttons are."),
         "history_note": (
             "You can use Slack MCP read tools to check channel history for context.\n"
             "Do NOT use Slack MCP to send or post messages " + EMDASH
@@ -558,8 +558,8 @@ class SlackFrontend(ChatFrontend):
             + " Slack renders them as literal characters.\n"
             "Use Slack emoji shortcodes (:white_check_mark:, :email:) not unicode emoji."),
         "confirm_sentence_wrapped": (
-            "buttons themselves are posted to the user's DM with the bot, so say \"the\n"
-            "button is in your DM\", never \"above\"."),
+            "buttons themselves are posted to the user's DM with the bot, and the bot\n"
+            "points to them in this thread itself: never write where they are."),
     }
 
     LLM_TOOL_GRANTS = ("mcp__claude_ai_Slack__slack_read_channel,"

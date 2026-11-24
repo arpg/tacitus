@@ -295,6 +295,8 @@ def _exec_ns():
               _replace_buttons_with_status=lambda *a: None,
               FRONTEND=types.SimpleNamespace(post=lambda **kw: posted.append(kw)))
     exec(_bot_fn("_csv"), ns)
+    exec(_bot_fn("_quietly"), ns)
+    exec(_bot_fn("_post_result"), ns)
     exec(_bot_fn("_execute_event_create"), ns)
     return ns["_execute_event_create"], posted
 

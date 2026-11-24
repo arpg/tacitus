@@ -3,9 +3,15 @@ push policy in one place (docs/webchat.md, Notifications (Web Push)).
 
 A new bot message pushes when
 
-  (a) it is in the DM. A direct message (`chat.direct.send_direct`, whose
-      thread carries the notifier key `personal`) goes at high urgency, the
-      urgency of the alert that sends it; the rest at normal.
+  (a) it is in the DM (Action requests) and a notifier opened its thread
+      (its origin is recorded): a direct message (`chat.direct.send_direct`,
+      the notifier key `personal`) goes at high urgency, the urgency of the
+      alert that sends it; another key the web block routes there at
+      normal. So does an answer in a DM thread the owner wrote in, once per
+      turn. The bot's own lines there never push: a turn's progress and
+      result lines, a result its card already shows, a notice of dates it
+      set, a pointer to a conversation. What needs the owner in Action
+      requests is a card, and a card pushes itself.
   (b) it opens a morning briefing or an afternoon update in the EA channel:
       a thread a notifier opened (its origin is recorded) that the owner
       never wrote in, and the message's first lines carry the report's
@@ -19,11 +25,15 @@ A new bot message pushes when
       a card this conversation asked for in another one (the DM): the
       store's `card_link` table names it, and the card's push covers both.
 
-A new card always pushes (WebFrontend._push_card). Nothing else does: a
-digest, a notice the owner never wrote in, the "Still need this?" nudge,
-a progress line (":hourglass_flowing_sand: Still working..."), a pointer
-to a card in the DM (the card's own push covers it), an edit, a reaction,
-the owner's own message.
+A new card that waits for a press pushes (WebFrontend._push_card); a
+note of something done (a card with `undo`: a close made at once, with
+Reopen) does not, and a batch of cards posted together (one_push: the
+day's replies) pushes once. Nothing else does: a digest, a notice the
+owner never wrote in, the "Still need this?" nudge, a progress line
+(":hourglass_flowing_sand: Still working..."), a pointer to a card in the
+DM (the card's own push covers it), a line posted quietly (the result of
+a press, in the conversation that asked for it), an edit, a reaction, the
+owner's own message.
 
 The `notify_push` block in the web block (Settings) turns (b), (c) outside
 rooms and (c) in rooms off, and says whether (b) and (c) wait for the end
@@ -173,10 +183,14 @@ def message_push(store: Any, row: dict | None, settings: Settings) -> Push | Non
     nudges = store.nudge_ids(channel, key)
     if row.get("id") in nudges:
         return None
-    if kind == "dm":
-        loud = store.thread_origin(channel, key) == DIRECT_ORIGIN
-        return Push("dm", "Tacitus", text, "high" if loud else "normal")
+    origin = store.thread_origin(channel, key) if kind == "dm" else ""
+    if origin:
+        return Push("dm", "Tacitus", text, "high" if origin == DIRECT_ORIGIN else "normal")
     owner_seq, since = store.owner_turn(channel, key, int(row.get("seq") or 0))
+    if kind == "dm":
+        if owner_seq is None or any(_answers(r, nudges) for r in since):
+            return None
+        return Push("dm", "Tacitus", text)
     if owner_seq is None:
         title = report_title(text) if kind == "main" and settings.briefings else ""
         if title and store.thread_origin(channel, key):

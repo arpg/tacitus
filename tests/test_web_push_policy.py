@@ -88,8 +88,8 @@ def decide(f, r, **settings):
 # the policy, clause by clause
 
 
-def test_a_bot_message_in_the_dm_pushes_and_a_direct_message_goes_high(fe):
-    r = row(fe, "dm", "bot", "Your flight leaves at 9.")
+def test_a_notifier_s_message_in_the_dm_pushes_and_a_direct_message_goes_high(fe):
+    r = row(fe, "dm", "bot", "Your flight leaves at 9.", origin="travel")
     p = decide(fe, r)
     assert (p.clause, p.title, p.body, p.urgency, p.may_wait) == \
         ("dm", "Tacitus", "Your flight leaves at 9.", "normal", False)
@@ -97,6 +97,26 @@ def test_a_bot_message_in_the_dm_pushes_and_a_direct_message_goes_high(fe):
     assert decide(fe, d).urgency == "high"
     # the switches leave the DM alone
     assert decide(fe, r, briefings=False, replies=False, rooms=False).clause == "dm"
+
+
+def test_the_bot_s_own_lines_in_action_requests_never_push(fe):
+    """Action requests asks the owner for presses alone, and each card
+    pushes itself. A line the bot posts there asks nothing: a reply turn's
+    progress and result lines, the result a card shows already, a notice
+    of dates it set, a pointer to a conversation."""
+    turn = row(fe, "dm", "bot", ":hourglass_flowing_sand: Writing the reply: Budget. Its Send card "
+                                "comes to Action requests.")
+    for text in (":email: Draft created to Pat.", ":white_check_mark: Sent.\n:white_check_mark: Closed: "
+                 "Reply to Pat", "I could not find the thread."):
+        assert decide(fe, row(fe, "dm", "bot", text, thread=turn["thread_key"])) is None
+    for text in (":calendar: I set dates for 2 letters from what they asked.",
+                 ":pencil2: Tell me the change in the conversation."):
+        assert decide(fe, row(fe, "dm", "bot", text)) is None
+    # a DM thread the owner wrote in (a Slack DM in shadow mode): its answer pushes once
+    asked = row(fe, "dm", "owner", "What is due this week?")
+    first = decide(fe, row(fe, "dm", "bot", "Two reviews.", thread=asked["thread_key"]))
+    assert (first.clause, first.title, first.urgency) == ("dm", "Tacitus", "normal")
+    assert decide(fe, row(fe, "dm", "bot", "And a report.", thread=asked["thread_key"])) is None
 
 
 def test_a_briefing_and_an_update_push_their_title_alone(fe):
@@ -363,6 +383,85 @@ def test_digests_nudges_and_progress_lines_never_push(pushing):
 
 
 @needs_push
+def test_a_note_of_a_close_made_at_once_pushes_nothing(pushing):
+    """An auto-close note (a card with `undo`: Closed, with Reopen) asks
+    nothing, so it pushes nothing; a card that waits for a press does."""
+    f = pushing
+    note = ConfirmationCard(kind="closed", title=":white_check_mark: *Closed:* Room booking",
+                            actions=[CardAction("reopen_closed", "Reopen", {"ledger_id": "x"})],
+                            no_default=True, undo=True)
+    f.post_card("dm", note)
+    time.sleep(0.2)
+    assert f.sent == []
+    f.post_card("dm", card())
+    assert until(lambda: len(f.sent) == 1)
+    assert f.sent[0][0]["body"] == "Send this draft?"
+
+
+@needs_push
+def test_a_line_posted_quietly_pushes_nothing(pushing):
+    """The result of a press, in the conversation that asked for the card
+    (the bot's _post_result), pushes nothing, nor a card posted so; a post
+    after the quiet block pushes as before."""
+    f = pushing
+    key = owner_says(f, "main", "Draft a reply to the committee.")
+    with f.quietly():
+        f.post("main", ":white_check_mark: Sent.", thread_ts=key)
+        f.post_card("dm", card())
+    time.sleep(0.2)
+    assert f.sent == []
+    owner_says(f, "main", "Thanks. What else is due?", key)
+    f.post("main", "Two reviews.", thread_ts=key)
+    assert until(lambda: len(f.sent) == 1)
+
+
+@needs_push
+def test_the_day_s_reply_cards_push_once(pushing):
+    """Cards posted inside one_push notify once at its end: several, one
+    push with the line the caller gives, opening the last one posted (the
+    top of the list) under its thread's tag; one card, its own push; none,
+    no push."""
+    f = pushing
+    with f.one_push(lambda n: f"{n} replies wait for you."):
+        refs = [f.post_card("dm", card()) for _ in range(3)]
+        time.sleep(0.1)
+        assert f.sent == []                              # nothing until the end
+    assert until(lambda: len(f.sent) == 1)
+    time.sleep(0.2)
+    ((payload, urgency),) = f.sent
+    assert (payload["title"], payload["body"], urgency) == ("Action requests", "3 replies wait for you.", "high")
+    assert payload["tag"] == f"dm/{refs[-1].thread_key}" and payload["url"].endswith(f"/{refs[-1].id}")
+    f.sent.clear()
+    with f.one_push(lambda n: f"{n} replies wait for you."):
+        f.post_card("dm", card())
+    assert until(lambda: len(f.sent) == 1)
+    assert (f.sent[0][0]["title"], f.sent[0][0]["body"]) == ("Action request", "Send this draft?")
+    f.sent.clear()
+    with f.one_push(lambda n: "never"):
+        pass
+    time.sleep(0.2)
+    assert f.sent == []
+
+
+@needs_push
+def test_a_relay_notice_in_the_dm_still_pushes(pushing):
+    """A new device asks to reach Tacitus: the owner must approve or remove
+    it, so its notice pushes though the bot posts it in the DM."""
+    f = pushing
+    f._relay_notice("A new device asks to reach Tacitus through the relay: \"Pixel\", pairing code "
+                    "123 456. Approve it under Add a device only when the device shows the same code.")
+    assert until(lambda: len(f.sent) == 1)
+    assert f.sent[0][0]["title"] == "Tacitus" and f.sent[0][1] == "normal"
+
+
+def test_the_contexts_do_nothing_where_the_bot_sends_no_pushes():
+    from chat.memory_frontend import MemoryFrontend
+    m = MemoryFrontend()
+    with m.quietly(), m.one_push(lambda n: "x"):
+        pass
+
+
+@needs_push
 def test_a_direct_message_and_its_alert_push_once(pushing):
     f = pushing
     text = ":rotating_light: In 15 minutes: *Tickets*\nLedger `tix`."
@@ -504,7 +603,7 @@ def test_the_switches_turn_the_pushes_off(tmp_path):
         f.post("main", BRIEFING, origin="ea-assistant")
         f.post("main", "Answer.", thread_ts=owner_says(f, "main", "Question?"))
         f.post("r1", "Answer.", thread_ts=owner_says(f, "r1", "Question?"))
-        f.post("dm", "Still pushed: the DM.")
+        f.post("dm", "Still pushed: the DM.", origin="personal")
         assert until(lambda: len(f.sent) == 1)
         time.sleep(0.2)
         assert f.sent[0][0]["body"] == "Still pushed: the DM."
@@ -522,7 +621,7 @@ def test_a_writer_only_copy_sends_before_returning(tmp_path):
         f.store.push_subscribe(FCM, {"p256dh": "made-up", "auth": "made-up"})
         sent: list = []
         f.push.send_all = lambda payload, urgency="normal": sent.append(urgency) or {"sent": 1}
-        f.post("dm", "A note from a command-line sender.")
+        f.post("dm", "A note from a command-line sender.", origin="travel")
         assert sent == ["normal"]                          # no worker: sent in the call
         assert f.push._thread is None
     finally:
@@ -871,7 +970,7 @@ def test_a_settled_card_clears_its_notifications_once(pushing):
     """A card that becomes a status line (the owner pressed Send, or the
     bot retired it) clears the notification its push left, under the
     card's thread's tag. A later change of the status clears nothing, so a
-    message the bot posts in the thread meanwhile keeps its notification."""
+    card the bot posts in the thread meanwhile keeps its notification."""
     f = pushing
     f.push.clear_gap_s = 0                               # the budget has its own test
     ref = f.post_card("dm", card())
@@ -880,7 +979,8 @@ def test_a_settled_card_clears_its_notifications_once(pushing):
     assert f.sent[0][0]["tag"] == tag
     assert f.replace_card_with_status(ref, ":hourglass_flowing_sand: Sending...")
     assert until(lambda: clears(f) == [{"type": "clear", "tag": tag, "title": "Action request"}])
-    f.post("dm", "The send failed: the draft is gone.", thread_ts=ref.thread_key)
+    f.push._last = {k: t - 121 for k, t in f.push._last.items()}   # past the thread's two minutes
+    f.post_card("dm", card(), thread_ts=ref.thread_key)
     assert until(lambda: len(shown(f)) == 2)
     assert f.replace_card_with_status(ref, ":x: Not sent.")
     assert not f.replace_card_with_status(MessageRef("dm", "no-such-card", "no-such-card"), "Sent.")

@@ -116,7 +116,9 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
 
     def post_send(channel, thread_ts, draft_id, email_system="outlook", gmail_email="", what=""):
         calls["send_cards"].append((channel, thread_ts, draft_id, email_system))
-        confirms[draft_id] = dict(confirms.get(draft_id) or {}, status="live")
+        ts = f"s{len(calls['send_cards'])}"
+        confirms[draft_id] = dict(confirms.get(draft_id) or {}, status="live", channel="dm", message_ts=ts)
+        return "dm", ts
 
     class Frontend:
         def post(self, channel="", thread_ts=None, text=""):
@@ -600,6 +602,21 @@ def test_a_draft_whose_send_card_closed_gets_a_new_send_card():
     assert calls["send_cards"] == [("ea", "t-first", "d-old", "gmail")]   # its own conversation
     assert calls["status"][-1] == ("m1", ":lock: The new Send card is in this DM.")
     assert not calls["turns"]
+
+
+def test_a_new_send_card_s_old_card_points_to_it_never_below():
+    """On the web chat the newest card is at the top of Action requests:
+    the old card links to the new one. Slack's DM lists cards in time, so
+    there the new one is below."""
+    for web, line in ((True, ":lock: Its new Send card: <https://chat.example/#/dm/s1/s1|open it>."),
+                      (False, ":lock: The new Send card for this draft is below.")):
+        confirms = {"d-old": {"status": "live", "channel": "dm", "message_ts": "c-old"}}
+        if web:
+            ns, calls, fe, _turns = _web([], confirms=confirms)
+        else:
+            ns, calls = _bot([], confirms=confirms)
+        assert ns["_reply_new_send_card"]("d-old", "dm", None)
+        assert calls["status"] == [("c-old", line)], web
 
 
 def test_a_draft_that_is_gone_is_written_again():
@@ -1187,6 +1204,25 @@ def test_web_a_card_whose_thread_no_longer_waits_says_so():
     assert calls["status"][-1] == ("m1", ":information_source: This thread no longer waits for a reply.")
 
 
+def test_web_a_card_whose_row_moved_to_later_says_when_it_comes_back():
+    """Later on Home snoozes the row; its card in Action requests then says
+    Later and the day, never that the thread no longer waits."""
+    ns, calls, fe, turns, *_ = _setup()
+    ns["_test_queue"].clear()
+    store = {"cards": {"b1-x": {"rows": ["response-lee"], "channel": "dm", "card": "m1"}}}
+    calls["cards"].append(object())
+    ns["_load_reply_cards"] = lambda: store
+    cli = ns["_ledger_cli"]
+    ns["_ledger_cli"] = lambda *a: {"id": "response-lee", "status": "snoozed",
+                                    "snooze_until": "2026-10-16"} if a[0] == "get" else cli(*a)
+    ns["_reply_watch_tick"](10 ** 10)
+    assert calls["status"][-1] == ("m1", ":fast_forward: Later. It comes back on Friday.")
+    assert not any("no longer waits" in t for _m, t in calls["status"])
+    # a turn that ends after the owner moved the row to later says the same
+    ns["_reply_clock"] = lambda: ("2026-10-15", 9, False)
+    assert ns["_reply_gone_line"]("response-lee") == ":fast_forward: Later. It comes back tomorrow."
+
+
 def test_on_the_web_a_draft_that_did_not_start_offers_try_again_with_the_answer_kept():
     """No turn started: the same card again, in place, with Try again and
     the owner's answer. Never "Ask me here"."""
@@ -1255,6 +1291,29 @@ def test_web_each_reply_that_waits_is_its_own_block_with_no_card_to_press_first(
     ns["handle_reply_skip"](_ev(kim.actions[1].value, mid, text="2026-10-20"))
     assert calls["cli"][-1][:7] == ("update", "--id", "response-kim", "--status", "snoozed",
                                     "--snooze-until", "2026-10-20")
+
+
+def test_web_the_day_s_blocks_push_once_with_how_many_replies_wait():
+    """Each reply is its own block, but the morning's blocks notify once:
+    one push that says how many replies wait (ChatFrontend.one_push), the
+    ones whose block was up already counted too."""
+    import contextlib
+    queue = [_q("pat", 12), _q("lee", 8), _q("kim", 3)]
+    ns, calls, fe, _turns = _web(queue)
+    lines, inside = [], []
+
+    @contextlib.contextmanager
+    def one_push(text_for):
+        inside.append(len(calls["cards"]))
+        yield
+        lines.append(text_for(len(calls["cards"]) - inside[-1]))
+    fe.one_push = one_push
+    assert _tick(ns) == 3
+    assert inside == [0] and lines == ["3 replies wait for you."]
+    queue.append(_q("ann", 2))
+    _next_day(ns, queue)
+    assert _tick(ns) == 1                                 # one new block, three still up
+    assert lines[-1] == "4 replies wait for you."
 
 
 def test_web_a_row_with_a_live_block_never_gets_a_second_one():

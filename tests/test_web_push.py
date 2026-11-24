@@ -465,16 +465,18 @@ def test_a_card_and_a_dm_post_are_pushed_once_per_thread(fe, svc):
     got = json.loads(decrypt(req["body"], key, auth))
     assert got["title"] == "Action request" and got["body"] == "Confirm send"
     assert got["url"].endswith(f"#/dm/{c.thread_key}/{c.id}") and got["tag"] == f"dm/{c.thread_key}"
-    # a bot reply in the thread: a message push, which a card push does not hold back
-    fe.post("dm", "Reply *one*", thread_ts=c.thread_key)
+    # the bot's own line in the card's thread asks nothing: no push
+    fe.post("dm", "Writing the reply.", thread_ts=c.thread_key)
+    # a notifier's thread in the DM: a message push, which a card push does not hold back
+    n = fe.post("dm", "Reply *one*", origin="travel")
     req = svc.wait(2)[1]
     assert req["headers"]["urgency"] == "normal"
     assert json.loads(decrypt(req["body"], key, auth))["body"] == "Reply one"
-    fe.post("dm", "Reply two", thread_ts=c.thread_key)     # within 30 s: held back
+    fe.post("dm", "Reply two", thread_ts=n.thread_key)     # within 30 s: held back
     fe.post("main", "Not a DM")                            # not the DM: never pushed
     fe.update_card(c, card(title="Changed"))               # not new: never pushed
     fe.replace_card_with_status(c, "Sent")                 # settled: a clear, never a push
-    fe.post("dm", "Another thread")                        # another thread: pushed
+    fe.post("dm", "Another thread", origin="travel")       # another thread: pushed
     svc.wait(4)
     assert [p[5] for p in pushes] == [{"queued": True}, {"queued": True},
                                       {"sent": 0, "skipped": "rate limit"}, {"queued": True}]
@@ -509,11 +511,13 @@ def test_shadow_mirrors_push_new_cards_and_the_bots_dm_posts(tmp_path):
             (json.loads(payload), urgency)) or {"sent": 1}
         f.mirror_channel("stream:7", "ea-dm", "dm")
         f.mirror_channel("stream:9", "ea", "main")
+        f.mirror_post(MessageRef("stream:7", "1000", "stream:7:topic:hello", 999.0), "Any news?", "owner")
         ref = MessageRef("stream:7", "1001", "stream:7:topic:hello", 1000.0)
-        f.mirror_post(ref, "*hi*")
+        f.mirror_post(ref, "*hi*")                                         # the answer to the owner
         f.mirror_post(ref, "*hi*")                                         # the same row again
         f.mirror_update(ref, "*edited*")
         f.mirror_post(MessageRef("stream:7", "1002", "stream:7:topic:other"), "typed", "owner")
+        f.mirror_post(MessageRef("stream:7", "1005", "stream:7:topic:note"), "A note of the bot's")
         f.mirror_post(MessageRef("stream:9", "1003", "stream:9:topic:x"), "in the EA channel")
         cref = MessageRef("stream:7", "1004", "stream:7:topic:lock", 1001.0)
         f.mirror_card(cref, card())

@@ -671,10 +671,10 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 |---|---|
 | Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. An item kept from hosted models is its fixed words alone (Kept mail, below). A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
 | Letters and other work | one item per work case, kind `letter` for a letter and kind `case` (`case:<id>`, choices `case:*`, `Hooks.case`) for a review, a form or a report, with the same rules in their kind's words (`case_surface.home_left`, the one hook in `left`). For a letter: a new case ("Letter request", its decision card in Action requests as its `href`), a case with no date (its date), and a case whose time came (its lead time before its one date, or overdue); its destinations' rows, threads and cards are not listed on their own. A dated case before its lead time is quiet: not on Home. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's answers with the date in its yes ("Yes, by Tue Dec 1", "Yes, by another date" with `input: "date"`), a case with no date "By Tue Dec 1" and "Another date", a case whose time came Draft the letter (a line of words) and Change the date (`input: "date"`), a ready letter Submitted per destination (the three nearest) and All submitted; then Open it in Action requests; no Done, No reply needed or Later. Its deeper briefing is the briefing on a case (below), for a `case` item as for a letter. A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
-| So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
+| So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today. A draft that waits for Send is not here: it is left for the owner (its Send card is a request under Left for you) until he sends it, so the ring counts it once |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or, while the owner is in a meeting, after the busy stretch (meetings less than 10 minutes apart are one: "You are busy until 1:30. Then you have 50 minutes before your 2:20."), and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
-| Since you last checked in | what changed since the visit before this one: new requests, drafts, rows closed by Tacitus, what the owner finished, conversations with a new answer, the briefing's arrival. A visit is a check-in (`checkin=1`, the app opening Home after 30 minutes away) more than 30 minutes after the last (`VISIT_GAP_S`), on any device |
+| Since you last checked in | what changed since the visit before this one: new requests (a new draft's Send card among them), rows closed by Tacitus, what the owner finished, conversations with a new answer, the briefing's arrival. A visit is a check-in (`checkin=1`, the app opening Home after 30 minutes away) more than 30 minutes after the last (`VISIT_GAP_S`), on any device |
 | Travel and vacation | an all-day vacation or out-of-office block on today's calendar (a vacation); a trip or conference block, travel mode (`quiet_hours`) or a device whose clock is in another zone than home (travel) |
 | The question of the day | the first-week question the morning briefing's data carried today (`onboarding_question`) |
 | The briefing | the text the briefing lane handed to Home today (below) |
@@ -765,8 +765,8 @@ Tacitus does not know, and two or three next steps.
   reach the owner's store, it notes the row's id in the resident's own
   state (`home-briefing-queue.jsonl`, at most 64 KB). The next refresh
   writes the noted rows first, and only when their stored briefing is
-  missing or stale by the ledger's own record. Continue in a conversation
-  opens where Home's own Start does (`home_items._room`), and that answer
+  missing or stale by the ledger's own record. The briefing's Ask
+  opens where Home's own Ask does (`home_items._room`), and that answer
   is final: with rooms off, never a room.
 - *What the card shows.* `GET /api/home/item` gives the stored briefing at
   once (`deeper.state: "ready"`, with `by`: `local` or `hosted`, and `at`),
@@ -809,15 +809,23 @@ Tacitus does not know, and two or three next steps.
 - *A step at the tap.* A step that is one of the item's own choices runs as
   that choice (`home_items`), with its Undo: Tell Tacitus what to say with
   the words, Waiting on someone with the date (else Later), and Done (else
-  No reply needed). A step the item does not offer is not shown. Start, Hold and
-  Continue in a conversation open a conversation in the item's place (its
-  project room, else Ask Tacitus). Its first message is Tacitus's: the
-  item's name on the first line (in plain words, at most 60 characters, cut
-  at a word, as a room's briefing post is named), the briefing, the steps
-  it saw and the item's id. Start and Hold then send the owner's words and
-  the turn starts; Continue leaves the composer to him. A kept item never
-  opens a conversation. Nothing here sends mail, creates an event with
-  people on it or closes a row by itself.
+  No reply needed). A step the item does not offer is not shown, and nor is
+  one that repeats a choice the card has (`home_deeper.offered`, read on
+  what the step runs, never its label): Mark it done beside Done, No reply
+  needed beside No reply needed, Wait until a day beside Later or Waiting
+  on someone (their own day picker gives the day). One button per action
+  on a card. Start (with its words), Hold and Ask open a conversation in
+  the item's place (its project room, else Ask Tacitus). Its first message
+  is Tacitus's: the item's name on the first line (in plain words, at most
+  60 characters, cut at a word, as a room's briefing post is named), the
+  briefing, the steps it saw and the item's id. Start and Hold then send
+  the owner's words and the turn starts; Ask leaves the composer to him.
+  One Ask per card: every Home item that is not kept (a reply, a
+  question, a to-do, a work case) has Ask among its own choices
+  (`home_items`, which opens with this briefing when it is ready), so its
+  steps add none. A kept item never opens a conversation. Nothing here
+  sends mail, creates an event with people on it or closes a row by
+  itself.
 - *Bounds at the tap.*
   - One job per item at a time.
   - Two jobs at once, and four more wait.
@@ -959,7 +967,7 @@ What the post carried, and where it is now:
 | The post carried | Now |
 |---|---|
 | Get done today, Flexes, the calendar line, Quietly handled, Drafts ready, Needs you, the Reply queue line, the counts | Home's lists, built from the same data, and the text itself under "This morning's briefing" |
-| A reply under the post about an item | Ask about this on the item (or Ask about it on the briefing): a new conversation in Ask Tacitus that starts with the item's words, which the next briefing reads among the owner's messages |
+| A reply under the post about an item | Ask on the item (or Ask about it on the briefing): a new conversation about the item, which the next briefing reads among the owner's messages |
 | The question of the day (`:seedling:`) | Home's question card, Answer it (a new conversation with the question named); now on the remote lane too |
 | The push "Your morning briefing is ready" | "Your morning is ready", opening Home |
 | Send cards, the Send-all card, Looks done?, the Replies card, hand-offs, timed alerts, room slices | unchanged: their own cards and posts (Action requests, rooms) |
@@ -996,7 +1004,7 @@ the rows closed today, each request by the rows and thread its card
 names, and each item of the post's own list (which keeps the post's
 level and its fixed line, never the item's title or sender). A kept item
 carries no other words: no name, no project, no line of the post, and no
-Ask about this; a request keeps its block in Action requests, and So far
+Ask; a request keeps its block in Action requests, and So far
 today names a kept row "A kept message". When the keep check cannot run,
 every item from mail reads `local`. The folded briefing is the post's own
 text, whose kept lines are already fixed.
@@ -1016,7 +1024,7 @@ a `ref` (its `id`), which these routes take:
 
 | Route | What it does |
 |---|---|
-| `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, row_version, brief, choices, deeper, goto?, ask?, pending?}`; 404 `{ok: false, said}` when Home does not list it now |
+| `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, row_version, brief, choices, deeper, goto?, pending?}`; 404 `{ok: false, said}` when Home does not list it now |
 | `POST /api/home/act` `{ref, choice, arg?, version?}` | one choice: `{ok, said, undo?, undo_until?, goto?, item?}` |
 | `POST /api/home/undo` `{token}` | takes a Done, No reply needed, Waiting or Later back while its window runs |
 | `POST /api/home/deeper` `{ref}` | starts the deeper briefing (`home_deeper.start`) |
@@ -1047,10 +1055,10 @@ it in Action requests), which read nothing of it.
 
 | Kind | Choices | Runs |
 |---|---|---|
-| reply | Draft a reply, Tell Tacitus what to say, Later, No reply needed | Draft it on the Replies card (`_dispatch_reply_draft`; the line is the owner's instruction for this reply alone); its Send card comes to Action requests and `goto` opens the turn's line there |
-| question (a reply's) | its answers, Other answer, Later, No reply needed | the Replies card's answer buttons |
-| question (no reply) | Answer, Later | a new conversation with the owner's answer, sent |
-| item | Start it with Tacitus, Done, Waiting on someone, Later | a new conversation in Ask Tacitus (the row's project room when it has one) that opens with the owner's message naming the item, sent |
+| reply | Draft a reply, Tell Tacitus what to say, Later, No reply needed, Ask | Draft it on the Replies card (`_dispatch_reply_draft`; the line is the owner's instruction for this reply alone); its Send card comes to Action requests and `goto` opens the turn's line there. Ask as on an item |
+| question (a reply's) | its answers, Other answer, Later, No reply needed, Ask | the Replies card's answer buttons; Ask as on an item, a quiet button under them |
+| question (no reply) | Answer, Later, Ask | a new conversation with the owner's answer, sent; Ask as on an item |
+| item | Ask, Done, Waiting on someone, Later | Ask: a new conversation in Ask Tacitus (the row's project room when it has one) that opens with Tacitus's message about the item (the deeper briefing when it is ready, else the quick briefing) and waits for the owner's words; nothing runs until he writes |
 | request | Open it in Action requests | nothing: Send and Create stay there |
 | closed today | Not done yet | the web chat's Needs me (reopen) |
 
@@ -1110,8 +1118,8 @@ is a link to `goto`; a question with answers draws them with the decision
 control of Action requests); the line or the days a choice asks for (Tell
 Tacitus what to say: one line and Draft it; Later: its `options`, Pick a
 date the day control of Action requests within `min` and `max`; a choice
-with `input: "date"` the same control at its `proposed` day); the bot's line; and Ask about
-this (`ask`). The page asks for the deeper briefing (`POST
+with `input: "date"` the same control at its `proposed` day); and the
+bot's line. The page asks for the deeper briefing (`POST
 /api/home/deeper`) only on an open, and only when the item says `none`,
 `failed` or `stale`; meanwhile the card shows "Reading the messages..."
 (under the old text of a stale one, with no steps) and reads the item
@@ -1308,10 +1316,31 @@ and what the place does changed.
   its answers, the owner's earlier word) or its age did, and a could-not
   card keeps its reason until its row changes. At most ten wait at once
   (`REPLY_CARD_MAX`); the rest come on a later day. A row whose reply is
-  being written gets none. A Replies card from before ("4 replies wait
-  for you", One by one) gives way at the next tick, and a press on one
-  posts its rows' cards the same way. Slack keeps its daily Replies card
-  and One by one.
+  being written gets none. The day's new blocks notify once
+  (`one_push`): "N replies wait for you.", never a push per block. A
+  block whose row the owner moved to later elsewhere (Later on Home) says
+  "Later. It comes back on Friday." when it gives way, never that the
+  thread no longer waits (`_reply_gone_line`). A Replies card from before
+  ("4 replies wait for you", One by one) gives way at the next tick, and a
+  press on one posts its rows' cards the same way. Slack keeps its daily
+  Replies card and One by one.
+- **The place pressed shows the result.** A Send, Schedule or Create card
+  turns into its status line ("Sent.", with the rows it closed). The
+  conversation that asked for the card gets that line once more, with no
+  push (`_post_result`); a conversation in Action requests (a reply turn's
+  thread) and a draft from no conversation get none: the card says it. A
+  revised draft's new Send card goes up first, and the old card's line
+  links to it ("Revised. Its new Send card: open it."), never "below":
+  the list shows the newest first. Slack keeps "below", where it is true.
+- **One pointer, from the bot.** The bot posts one line in the asking
+  conversation that points to the card (":lock: The Send button for this
+  draft is in Action requests: open it"). The model's prompts tell it
+  never to say where the card is, and the bot takes such a clause out of
+  its reply before posting (`style_guard.strip_card_pointers`: "The Send
+  button is on the card in Action requests."). A reply turn's own lines in
+  Action requests name no script or mail verb and no full draft id
+  (`style_guard.plain_turn_text`): "`create-reply` created the draft.
+  Draft ID: ..." reads "Created the draft."
 - **The same two quiet choices on every reply.** Each reply card ends
   with Later and No reply needed, the words and the order of a reply on
   Home. Later takes a day (`CardAction.date`, tomorrow to a year on, as
@@ -1452,7 +1481,8 @@ and what the place does changed.
   requests: open it"), the scheduler's and the briefing's lines, the
   Replies card's own lines ("this DM" on Slack), the inbox scan's footer,
   and the install overlay, which tells the model to say Action requests where its
-  guides say the user's DM. The pointer reading (`thread_state.POINTER_RE`)
+  guides say the user's DM, and never to say itself where a card is (the
+  pointer does). The pointer reading (`thread_state.POINTER_RE`)
   takes both names, and what the store held before.
 - **Opening place.** The app opens on Home (a bot from before it: on Ask
   Tacitus); a link or the address names any other place.
@@ -1517,7 +1547,8 @@ it; capabilities `{"buttons", "select", "files", "private_rooms", "reactions"}`;
 `card_fits` always true (limits generous: `Limits(20000, 20000, 200, 0)`).
 `prompt_strings()` returns web wording (platform "the Tacitus web chat",
 format rule markdown, confirm location "the Send button is on the card in
-your DM thread"). `llm_tool_grants()` returns "".
+Action requests", which the model never writes itself: the bot's pointer
+says it). `llm_tool_grants()` returns "".
 
 Mirror entry points for shadow mode, all idempotent on `(channel, id)`:
 `mirror_channel(id, name, kind, archived)`, `mirror_post(ref, text, author)`,
@@ -2339,8 +2370,9 @@ their own:
 
 | What | Push | Urgency | Quiet hours | Switch |
 |---|---|---|---|---|
-| A new card (`post_card`, `mirror_card` for a new row) | "Action request" and the card's title | high | at once | none |
-| A bot message in a `dm` channel | "Tacitus" and the first line | high for a direct message (`send_direct`, origin `personal`), else normal | at once | none |
+| A new card that waits for a press (`post_card`, `mirror_card` for a new row) | "Action request" and the card's title | high | at once | none |
+| The day's new reply blocks (`_reply_blocks_up`, inside `one_push`) | one push: "Action requests" and "N replies wait for you." (N counts the blocks up already too), opening the newest block under its thread's tag; one block alone is its own card push | high | at once | none |
+| A bot message in a `dm` thread a notifier opened (`thread_origin`: a direct message, a key `web.notify` routes to the DM, the relay's notice of a new device or a handoff, origin `relay`), or the answer in a DM thread the owner wrote in (once per turn) | "Tacitus" and the first line | high for a direct message (`send_direct`, origin `personal`), else normal | at once | none |
 | The opening of a morning briefing or an afternoon update in the EA channel: a thread a notifier opened (`thread_origin`), the owner never wrote in, whose first three lines carry the title (Home off, or Home not running) | "Your morning briefing is ready" or "Afternoon update", no body | normal | waits | `briefings` |
 | A morning briefing or an afternoon update handed to Home (`chat_notify`, Home) | "Your morning is ready" and "Tap to see your day.", or "Your afternoon update is ready" and "Tap to see what is left today."; tag `home`, opening `#/home` | normal | waits | `briefings` |
 | The bot's answer in a conversation the owner wrote in, outside the DM and rooms (the EA and scheduling channels): the owner's newest message there is newer than the bot's previous answer (a message, a file or a card), and no card that conversation asked for in another one (the DM; the `card_link` table) was posted in the two minutes before (`CARD_QUIETS_S`: the card's push covers both) | "Tacitus replied" and the first line | normal | waits | `replies` |
@@ -2348,7 +2380,14 @@ their own:
 | A loud alert: `chat.direct.web_notify` (alert.py, next to the direct message; page_watch.py; the weekly usage tip at normal) | "Tacitus" and the first line | high | at once (a scheduled alert waits for its moment) | none |
 
 The switches are the owner's, in the app's Settings (Notifications) or
-the `notify_push` block (Config). Never pushed: a digest (a channel of
+the `notify_push` block (Config). A push goes out only when something
+first needs the owner. Never pushed: a note of something already done (a
+card with `undo`: the auto-close note "Closed: ..." with Reopen), the
+bot's own lines in Action requests (a reply turn's progress and result
+lines, a result its card already shows, the notice of dates set for
+letters, the Edit pointer; what needs the owner there is a card, which
+pushes), a line posted inside `quietly()` (the result of a press, in the
+conversation that asked for the card), a digest (a channel of
 kind `digest`), a notice in a thread
 the owner never wrote in (outside the DM), the "Still need this?" nudge,
 a progress line (`:hourglass_flowing_sand:` or `:hourglass:` first, the

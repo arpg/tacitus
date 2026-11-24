@@ -373,16 +373,22 @@ def test_a_step_runs_as_the_items_own_choice_or_not_at_all(env):
     D.start(fe, ITEM["ref"], ITEM, row=make_row())
     st = D.state(fe, ITEM["ref"], ITEM, row=make_row())
     assert st["state"] == "ready" and st["model"] == "Your own model"
+    # No reply needed and Wait until a day run the card's own No reply
+    # needed and Later with nothing of their own: one button each, the card's
     assert st["steps"] == [{"id": "s1", "label": "Draft a reply: The rover can go out for the field week."},
-                           {"id": "s2", "label": "No reply needed"},
-                           {"id": "s3", "label": "Wait until Fri, Nov 27"},
-                           {"id": "continue", "label": "Continue in a conversation"}]
+                           {"id": "continue", "label": "Ask"}]
     for s in st["steps"]:
         plain(s["label"])
     assert D.step(fe, ITEM["ref"], "s1", ITEM, row=make_row()) == {
         "choice": "say", "arg": "The rover can go out for the field week."}
-    assert D.step(fe, ITEM["ref"], "s2", ITEM, row=make_row()) == {"choice": "not_needed", "arg": None}
-    assert D.step(fe, ITEM["ref"], "s3", ITEM, row=make_row()) == {"choice": "later", "arg": "2026-11-27"}
+    for hidden in ("s2", "s3"):
+        assert D.step(fe, ITEM["ref"], hidden, ITEM, row=make_row()) == {"ok": False, "said": D.NOTE_STEP_GONE}
+    # where the card lacks the choice, the step is the only way to it
+    later_only = dict(ITEM, choices=[{"id": "draft"}, {"id": "later"}])
+    assert [s["label"] for s in D.state(fe, ITEM["ref"], later_only, row=make_row())["steps"]] == [
+        "Draft a reply: The rover can go out for the field week.", "Ask"]
+    no_later = dict(ITEM, choices=[{"id": "draft"}, {"id": "not_needed"}, {"id": "waiting"}])
+    assert D.step(fe, ITEM["ref"], "s3", no_later, row=make_row()) == {"ok": False, "said": D.NOTE_STEP_GONE}
     # an item that offers no reply words (a decision's own buttons) has no draft step
     bare = dict(ITEM, choices=[{"id": "answer:1"}, {"id": "answer"}])
     assert [s["id"] for s in D.state(fe, ITEM["ref"], bare, row=make_row())["steps"]] == ["continue"]
@@ -648,20 +654,27 @@ def test_every_line_the_owner_reads_is_plain():
 def test_a_step_names_the_items_own_choice_for_home_items_to_run(env):
     """home_items runs {"choice", "arg"} as that tap (its Undo, its ledger
     verb); a step with words prefers Tell Tacitus what to say, a date
-    prefers Waiting on someone, which takes the day."""
+    prefers Waiting on someone, which takes the day. A to-do's card already
+    has Done, Waiting on someone, Later and its own Ask: its deeper steps
+    repeat none of them and add no second Ask."""
     fe = env["fe"]
     todo = dict(ITEM, ref="item:task-t3", kind="item",
                 choices=[{"id": "start"}, {"id": "done"}, {"id": "waiting"}, {"id": "later"}])
     row = make_row(id="task-t3", type="task")
     env["replies"]["local"] = answer(steps=[
         {"kind": "wait_until", "say": "", "question": "", "date": "2026-11-27", "minutes": 0, "ask": "", "why": ""},
-        {"kind": "mark_done", "say": "", "question": "", "date": "", "minutes": 0, "ask": "", "why": ""}])
+        {"kind": "mark_done", "say": "", "question": "", "date": "", "minutes": 0, "ask": "", "why": ""},
+        {"kind": "hold_slot", "say": "", "question": "", "date": "2026-11-30", "minutes": 45, "ask": "",
+         "why": ""}])
     assert D.start(fe, todo["ref"], todo, row=row)["state"] == "ready"
     st = D.state(fe, todo["ref"], todo, row=row)
-    assert [s["label"] for s in st["steps"]] == ["Wait until Fri, Nov 27", "Mark it done",
-                                                 "Continue in a conversation"]
-    assert D.step(fe, todo["ref"], "s1", todo, row=row, arg="") == {"choice": "waiting", "arg": "2026-11-27"}
-    assert D.step(fe, todo["ref"], "s2", todo, row=row, arg="") == {"choice": "done", "arg": None}
+    assert [s["label"] for s in st["steps"]] == ["Hold 45 minutes on Mon, Nov 30", "Ask"]  # home_items drops this Ask
+    # a card without those choices offers the steps, and they run as the choice
+    bare = dict(todo, choices=[{"id": "waiting"}, {"id": "done"}])
+    assert D.runs("wait_until", {"date": "2026-11-27"}, "waiting") == ("waiting", "2026-11-27")
+    assert D.runs("mark_done", {}, "done") == ("done", None)
+    assert [s["kind"] for s in D.offered([{"id": "s1", "kind": "wait_until", "params": {"date": "2026-11-27"}}],
+                                         dict(bare, choices=[{"id": "start"}]))] == []
     # an item that offers Draft a reply alone still takes the words
     draft_only = dict(ITEM, choices=[{"id": "draft"}])
     env["replies"]["local"] = answer()
@@ -737,7 +750,7 @@ def test_a_kept_row_is_written_on_the_owners_own_model_alone_at_ingest(env):
 def test_the_card_adds_the_moments_lines_in_code_and_drops_a_step_whose_day_passed(env):
     fe = env["fe"]
     env["replies"]["local"] = answer(steps=[
-        {"kind": "wait_until", "say": "", "question": "", "date": "2026-11-24", "minutes": 0, "ask": "", "why": ""},
+        {"kind": "hold_slot", "say": "", "question": "", "date": "2026-11-24", "minutes": 30, "ask": "", "why": ""},
         {"kind": "mark_done", "say": "", "question": "", "date": "", "minutes": 0, "ask": "", "why": ""}])
     todo = dict(ITEM, choices=[{"id": "later"}, {"id": "not_needed"}])
     D.start(fe, ITEM["ref"], todo, row=make_row())
@@ -748,10 +761,10 @@ def test_the_card_adds_the_moments_lines_in_code_and_drops_a_step_whose_day_pass
         plain(line)
     assert st["text"].startswith("Now\n- They wrote 4 days ago and wait for your answer.\n"
                                  "- It is due Friday, December 4.\n\nWhat happened")
-    assert [s["label"] for s in st["steps"]][:2] == ["Wait until Tue, Nov 24", "No reply needed"]
+    assert [s["label"] for s in st["steps"]] == ["Hold 30 minutes on Tue, Nov 24", "Ask"]
     fe._home_deeper.clock = lambda: NOW + 3 * 86400  # Nov 25: the wait's day passed
     st = D.state(fe, ITEM["ref"], todo, row=make_row())
-    assert [s["label"] for s in st["steps"]] == ["No reply needed", "Continue in a conversation"]
+    assert [s["label"] for s in st["steps"]] == ["Ask"]
     assert "They wrote 7 days ago" in st["text"]
 
 

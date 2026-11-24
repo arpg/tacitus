@@ -121,6 +121,77 @@ def test_style_rules_still_ban_em_dashes():
     assert "style_profiles.py" in STYLE_RULES and "--contact" in STYLE_RULES
 
 
+# ── where a card's button is: said once, by the bot's pointer ─────────
+
+DRAFT_ID = "AAMkAGZmYWtlLWlkLWZvci10aGUtdGVzdHMtb25seQBGAAAAAAB="
+
+
+def test_the_reply_drops_its_own_sentence_about_where_the_send_button_is():
+    from style_guard import strip_card_pointers as strip
+    for text, want in [
+        (":email: Draft created to Pat re: Budget.\nThe Send button is on the card in Action requests.",
+         ":email: Draft created to Pat re: Budget."),
+        ("Both drafts are ready. The **Send** and **Create** buttons are on the cards in **Action requests**.",
+         "Both drafts are ready."),
+        ("Each Send button is on its card in Action requests.\n\nDone.", "Done."),
+        ("I drafted the reply; the Send button is in your DM.", "I drafted the reply."),
+        ("Accepted Tuesday 3 PM, and the Create and Send buttons are in Sam's DM.", "Accepted Tuesday 3 PM."),
+        (":email: I made a reply draft to Pat. The Send button is in Action requests. It offers Tuesday.",
+         ":email: I made a reply draft to Pat. It offers Tuesday."),
+    ]:
+        assert strip(text)[0] == want, text
+    # a sentence with words of its own about the card stays, and so does code
+    for text in ("The card in Action requests shows the old body, so I revised it.",
+                 "I kept the draft (the Send button is in Action requests) as it was.",
+                 "Use `The Send button is in Action requests.` as the test line.",
+                 "Nothing to send today."):
+        assert strip(text) == (text, 0), text
+
+
+def test_a_turn_line_in_action_requests_names_no_tool_and_no_full_id():
+    from style_guard import plain_turn_text as plain_text
+    for text, want in [
+        (f":email: `create-reply` created the reply-all draft with two questions. Draft ID: `{DRAFT_ID}`",
+         ":email: Created the reply-all draft with two questions."),
+        (f":email: Draft created to Pat, ID `{DRAFT_ID}`.", ":email: Draft created to Pat."),
+        ("Recorded the answer with `ledger.py note-reply`. No draft created.",
+         "Recorded the answer. No draft created."),
+        ("1. :email: `update-draft` added the second date.\n2. `mail_actions.py ask` read the forward: no request.",
+         "1. :email: Added the second date.\n2. Read the forward: no request."),
+        (f"Done (id `{DRAFT_ID}`).\n\nDraft ID: `{DRAFT_ID}`", "Done."),
+    ]:
+        assert plain_text(text)[0] == want, text
+    for text in ("Run `ledger.py list` to see the rows.", "Nothing to change.", "Created draft `m3` to Lee."):
+        assert plain_text(text) == (text, 0), text
+
+
+def test_the_bot_scrubs_each_turn_reply_and_keeps_its_words_for_the_promise_check():
+    if str(HERE.parent) not in sys.path:  # the bot imports preprocessor.style_guard
+        sys.path.insert(0, str(HERE.parent))
+    ns = {"log": type("L", (), {"info": staticmethod(lambda *a: None),
+                                "warning": staticmethod(lambda *a: None)})}
+
+    class FE:
+        dm_takes_text = False
+
+        def is_dm(self, channel):
+            return channel == "dm"
+    ns["FRONTEND"] = FE()
+    ns["_reply_taps_only"] = lambda: ns["FRONTEND"].dm_takes_text is False
+    start = BOT_SRC.index("def _scrub_turn_reply(")
+    exec(BOT_SRC[start:BOT_SRC.index("\ndef ", start + 1)], ns)
+    scrub = ns["_scrub_turn_reply"]
+    said = f"`create-reply` created the draft. Draft ID: `{DRAFT_ID}`\nThe Send button is on the card in Action requests."
+    assert scrub("dm", said) == "Created the draft."
+    assert scrub("main", said) == f"`create-reply` created the draft. Draft ID: `{DRAFT_ID}`"
+    ns["FRONTEND"].dm_takes_text = True                  # Slack's DM: no tool scrub
+    assert scrub("dm", said) == f"`create-reply` created the draft. Draft ID: `{DRAFT_ID}`"
+    assert scrub("main", "The Send button is in your DM.") == "The Send button is in your DM."  # never empty
+    block = BOT_SRC[BOT_SRC.index("def handle_message_async"):]
+    assert "said_before_scrub = response\n        response = _scrub_turn_reply(channel, response)" in block
+    assert '_warn_if_button_promised(channel, thread_ts, said_before_scrub, "mono")' in block
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0

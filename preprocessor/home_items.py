@@ -22,15 +22,14 @@ type and state, never from a guess at the facts.
 The choices, by kind:
 
   reply      Draft a reply, Tell Tacitus what to say, Later, No reply
-             needed
-  item       Start it with Tacitus, Done, Waiting on someone, Later
+             needed, Ask
+  item       Ask, Done, Waiting on someone, Later
   question   the answers an earlier run offered (the Replies card's
-             buttons), Other answer, Later, No reply needed; a question
-             with no reply behind it: Answer, Later
+             buttons), Other answer, Later, No reply needed, Ask; a
+             question with no reply behind it: Answer, Later, Ask
   request    Open it in Action requests (Send and Create stay there)
   closed     Not done yet (a row closed today)
-  drafted, answered
-             Open it in Action requests
+  answered   Open it in Action requests
   kept       Open in Outlook (a kept request: Open it in Action requests)
 
 What each choice runs is the machinery that already does it:
@@ -56,10 +55,17 @@ What each choice runs is the machinery that already does it:
   Later      ledger.py update --status snoozed --snooze-until <day>, as
              the Replies card's Later
   Waiting    ledger.py update --status waiting --follow-up-after <day>
-  Start it with Tacitus, an answer to a question with no reply behind it
+  Ask
       a new conversation in Ask Tacitus (or the row's project room) that
-      starts with the owner's message naming the item, sent at once, as
-      if he typed it (WebFrontend.web_message)
+      opens with Tacitus's message about the item: the deeper briefing
+      when it is ready (the conversation of the briefing's own Ask step,
+      which the card then leaves out), else the quick briefing. The owner
+      writes next; nothing runs until he does. A work case has it too,
+      after its own answers; a kept item has none.
+  an answer to a question with no reply behind it
+      a new conversation in Ask Tacitus (or the row's project room) that
+      starts with the owner's message naming the item and his answer,
+      sent at once, as if he typed it (WebFrontend.web_message)
   Not done yet
       the web chat's Needs me on a closed row (run_writeback's reopen)
 
@@ -140,7 +146,10 @@ STORE_FILE = "webchat.sqlite"
 DRAFT = {"id": "draft", "label": "Draft a reply", "style": "primary"}
 SAY = {"id": "say", "label": "Tell Tacitus what to say", "input": "text"}
 NOT_NEEDED = {"id": "not_needed", "label": "No reply needed"}
-START = {"id": "start", "label": "Start it with Tacitus", "style": "primary"}
+# Ask: the item's one conversation opener (a to-do's first choice; a
+# reply's and a question's last, quiet).
+ASK = {"id": "start", "label": "Ask"}
+START = dict(ASK, style="primary")
 DONE = {"id": "done", "label": "Done"}
 WAITING = {"id": "waiting", "label": "Waiting on someone"}
 OPEN = {"id": "open", "label": "Open it in Action requests", "style": "primary"}
@@ -256,7 +265,7 @@ def find(src, ref: str) -> Found | None:
     # the reply-queue entry of the row (a reply, its question, or an item of
     # the post's list whose row owes a reply)
     reply = next((r for r in src.replies or [] if isinstance(r, dict) and lid and r.get("id") == lid),
-                 None) if kind not in ("request", "closed", "drafted", "answered") else None
+                 None) if kind not in ("request", "closed", "answered") else None
     view = next((it for v in hs.views(src) for it in v.get("items") or []
                  if (lid and it.get("ledger_id") == lid) or (not lid and conv and it.get("conversation_id") == conv)),
                 None) if str(hit.get("id") or "").startswith("item:") else None
@@ -814,12 +823,11 @@ def brief(f: Found, src) -> dict:
                                        else "") if x]
         out["next"] = _next(f)
         return out
-    if kind in ("closed", "drafted", "answered"):
+    if kind in ("closed", "answered"):
         at = f.item.get("at")
         clock = hs.clock(float(at), src.zone) if at else ""
         by = "You" if f.item.get("by") == "you" else "Tacitus"
         out["what"] = {"closed": f"{by} closed it at {clock}.",
-                       "drafted": f"Tacitus drafted it at {clock}. It waits for your Send.",
                        "answered": f"You answered it at {clock}."}[kind]
         note = _a_step(" ".join(str((f.closed or {}).get("last_action") or "").split()))
         if note and kind == "closed":
@@ -875,30 +883,32 @@ def choices(f: Found, src) -> list[dict]:
     today = _today(src)
     if kind == "request":
         return [dict(OPEN)]
-    if kind in ("drafted", "answered"):
+    if kind == "answered":
         return [dict(OPEN)] if f.item.get("href") else []
     if kind == "closed":
         return [dict(REOPEN)] if f.lid and not f.keep else []
     if kind in CASE_ITEMS:
         # a work case's own answers (case_surface.home_choices): no mail
-        # text in them, so a kept case has them too, in fixed words
+        # text in them, so a kept case has them too, in fixed words; Ask
+        # last, but never on a kept case
         cs, case = _case(f)
-        return cs.home_choices(case, today, f.keep or "full") if case else []
+        got = cs.home_choices(case, today, f.keep or "full") if case else []
+        return got + ([dict(ASK)] if got and not f.keep else [])
     acts = _open_row(f)
     if f.keep:  # keep_gate's line alone: open it in Outlook, or settle it here
         return ([dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []) + \
             ([dict(DONE), later_choice(today)] if acts else [])
     if kind == "reply":
-        return [dict(DRAFT), dict(SAY)] + ([later_choice(today), dict(NOT_NEEDED)] if acts else [])
+        return [dict(DRAFT), dict(SAY)] + ([later_choice(today), dict(NOT_NEEDED)] if acts else []) + [dict(ASK)]
     if kind == "question":
         if _decision(f):
             picks = _picks(f)
             out = [{"id": f"answer:{i + 1}", "label": text} for i, text in enumerate(picks)]
             out.append({"id": "answer", "label": "Other answer" if picks else "Answer", "input": "text",
                         **({} if picks else {"style": "primary"})})
-            return out + ([later_choice(today), dict(NOT_NEEDED)] if acts else [])
+            return out + ([later_choice(today), dict(NOT_NEEDED)] if acts else []) + [dict(ASK)]
         return [{"id": "answer", "label": "Answer", "input": "text", "style": "primary"}] + \
-            ([later_choice(today)] if acts else [])
+            ([later_choice(today)] if acts else []) + [dict(ASK)]
     out = [dict(START)]
     if acts:
         waits = _ledger().is_waiting(f.row or {})
@@ -936,8 +946,6 @@ def shape(f: Found, src, *, fe=None, pending: dict | None = None) -> dict:
     goto = _goto(f)
     if goto:
         out["goto"] = goto
-    if x.get("ask") and not f.keep:
-        out["ask"] = x["ask"]
     if pending:
         out["choices"] = []
         out["pending"] = {"said": pending.get("said") or "", "undo": pending.get("token") or "",
@@ -945,6 +953,11 @@ def shape(f: Found, src, *, fe=None, pending: dict | None = None) -> dict:
         out["deeper"] = {"state": "none"}
         return out
     out["deeper"] = deeper_state(fe, f, out)
+    # One Ask per card: the item's own choice opens the conversation the
+    # deeper briefing's Ask would (with that briefing, when it is ready).
+    steps = out["deeper"].get("steps")
+    if isinstance(steps, list) and any(c.get("id") == ASK["id"] for c in out["choices"]):
+        out["deeper"]["steps"] = [st for st in steps if not (isinstance(st, dict) and st.get("id") == "continue")]
     return out
 
 
@@ -1159,15 +1172,23 @@ def _project_of(lid: str, conv: str) -> str:
     return ""
 
 
-def start_text(f: Found, b: dict, words: str = "") -> str:
-    """The owner's message that opens a conversation about the item: what it
-    is, then the ledger item it names. `words`: his answer to its question."""
+def ask_text(f: Found, b: dict) -> str:
+    """Tacitus's first message in the conversation Ask opens with no deeper
+    briefing: the item's name (it titles the thread), the quick briefing,
+    and the ledger item or the case it names; the owner writes next."""
     title = _plain(f.item.get("title"), 200)
-    if words:
-        lines = [f'My answer to "{title}": {words}']
-    else:
-        lines = [f"Let's start this: {title}"]
-        lines += [x for x in (b.get("what"), b.get("asked"), b.get("due")) if x]
+    lines = [f"*{title or 'An item from Home'}*"]
+    lines += [x for x in (b.get("what"), b.get("asked"), b.get("due")) if x]
+    case = str(f.item.get("_case") or "")
+    named = f" (item {f.lid})" if f.lid else f" (case {case})" if case else ""
+    lines += ["", f"From Home{named}. Write here what to do next."]
+    return "\n".join(lines)
+
+
+def answer_text(f: Found, words: str) -> str:
+    """The owner's message that opens a conversation with his answer to the
+    item's question, then the ledger item it names."""
+    lines = [f'My answer to "{_plain(f.item.get("title"), 200)}": {words}']
     if f.lid:
         lines.append(f"(item `{f.lid}`)")
     return "\n".join(lines)
@@ -1317,11 +1338,13 @@ class Acts:
                 out["goto"] = route
             log.info("home: %s on %s: %s", choice, f.lid, "started" if out["ok"] else "refused")
             return out, None
-        if choice in ("start", "answer"):
-            if choice == "answer" and not words:
+        if choice == "start":
+            return self._ask(f, it), None
+        if choice == "answer":
+            if not words:
                 return {"ok": False, "said": "Write your answer first."}, None
             channel = _room(fe, f)
-            text = start_text(f, it["brief"], words if choice == "answer" else "")
+            text = answer_text(f, words)
             try:
                 row, after = fe.web_message(channel, text, None, None)
             except Exception as e:
@@ -1332,6 +1355,28 @@ class Acts:
             log.info("home: %s opened a conversation for %s", choice, f.lid or f.item.get("id"))
             return {"ok": True, "said": "Opened a conversation with Tacitus about it.", "goto": route}, after
         return {"ok": False, "said": NO_CHOICE}, None
+
+    def _ask(self, f: Found, it: dict) -> dict:
+        """Ask: the item's conversation opens with Tacitus's first message
+        and waits for the owner's words. A ready deeper briefing seeds it
+        (home_deeper's own Ask); else the quick briefing does."""
+        fe = self.home.fe
+        d = it.get("deeper") or {}
+        if d.get("state") == "ready" and not d.get("stale") and not f.keep:
+            got = deeper_step(fe, f, it, "continue", "")
+            if got.get("ok"):
+                return {k: v for k, v in got.items() if k in ("ok", "said", "goto")}
+        channel = _room(fe, f)
+        try:
+            ref = fe.post(channel, ask_text(f, it["brief"]))
+        except Exception as e:
+            log.warning("home: Ask did not open a conversation: %s", e)
+            return {"ok": False, "said": "Tacitus did not take it. Try again in a moment."}
+        key = getattr(ref, "thread_key", None) or getattr(ref, "id", "")
+        log.info("home: Ask opened a conversation for %s", f.lid or f.item.get("id"))
+        return {"ok": True, "said": "Opened a conversation about it. Write what you need.",
+                "goto": f"#/{quote(str(getattr(ref, 'channel', '') or channel), safe='')}/"
+                        f"{quote(str(key), safe='')}"}
 
     def _defer(self, f: Found, src, it: dict, choice: str, arg: str) -> dict:
         today = _today(src)

@@ -116,7 +116,8 @@ and quoting do not apply to you. `booking_link.py propose` is the tool
 
 - Do not send anything. Drafts and staged events are approved by
   buttons the user clicks. When you draft or stage something, say so in
-  one line ("the Send button is in your DM"); never paste the body.
+  one line ("I drafted the reply."); the bot points to the button
+  itself, so never say where it is. Never paste the body.
 - Do not fill a poll: `fill-poll` is refused until the user approves.
   Say which slots you would mark and ask.
 - Do not decline a meeting on the user's behalf. Propose, or ask.

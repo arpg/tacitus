@@ -589,6 +589,8 @@ def _click_ns(current_fp: str, send_status: str = "sent", body: str = "b"):
         "_send_error_is_missing": lambda e: False,
     }
     _exec_cards(ns)
+    exec(compile(_bot_block("def _quietly(", "\ndef _propose_ledger_row("),
+                 "ea-chat-bot.py[result]", "exec"), ns)
     exec(compile(_bot_block("_CHANGED_DRAFT_NOTE = (", "\n# Deferred sends"),
                  "ea-chat-bot.py[send]", "exec"), ns)
     return ns, rec, calls, fake_run

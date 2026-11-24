@@ -390,3 +390,47 @@ def test_a_link_to_a_request_opens_its_block_in_place(app):
     expect(opened.locator(".req-head")).to_have_attribute("aria-expanded", "true")
     expect(opened.locator(".card button:has-text('Send')")).to_be_visible()
     assert not errors, errors
+
+
+def test_a_revised_draft_s_old_card_links_to_its_new_one_never_below(app):
+    """The list shows the newest request first, so a revised draft's old
+    Send card does not say its new one is below: its line (the bot's
+    _replaced_card_line) links to it, and the link's place opens that
+    block, with its Send."""
+    from playwright.sync_api import expect
+    import webui_stub_server as W
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    old = _request(stub, "Send this reply?", fields=[{"label": "Subject", "value": "Re: Budget"}])
+    page.evaluate("location.hash = '#/stream%3A7'")
+    new = _request(stub, "Send this reply?", fields=[{"label": "Subject", "value": "Re: Budget, shorter"}])
+    stub.change(old, "status", kind="status", text=":pencil2: Revised. Its new Send card: "
+                f"<http://127.0.0.1/chat/#/{W.DM.replace(':', '%3A')}/{new['thread_key']}/{new['id']}|open it>.")
+    page.click("#earlier-toggle")
+    line = page.locator(f'.req[data-id="{old["id"]}"]')
+    expect(line).to_contain_text("Revised. Its new Send card: open it")
+    assert "below" not in line.inner_text()
+    line.locator(".req-head").click()
+    href = line.locator(".card.status a").get_attribute("href")
+    assert href.endswith(f"#/{W.DM.replace(':', '%3A')}/{new['thread_key']}/{new['id']}")
+    page.evaluate("(h) => { location.hash = h; }", "#" + href.split("#", 1)[1])  # where the link leads
+    opened = page.locator(f'.req.open[data-id="{new["id"]}"]')
+    expect(opened.locator(".card button:has-text('Send')")).to_be_visible()
+    assert not errors, errors
+
+
+def test_a_reply_moved_to_later_elsewhere_says_when_it_comes_back(app):
+    """Later on Home snoozes the reply; its block in Action requests gives
+    way with Later's own words and day (the bot's _reply_gone_line), never
+    "This thread no longer waits for a reply."."""
+    from playwright.sync_api import expect
+    page, stub, errors = app()
+    page.wait_for_selector(".thread-item")
+    m = _decision(stub)
+    page.evaluate("location.hash = '#/stream%3A7'")
+    stub.change(m, "status", kind="status", text=":fast_forward: Later. It comes back on Friday.")
+    page.click("#earlier-toggle")
+    line = page.locator(f'.req[data-id="{m["id"]}"]')
+    expect(line).to_contain_text("Later. It comes back on Friday.")
+    assert "no longer waits" not in page.locator("#thread-list").inner_text()
+    assert not errors, errors

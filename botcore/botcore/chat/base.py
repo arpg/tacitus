@@ -222,6 +222,22 @@ class ChatFrontend(ABC):
         import contextlib
         return contextlib.nullcontext()
 
+    def quietly(self):
+        """A context in which this thread's posts and cards notify no
+        device, where the bot sends the notifications itself (the web
+        chat's pushes): a line that repeats what the owner pressed a moment
+        ago. Elsewhere nothing."""
+        import contextlib
+        return contextlib.nullcontext()
+
+    def one_push(self, text_for):
+        """A context in which the new cards this thread posts notify once,
+        at its end, where the bot sends the notifications itself (the web
+        chat): one card its own; more, one notification whose line is
+        `text_for(n)`, n the cards. Elsewhere nothing."""
+        import contextlib
+        return contextlib.nullcontext()
+
     def __init__(self) -> None:
         self.registry = HandlerRegistry()
 

@@ -753,7 +753,7 @@ def test_home_opens_a_case_item_and_its_choice_runs_the_case_hook(monkeypatch, t
     it = I.item(src, "case:rv-1")
     assert it["kind"] == "case" and it["label"] == "Review"
     assert it["brief"]["what"] == "Paper review for Pat Lee."
-    assert [c["id"] for c in it["choices"]] == ["case:draft", "case:date_pick", "open"]
+    assert [c["id"] for c in it["choices"]] == ["case:draft", "case:date_pick", "open", "start"]
     # the briefing on a case (case_briefing), as a letter gets it; with no
     # store to read, from the case itself and kept (no name, no part)
     assert it["deeper"]["state"] == "ready" and "The reports\n- Report 1: due " in it["deeper"]["text"]

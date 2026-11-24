@@ -166,7 +166,13 @@ frontend resolves every click through `SlackFrontend._resolve_card`,
 which maps a click arriving on an unfurl (`attachments[].is_msg_unfurl`)
 back to the channel and ts of the block it shows, so the `ActionEvent`
 each handler and the stale guard receive names the real card, and
-pointers posted before the change still resolve correctly.
+pointers posted before the change still resolve correctly. The pointer
+is the one place that says where the block is: the prompts tell the
+model never to say it, and the bot takes such a clause out of a turn's
+reply before posting it (`style_guard.strip_card_pointers`). The result
+of a press shows on the block itself; the conversation that asked for it
+gets the line once more, with no web push (`_post_result`), and a request
+made in the DM gets none there.
 
 A click reaches the bot as an interaction payload on its own Socket
 Mode websocket, opened with the app-level token; the bot verifies no
@@ -624,7 +630,8 @@ web chat has no card to press first: the tick posts each thread as its own
 card at the top of Action requests (`_reply_blocks_up`), oldest first, at
 most ten live at once, and never a second card for a row whose card is
 still live (that card is drawn again in place, with no push, when what it
-shows changed: `_reply_sig`).
+shows changed: `_reply_sig`). The new cards push once, with how many
+replies wait (`ChatFrontend.one_push`).
 "Draft it" starts a turn there that writes the reply for that one row; for
 a draft that exists it posts a new Send card instead. "Draft it" takes one
 line of the owner's words (`CardAction.ask`): the turn writes the reply
@@ -2724,7 +2731,7 @@ Files that participate in prompt construction and action execution:
 | `botcore/botcore/chat/web_push.py` | Web Push for the web chat: a VAPID key pair made on first use, each payload encrypted to the subscription (RFC 8291, `aes128gcm`, the `cryptography` package) and padded, sent only to the browser vendors' push hosts with no redirect; a card shows only its title, a DM message its first line; one push per thread in two minutes |
 | `botcore/botcore/chat/action_requests.py` | Action requests as blocks in the web chat (docs/webchat.md, Action requests): a request's folded words from its card's kind and labelled fields (the action, who, what, when; its title for a card with none), and its urgency (overdue, soon by two working days, calm) from its linked deadline, its event's start, its buttons' last day and its wait; a request Tacitus is acting on (`working`), the request a status line links to (`next`) and the bot's lines that belong to it, by tag (`lines_of`) |
 | `preprocessor/web_requests.py` | The EA's view of each request in Action requests, read-only: the project and deadline from the ledger rows and the mail conversation its buttons name (project_store's `project_ledger` and `project_messages`), and an event card's start from its staged payload |
-| `botcore/botcore/chat/web_push_policy.py` | Which bot posts in the web chat push (docs/webchat.md, Notifications): the DM, the opening of a morning briefing or an afternoon update, the bot's answer in a conversation the owner wrote in; never a digest, a nudge, a progress line or a notice the owner never wrote in; the `notify_push` switches; the text fingerprint that lets one text push once; no answer push within two minutes of a card the conversation asked for in the DM; the alerts whose text a conversation carries, which the owner's reply there clears |
+| `botcore/botcore/chat/web_push_policy.py` | Which bot posts in the web chat push (docs/webchat.md, Notifications): a notifier's thread in the DM (a direct message, the relay's notice) and an answer to the owner there, never the bot's own lines in Action requests (a card pushes itself; an auto-close note with Reopen does not), the opening of a morning briefing or an afternoon update, the bot's answer in a conversation the owner wrote in; never a digest, a nudge, a progress line or a notice the owner never wrote in; the `notify_push` switches; the text fingerprint that lets one text push once; no answer push within two minutes of a card the conversation asked for in the DM; the alerts whose text a conversation carries, which the owner's reply there clears |
 | `preprocessor/briefing_review.py` | The pre-send review of the remote briefings and the weekly audit (docs/llm-lanes.md, "The pre-send review"): the packet built in code with keep levels held, code's own checks, one tool-less hosted call by ref, the verdicts applied to the post, the rooms and the staged replies, the run record and the state the status light reads |
 | `preprocessor/status_light.py` | The web chat's status light (docs/webchat.md, Status light): the conditions now from the state the system keeps (the sentinel's results, the breakers, the boundary audit, the plugins, the notices, the plan reading, the local model, the relay, the updater, Drive, the briefing's pre-send review), the worst level, the memory of since and cleared in the store, one push for what turns red, and each condition's bounded, masked log lines |
 | `preprocessor/home_screen.py` | The web chat's Home (docs/webchat.md, Home): what is left for the owner, as the post lists it (waiting requests, the post's sections after its pre-send review as the remote run kept them, else the briefing's ranking with the upstream rules, replies owed a day or more), what got done today and by whom, every item kept from hosted models in keep_gate's fixed words (`mark_keep`, failing closed), the calendar's next gap, travel and vacation from the calendar, travel mode and the device's zone, what changed since the last visit, the greeting (templates, or one line from the owner's own model from the numbers alone, checked), the vote on it (a calibration line, scope `home`), the `home` event and its Settings page; all built in code, read-only |

@@ -11,6 +11,7 @@ import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -98,6 +99,13 @@ class FakeFE:
         self.sent.append((channel, text, thread_key))
         row = {"channel": channel, "id": f"w{len(self.sent)}", "thread_key": f"t{len(self.sent)}"}
         return row, lambda: self.dispatched.append(row["id"])
+
+    def post(self, channel, text, thread_ts=None, **kw):
+        """The bot's own post (Ask's first message): no turn runs."""
+        self.posts = getattr(self, "posts", [])
+        self.posts.append((channel, text, thread_ts))
+        n = len(self.posts)
+        return SimpleNamespace(channel=channel, id=f"b{n}", thread_key=f"tb{n}")
 
 
 class Ledger:
@@ -194,9 +202,9 @@ def test_a_reply_owed_says_who_asked_what_and_how_long_it_waited():
     assert it["brief"]["standing"] == ["It has waited 4 days for your reply.", "You last wrote on it 5 days ago."]
     # signing a form is work, not only a reply (mail_completion, the form the ask names)
     assert it["brief"]["next"] == "This needs a form filled in, not just a reply. Ask Tacitus to start it."
-    assert ids(it) == ["draft", "say", "later", "not_needed"]
+    assert ids(it) == ["draft", "say", "later", "not_needed", "start"]
     assert next(c for c in it["choices"] if c["id"] == "say")["input"] == "text"
-    assert it["ask"] == 'About the reply to "Data access form": '
+    assert "ask" not in it   # its Ask is a choice, the card's one
     assert it["deeper"] == {"state": "unavailable"}
     for w in words_of(it):
         plain(w)
@@ -250,17 +258,17 @@ def test_a_decision_shows_the_answers_the_replies_card_offers():
     src = decision_sources()
     it = I.item(src, "reply:response-r2")
     assert it["kind"] == "question" and it["title"] == "Do you sign it as the lab's lead?"
-    assert ids(it) == ["answer:1", "answer:2", "answer", "later", "not_needed"]
+    assert ids(it) == ["answer:1", "answer:2", "answer", "later", "not_needed", "start"]
     assert [c["label"] for c in it["choices"][:3]] == ["Yes, I can join", "No, not this term", "Other answer"]
     assert it["brief"]["what"] == 'Tacitus needs your answer before it writes to Alex Kim about "Data access form".'
     assert it["brief"]["next"] == "Once you answer, Tacitus writes the reply. You check it before it goes."
     src = decision_sources(choices=())  # a question with no answers to pick: Answer
-    assert ids(I.item(src, "reply:response-r2")) == ["answer", "later", "not_needed"]
+    assert ids(I.item(src, "reply:response-r2")) == ["answer", "later", "not_needed", "start"]
 
 
 def test_a_question_with_no_reply_behind_it_is_answered_in_a_conversation():
     it = I.item(F.sources("unchecked"), "item:task-q1")
-    assert it["kind"] == "question" and ids(it) == ["answer", "later"]
+    assert it["kind"] == "question" and ids(it) == ["answer", "later", "start"]
     assert it["brief"]["what"] == "Committee seat (Sam Rivera)."
     assert it["brief"]["asked"] == ""  # the question is the title
 
@@ -282,7 +290,7 @@ def test_so_far_today_opens_too():
     assert closed["brief"]["what"] == "Tacitus closed it at 7:15."
     assert closed["brief"]["standing"] == ["Why: The permit date passed, so it lapsed."]
     assert ids(closed) == ["reopen"]
-    assert ids(I.item(F.sources(), "drafted:w41")) == ["open"]
+    assert I.item(F.sources(), "drafted:w41") is None   # a waiting draft is left for you, not done
     assert I.item(F.sources(), "answered:w40")["brief"]["what"] == "You answered it at 10:40."
 
 
@@ -416,30 +424,53 @@ def test_with_no_bot_a_draft_is_refused_plainly():
     assert out == {"ok": False, "said": "Tacitus cannot start a draft from here."}
 
 
-def test_start_it_opens_a_conversation_with_the_item_sent(monkeypatch):
+def test_ask_opens_the_items_conversation_for_the_owners_words(monkeypatch):
+    """Ask: Tacitus's first message names the item and what the quick
+    briefing knows; nothing is sent as the owner and no turn runs until he
+    writes."""
     monkeypatch.setattr(I, "_project_of", lambda lid, conv: "")
     fe, h, _bot, _c = home()
+    it = h.item("item:deadline-w1")
+    assert [c["label"] for c in it["choices"]][0] == "Ask" and "ask" not in it  # one Ask on the card
     out, after = h.act("item:deadline-w1", "start")
-    assert out == {"ok": True, "said": "Opened a conversation with Tacitus about it.", "goto": "#/main/t1"}
-    channel, text, thread = fe.sent[0]
+    assert out == {"ok": True, "said": "Opened a conversation about it. Write what you need.",
+                   "goto": "#/main/tb1"} and after is None
+    assert fe.sent == [] and fe.dispatched == []
+    channel, text, thread = fe.posts[0]
     assert channel == "main" and thread is None
-    assert text.splitlines() == ["Let's start this: Send the workshop review", "A deadline, from Jo Rivera.",
-                                 "Send your review of the four workshop papers.", "Due tomorrow.",
-                                 "(item `deadline-w1`)"]
-    after()
-    assert fe.dispatched == ["w1"]
+    assert text.splitlines() == ["*Send the workshop review*", "A deadline, from Jo Rivera.",
+                                 "Send your review of the four workshop papers.", "Due tomorrow.", "",
+                                 "From Home (item deadline-w1). Write here what to do next."]
+    plain(text.splitlines()[-1])
 
 
-def test_start_it_goes_to_the_items_project_room(monkeypatch):
+def test_ask_goes_to_the_items_project_room(monkeypatch):
     import ea_channels
     monkeypatch.setattr(I, "_project_of", lambda lid, conv: "lab" if lid == "deadline-w1" else "")
     monkeypatch.setattr(ea_channels, "for_project", lambda pid: ["room-gone", "room-lab"] if pid == "lab" else [])
     fe, h, _bot, _c = home()
     out, _after = h.act("item:deadline-w1", "start")
-    assert fe.sent[0][0] == "room-lab" and out["goto"] == "#/room-lab/t1"
+    assert fe.posts[0][0] == "room-lab" and out["goto"] == "#/room-lab/tb1"
     fe.rooms_on = lambda: False  # no rooms in this mode: Ask Tacitus
     h.act("item:task-s2", "start")
-    assert fe.sent[1][0] == "main"
+    assert fe.posts[1][0] == "main"
+
+
+def test_every_card_has_one_ask_among_its_choices():
+    """Ask is one choice on a reply, a question and a to-do, and the card
+    has no other: no Ask about this of the app's (`ask`), no Start, no
+    Continue in a conversation. A kept item has none; a request opens its
+    block."""
+    for state in F.STATES:
+        p = F.payload(state)
+        for x in p["left"]:
+            it = I.item(F.sources(state), x["ref"])
+            labels = [c["label"] for c in it["choices"]] + [s["label"] for s in it["deeper"].get("steps") or []]
+            asks = [w for w in labels if w == "Ask" or w.startswith(("Start it", "Continue in"))]
+            if it["kind"] in ("reply", "question", "item") and not it["kept"]:
+                assert asks == ["Ask"] and "ask" not in it, (state, x["ref"], labels)
+            else:
+                assert asks == [] and "ask" not in it, (state, x["ref"], labels)
 
 
 def test_an_answer_to_a_question_with_no_reply_is_the_owners_message(monkeypatch):
@@ -717,7 +748,8 @@ def test_the_deeper_steps_stay_after_the_code_built_choices_and_a_step_may_run_o
     _fe, h, _bot, clock = home()
     it = h.item("item:deadline-w1")
     assert ids(it) == ["start", "done", "waiting", "later"]  # the code-built ones, in their order
-    assert [s["id"] for s in it["deeper"]["steps"]] == ["s1", "continue"]
+    # the briefing's own Ask is the item's Ask choice: one per card
+    assert [s["id"] for s in it["deeper"]["steps"]] == ["s1"]
     assert deeper.calls[-1] == ("state", "item:deadline-w1", it["version"], "deadline-w1")
     assert h.deeper("item:deadline-w1") == {"ok": True, "state": "working"}
     out, _a = h.act("item:deadline-w1", "step:s1")  # it runs as the owner's Later, with its undo
@@ -739,9 +771,13 @@ def test_a_deeper_step_that_drafts_with_words_is_tell_tacitus_what_to_say(monkey
     deeper.step_answer = {"choice": "done"}  # a reply has no Done: refused
     out, _a = h.act("reply:response-r2", "step:s1")
     assert out["ok"] is False and out["said"] == I.NO_CHOICE
+    # Ask with the briefing ready opens the briefing's own conversation
     deeper.step_answer = {"ok": True, "said": "Opened a conversation.", "goto": "#/main/t9", "extra": 1}
-    out, _a = h.act("reply:response-r2", "step:continue")
+    out, _a = h.act("reply:response-r2", "start")
     assert out == {"ok": True, "said": "Opened a conversation.", "goto": "#/main/t9"}
+    assert deeper.calls[-1] == ("step", "reply:response-r2", "continue", "")
+    out, _a = h.act("reply:response-r2", "step:continue")      # not a step of the card's: Ask is
+    assert out["ok"] is False and out["said"] == I.NO_CHOICE
 
 
 def test_a_failing_deeper_module_reads_unavailable(monkeypatch):

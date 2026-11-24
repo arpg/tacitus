@@ -48,8 +48,8 @@ def test_the_app_opens_on_home_with_the_greeting_the_split_and_what_is_left(app)
     expect(page.locator(".h-greet")).to_have_text(p["greeting"]["text"])
     expect(page.locator(".h-day")).to_have_text(p["day"])
     t = p["tally"]
-    assert t == {"done": 6, "left": 6}
-    expect(page.locator(".h-tally")).to_have_attribute("aria-label", "6 done today, 6 left for you. Open the first one.")
+    assert t == {"done": 5, "left": 6}  # the draft that waits for Send is left, not also done
+    expect(page.locator(".h-tally")).to_have_attribute("aria-label", "5 done today, 6 left for you. Open the first one.")
     expect(page.locator(".h-next")).to_contain_text("You have 50 minutes before your 2:00.")
     items = page.locator(".h-main .h-items > li")
     expect(items).to_have_count(6)
@@ -76,8 +76,8 @@ def test_a_bot_without_home_opens_on_ask_tacitus(app):
 
 def test_a_request_opens_its_block_there_and_an_item_asks_about_itself_in_a_new_conversation(app):
     """Opened in place, a request's card leads to its block in Action
-    requests (Send stays there); any other item's Ask about this starts a
-    new conversation with its words ready, and nothing is sent."""
+    requests (Send stays there); any other item's one Ask opens a
+    conversation where Tacitus names it, and nothing is sent for the owner."""
     from playwright.sync_api import expect
     import webui_stub_server as W
     page, stub, errors = home_app(app)
@@ -96,10 +96,10 @@ def test_a_request_opens_its_block_there_and_an_item_asks_about_itself_in_a_new_
     expect(page.locator(".h-greet")).to_be_visible()
     second = page.locator(".h-main .h-items > li").nth(1)
     second.locator(".h-item").click()
-    second.get_by_role("button", name="Ask about this").click()
-    expect(page.locator("#text")).to_have_value('About the reply to "Data access form": ')
-    expect(page.locator("#text")).to_be_focused()
-    expect(page.locator("#thread-title")).to_have_text("New conversation")
+    expect(second.get_by_role("button", name="Ask", exact=True)).to_have_count(1)  # one Ask on the card
+    second.get_by_role("button", name="Ask", exact=True).click()
+    expect(page.locator("#messages .msg").first).to_contain_text("Data access form")
+    expect(page.locator("#text")).to_have_value("")
     assert stub.posts == []  # nothing is sent until the owner sends it
     assert not errors, errors
 
@@ -187,7 +187,7 @@ def test_kept_mail_shows_its_fixed_words_its_outlook_link_and_no_way_to_ask(app)
     for block in page.locator(".h-block:has-text('kept')").all():  # So far today's rows too
         block.locator("> button").click()
         expect(block.locator(".h-body")).to_be_visible()
-        assert "Ask about this" not in block.inner_text()
+        assert block.get_by_role("button", name="Ask", exact=True).count() == 0
     expect(page.locator(".h-main")).not_to_contain_text("Seminar date")
     expect(page.locator(".h-main")).not_to_contain_text("Pat Example")
     assert not errors, errors
