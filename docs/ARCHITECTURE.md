@@ -679,10 +679,12 @@ card whose draft names the row takes over late (`_reply_draft_carded`),
 and the row's posts carry its tag so its block shows only its own lines
 (docs/webchat.md, Action requests).
 
-Each project room with items
-in the post then gets its slice in a new topic (`briefing_rooms.py`,
-switch `briefing_rooms`), posted only to rooms the owner's record names
-and opened by what it holds (the first item's title, "and N more"). An
+Where the room slices are on
+(Slack; the web chat only with `"briefing_rooms": true`, since Home lists
+every item there), each project room with items in the post then gets its
+slice in a new topic (`briefing_rooms.py`), each thread once, posted only
+to rooms the owner's record names and opened by what it holds (the first
+item's title, "and N more"). An
 item's project is its ledger link, its filed thread, or the mail tagger's
 project call on its mail when the item's words show a trace of that project;
 with no tagger call, the word match alone, where a generic name word scores

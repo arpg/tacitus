@@ -61,8 +61,8 @@ about and who is in it".
   elsewhere, fix it in the same turn. `placement --ledger-id <id>` says
   which rooms the row goes to and why. `move-ledger --ledger-id <id>
   --project <id or none> --quote "<their words>"` moves it: it drops the
-  row's other links, records the move, and the briefing then follows the
-  link (with `none`, no room gets the row). When the cause is a project's
+  row's other links, records the move, and Home and the briefing then
+  follow the link (with `none`, no room gets the row). When the cause is a project's
   words (a generic name, a loose alias), say so, and offer to change the
   name or the aliases with `update-project`.
 - Aliases place mail in a project's room and link ledger rows to it.

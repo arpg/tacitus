@@ -900,7 +900,9 @@ def check_verdicts(obj: dict, packet: dict, *, agent: str, items: list[dict] | N
     counts."""
     by_ref = {i["ref"]: i for i in items or []}
     recs = {r["ref"]: r for r in packet.get("items") or []}
-    rooms = set(packet.get("rooms") or {}) | {"room:none"}
+    # "room:none" is a place only while some room may get an item.
+    rooms = set(packet.get("rooms") or {})
+    rooms |= {"room:none"} if rooms else set()
     moves = set(MOVES.get(agent, ()))
     out: dict[str, dict] = {}
     rejected: list[dict] = []
@@ -1771,9 +1773,12 @@ def review_post(agent: str, text: str, b: dict, *, cands: dict, plan: dict, draf
         posts = []
     names = {p["project"]: p.get("room") or p["project"] for p in posts if p.get("project")}
     if rooms is None:
+        # With the slices off (the web chat's default) no room gets an
+        # item, so the check is offered no room to move one to.
         try:
             import briefing_rooms
-            names.update({pid: t.get("room") or pid for pid, t in briefing_rooms.rooms().items()})
+            if briefing_rooms.enabled():
+                names.update({pid: t.get("room") or pid for pid, t in briefing_rooms.rooms().items()})
         except Exception:
             pass
     bodies = {d["ref"]: pending.body(cands[d["ref"]]) for d in drafts

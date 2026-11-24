@@ -185,8 +185,10 @@ def test_a_row_kept_by_its_brief_or_the_records_is_never_handed_off(priv):
     assert [q["conversation_id"] for q in queued] == ["CONV-REPORT"] and rec["handed"] == 1
     kept = text.split("🔒 Kept on your own model, so no hosted model works on these:")[1].split("\n\n")[0]
     # Code's fixed words: the brief's level is the machine's, so no title;
-    # the records keep the other one there too.
-    assert kept.count("• A kept message needs you. Open it in Outlook.") == 2
+    # the records keep the other one there too. The one Critical names is
+    # not listed again.
+    assert kept.count("• A kept message needs you. Open it in Outlook.") == 1
+    assert text.count("• A kept message needs you. Open it in Outlook.") == 2
     assert "Review for the journal" not in text and "Partner follow-up" not in text
     assert "read the manuscript" not in text and "Due tomorrow." not in text
     # The planner is told which items stay on the owner's own model.

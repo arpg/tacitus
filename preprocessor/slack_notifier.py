@@ -39,19 +39,23 @@ SPLIT_MARKER = "---===FF_BRIEFING_SPLIT===---"
 
 def post_to_slack(channel_key: str, text: str, blocks: Optional[list] = None,
                   priority: str = "normal", _bypass_quiet: bool = False,
-                  diagnostic: bool = False, light: str = "", home: str = "", home_run: str = "") -> bool:
+                  diagnostic: bool = False, light: str = "", home: str = "", home_run: str = "",
+                  conversation_id: str = "", message_id: str = "") -> bool:
     """Post a message through chat_notify.post (debug-mode and quiet-hours
     gates, split, route by frontend). `diagnostic=True` marks one of the
     bot's own reports, posted only in debug mode; `light` names the alert
     the web chat's status light can carry (chat_notify.LIGHT_KINDS); `home`
     names a report the web chat's Home carries (chat_notify.HOME_KINDS),
-    `home_run` the run that wrote it.
+    `home_run` the run that wrote it. `conversation_id` and `message_id`
+    name the mail a post is about: on the web chat it joins that
+    conversation's thread (item_threads).
     Returns True on success, deferral, a diagnostic left out, an alert
     the light carries or a report Home carries, False on a real send
     failure."""
     return bool(chat_notify.post(channel_key, text, blocks=blocks, priority=priority,
                                  _bypass_quiet=_bypass_quiet, diagnostic=diagnostic, light=light,
-                                 home=home, home_run=home_run))
+                                 home=home, home_run=home_run, conversation_id=conversation_id,
+                                 message_id=message_id))
 
 
 def scheduling_channel_key() -> str:
@@ -98,7 +102,10 @@ def notify_scheduling_requests(scheduling_data: list, availability: list):
 
 
 def notify_priority_emails(priority_data: list):
-    """Post priority alerts to #ea-assistant."""
+    """Post priority alerts to #ea-assistant. On the web chat an alert about
+    a mail conversation that already has a thread there (an earlier alert,
+    a briefing's hand-off) goes into that thread, and an alert about a
+    message the thread already carries posts nothing (item_threads)."""
     if not priority_data:
         return
 
@@ -121,4 +128,6 @@ def notify_priority_emails(priority_data: list):
         )
         # Tag as urgent so it sorts to the top of the morning digest (and can
         # break through quiet hours if the user sets allow_urgent).
-        post_to_slack("ea-assistant", text, priority="urgent")
+        post_to_slack("ea-assistant", text, priority="urgent",
+                      conversation_id=email.get("conversation_id") or "",
+                      message_id=email.get("message_id") or "")

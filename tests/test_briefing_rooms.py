@@ -212,6 +212,58 @@ def test_the_morning_run_posts_slices_and_names_the_rooms(monkeypatch, conn, tmp
     assert dry and "ok" not in dry[0]
 
 
+def test_the_web_chat_posts_no_room_slice_unless_the_switch_says_so(monkeypatch, conn, tmp_path):
+    """The owner's choice: on the web chat Home lists every item, so a
+    project room gets no morning or afternoon slice and keeps its
+    conversations. `"briefing_rooms": true` brings the slices back; Slack,
+    with no Home, keeps them unless the switch says false."""
+    assert br.enabled({}, frontend="web") is False
+    assert br.enabled({}, frontend="slack") is True
+    assert br.enabled({"briefing_rooms": True}, frontend="web") is True
+    assert br.enabled({"briefing_rooms": False}, frontend="slack") is False
+    # the morning run on the web chat, with no switch in the file: no post,
+    # so the EA post names no room either
+    monkeypatch.setenv("EA_DIR", str(tmp_path))
+    monkeypatch.setattr(chat_notify, "frontend_name", lambda: "web")
+    b = {"open_obligations": [{"id": "row-k", "description": "Radar order", "type": "task",
+                               "from_email": "pat@example.edu"}], "today_top": [], "delta_summary": {}}
+    cands = rb.candidates(b, today=NOW.date())
+    plan = {"get_done_today": [{"ref": next(iter(cands)), "when": "first thing", "why": "the quote"}],
+            "flexes": [], "needs_you": []}
+    kw = {"conn": conn, "targets": TARGETS, "open_rows": [], "matcher": _matcher({})}
+    for agent in ("morning-briefing", "afternoon-catchup"):
+        assert rb.room_slices(agent, cands, plan, [], [], {}, b, now=NOW, dry_run=False,
+                              poster=lambda *a: pytest.fail("posted"), **kw) == []
+    # every section a slice carried is on Home: the post's lists Home keeps
+    # (remote_briefing.home_view), a staged draft's Send card, a hand-off's
+    # conversation and a work case's own item
+    carried = set(br.SECTIONS)
+    on_home = set(rb.HOME_SECTIONS["morning-briefing"]) | set(rb.HOME_SECTIONS["afternoon-catchup"])
+    assert carried - on_home == {"draft", "escalated", "letters"}
+
+
+def test_a_room_post_names_each_thread_once(conn):
+    """One thread with a staged draft and a Flex line (two rows of one
+    conversation, or one row in two sections) is one line in its room:
+    the first section in order, so the post never lists it twice."""
+    entries = [
+        {"ref": "F1", "section": "flex", "line": "*Pod answers* (Kai): review them", "ledger_id": "row-k",
+         "conversation_id": "conv-pod", "title": "Pod answers", "summary": ""},
+        {"ref": "D1", "section": "draft", "line": "*Pod answers* (Kai): thanks for the answers",
+         "ledger_id": "row-k", "conversation_id": "conv-pod", "title": "Pod answers", "summary": ""},
+        {"ref": "F2", "section": "flex", "line": "*Pod schedule* (Kai): confirm", "ledger_id": "row-k3",
+         "conversation_id": "conv-pod", "title": "Pod schedule", "summary": ""},
+        {"ref": "T1", "section": "top", "line": "*Radar order* (Pat): first thing", "ledger_id": "",
+         "conversation_id": "conv-radar", "title": "Radar order kestrel", "summary": ""},
+    ]
+    posts = br.plan_posts(entries, heading="Morning briefing, Tue Nov 24", open_rows=[],
+                          conn=conn, targets=TARGETS, clean=rb._clean, matcher=_matcher({"kestrel": 3}))
+    (k,) = [p for p in posts if p["room"] == "ea-kestrel"]
+    assert k["refs"] == ["T1", "D1"]
+    assert k["text"].count("Pod") == 1 and ":envelope: Draft ready" in k["text"]
+    assert ":leaves: Flex" not in k["text"]
+
+
 # ── the post's name (the Recent row and the room's thread list) ────────
 
 def _entry(section, title, line=""):

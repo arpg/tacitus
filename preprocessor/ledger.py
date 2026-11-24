@@ -2410,6 +2410,27 @@ def reply_rung(age: int | None) -> str:
     return "ask" if age >= REPLY_ASK_DAYS else "name" if age >= REPLY_NAME_DAYS else "draft"
 
 
+# The Scheduling channel's mark on a row of a thread it holds: {"channel",
+# "thread", "at"}, and "ended" once that thread is done. The bot sets it
+# (ea-chat-bot.py, _sched_mark_held) on the open scheduling rows of each
+# mail conversation it opened a thread for.
+SCHED_THREAD = "sched_thread"
+
+
+def sched_held(rows: list[dict]) -> set[str]:
+    """The conversations the Scheduling channel holds: a row on it that is
+    not closed carries the channel's mark, and its thread has not ended.
+    While it holds one, no reply list names the thread (reply_backlog);
+    once its rows close or its thread ends, a reply still owed comes back."""
+    out = set()
+    for o in rows or []:
+        mark = o.get(SCHED_THREAD)
+        if (o.get("status", "open") not in ("completed", "closed") and isinstance(mark, dict)
+                and mark.get("thread") and not mark.get("ended") and o.get("conversation_id")):
+            out.add(str(o["conversation_id"]))
+    return out
+
+
 def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
                   cap: int = REPLY_BACKLOG_CAP, min_days: int = REPLY_DRAFT_DAYS) -> list[dict]:
     """The open rows that have owed a reply for `min_days` or more (the
@@ -2419,7 +2440,8 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
     the ladder's first step has no `rung`.
 
     Pure. A row is out while it is parked, snoozed, in follow-up, waiting
-    on the other side or proposed for closing. `draft_convs` are the
+    on the other side or proposed for closing, and while the Scheduling
+    channel holds its thread (sched_held). `draft_convs` are the
     conversations with a draft in the Drafts folder: `has_draft` says a
     reply is already staged (None when the folder could not be read and
     `draft_convs` is None). `queued` is the row's `reply_queue` record
@@ -2432,6 +2454,7 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
     if today is None:
         today = datetime.now(zone).date() if zone else datetime.now().astimezone().date()
     drafts = None if draft_convs is None else {c for c in draft_convs if c}
+    held = sched_held(rows)
     out, threads = [], set()
     # The row a reply closes stands for its thread when two rows share one.
     for o in sorted(rows or [], key=lambda o: not closes_on_reply(o)):
@@ -2445,7 +2468,7 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
             continue
         brief, target = _thread(o), reply_target(o)
         conv = str(o.get("conversation_id") or brief.get("conversation_id") or "")
-        if conv and conv in threads:
+        if conv and (conv in threads or conv in held):
             continue
         threads.add(conv)
         queued = o.get("reply_queue") if isinstance(o.get("reply_queue"), dict) else {}

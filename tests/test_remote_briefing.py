@@ -363,7 +363,10 @@ def test_run_agent_tries_the_remote_lane_and_skips_claude_after_it():
 
 
 def _prompt_ns():
-    ns = {"re": __import__("re"), "_untrusted_field": lambda t, n=140: str(t or "")[:n]}
+    # No mail conversation has a thread yet (item_threads), unless a test says so.
+    ns = {"re": __import__("re"), "_untrusted_field": lambda t, n=140: str(t or "")[:n],
+          "_item_thread": lambda e: None, "_item_thread_record": lambda batch, thread: None,
+          "_HANDOFF_TURNS": {}}
     for name in ("_remote_escalation_item", "_remote_escalation_prompt",
                  "_remote_escalation_batch_prompt"):
         exec(_fn(name), ns)

@@ -61,6 +61,23 @@ def test_missing_or_bad_config_is_off(priv):
     assert rl.mode("mail") == "off"
 
 
+def test_the_briefing_switches_reach_their_readers(priv):
+    """The file's briefing_rooms, briefing_review and briefing_audit reach
+    config(), so `false` turns a room slice or the review off; a value the
+    reader does not know leaves the key out and the reader's default holds."""
+    import briefing_review
+    import briefing_rooms
+    _write_cfg(priv, briefing_rooms=True, briefing_review=False, briefing_audit="remote")
+    cfg = rl.config()
+    assert cfg["briefing_rooms"] is True and cfg["briefing_review"] is False
+    assert cfg["briefing_audit"] == "remote"
+    assert briefing_rooms.enabled(cfg, frontend="web") and not briefing_review.enabled(cfg)
+    _write_cfg(priv, briefing_rooms="no", briefing_review="off", briefing_audit=7)
+    cfg = rl.config()
+    assert {"briefing_rooms", "briefing_review", "briefing_audit"}.isdisjoint(cfg)
+    assert briefing_review.enabled(cfg)
+
+
 def test_enforce_and_sealed_have_no_end_date(priv):
     _write_cfg(priv, mail="enforce", scheduling="enforce", shadow_until="2000-01-01")
     assert rl.mode("mail") == "enforce"

@@ -326,3 +326,29 @@ def test_a_reply_owed_for_five_days_ranks_with_todays_work(monkeypatch):
     assert [t["ref"] for t in top] == ["row-old"]
     assert top[0]["reason"] == "reply owed for 6d" and top[0]["score"] >= 30
     assert {r["title"] for r in rest} == {"Reply to new", "Reply to answered"}
+
+
+def test_a_thread_the_scheduling_channel_holds_is_off_the_reply_list():
+    """A mail thread with its own thread in the Scheduling channel (the bot
+    marks its open scheduling row, ledger.SCHED_THREAD) is not also a reply
+    that waits: not in the queue the Replies blocks, Home and the briefing
+    read. When the scheduling row closes, or its thread there is done, a
+    reply still owed comes back."""
+    reply = _row("kai", 4, brief={"scheduling": "proposes-times"})
+    sched = _row("kai", 4, id="sched-kai", type="scheduling",
+                 brief={"scheduling": "proposes-times"})
+    other = _row("lee", 3)
+    mark = {"channel": "sched", "thread": "t40", "at": "2026-10-08T16:00:00+00:00"}
+    held = dict(sched, **{ledger.SCHED_THREAD: mark})
+    assert [e["id"] for e in _backlog([reply, sched, other])] == ["row-kai", "row-lee"]
+    assert ledger.sched_held([reply, held, other]) == {"c-kai"}
+    out = _backlog([reply, held, other])
+    assert [e["id"] for e in out] == ["row-lee"] and out[0]["total"] == 1
+    # the thread there is done: the reply comes back
+    ended = dict(held, **{ledger.SCHED_THREAD: dict(mark, ended="2026-10-11T16:00:00+00:00")})
+    assert [e["id"] for e in _backlog([reply, ended, other])] == ["row-kai", "row-lee"]
+    # the scheduling row closed: the same
+    closed = dict(held, status="completed")
+    assert [e["id"] for e in _backlog([reply, closed, other])] == ["row-kai", "row-lee"]
+    # a mark on the reply row itself holds the thread too
+    assert _backlog([dict(reply, **{ledger.SCHED_THREAD: mark})]) == []

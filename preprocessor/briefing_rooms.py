@@ -37,9 +37,14 @@ not archived, and the owner's own record (owner_rooms) names it. The
 post goes through chat_notify.post with the key `room:<channel id>`:
 quiet hours hold it like the EA post, the owner record is checked again,
 and the configured chat frontend posts it (a new thread on the web chat,
-a new message on Slack).
+a new message on Slack). A room gets one line per thread: two items on one
+thread (a staged draft and its do-list line, two rows of one conversation)
+show once, under the first section in SECTIONS order (one_per_thread).
 
-Switch: `"briefing_rooms": false` in remote-llm.json turns the slices off.
+Switch: `"briefing_rooms"` in remote-llm.json. On the web chat the slices
+are off unless it says `true`: Home lists every item of the post, and a
+room keeps its conversations (docs/webchat.md, Home). On Slack, with no
+Home, they are on unless it says `false`.
 """
 from __future__ import annotations
 
@@ -84,10 +89,25 @@ def _card_place() -> str:
 
 
 
-def enabled(cfg: dict | None = None) -> bool:
+def enabled(cfg: dict | None = None, *, frontend: str | None = None) -> bool:
+    """Whether the briefings post room slices: the switch when the file
+    sets it (true or false), else off on the web chat and on elsewhere
+    (`frontend`, the configured chat frontend unless given; off when the
+    chat settings cannot be read, as no post could go out then)."""
     import remote_llm
     cfg = cfg if cfg is not None else remote_llm.config()
-    return cfg.get("briefing_rooms") is not False
+    if isinstance(cfg.get("briefing_rooms"), bool):
+        return cfg["briefing_rooms"]
+    if frontend is None:
+        try:
+            try:
+                import chat_notify
+            except ImportError:
+                from preprocessor import chat_notify
+            frontend = chat_notify.frontend_name()
+        except Exception:
+            return False
+    return frontend != "web"
 
 
 # ── which project ─────────────────────────────────────────────────────
@@ -211,8 +231,28 @@ def slices(entries: list[dict], targets: dict[str, dict], conn, *, matcher=None,
     for e in entries:
         pids = e["projects"] if "projects" in e else projects_for(e, idx, conn, matcher=matcher)
         for pid in pids:
-            if pid in targets and len(out.get(pid, [])) < MAX_ITEMS:
+            if pid in targets:
                 out.setdefault(pid, []).append(e)
+    return {pid: one_per_thread(items)[:MAX_ITEMS] for pid, items in out.items()}
+
+
+def _thread_keys(e: dict) -> set[str]:
+    keys = {f"row:{i}" for i in [e.get("ledger_id")] + list(e.get("letter_rows") or ()) if i}
+    return keys | ({f"conv:{e['conversation_id']}"} if e.get("conversation_id") else set())
+
+
+def one_per_thread(entries: list[dict]) -> list[dict]:
+    """The entries in SECTIONS order, each thread once: an entry whose
+    ledger row or conversation an earlier one names is left out, so a
+    thread with a staged draft and a do-list line is one line."""
+    seen: set[str] = set()
+    out = []
+    for e in _in_order(entries):
+        keys = _thread_keys(e)
+        if keys & seen:
+            continue
+        seen |= keys
+        out.append(e)
     return out
 
 

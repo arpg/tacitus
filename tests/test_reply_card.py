@@ -511,12 +511,28 @@ def test_only_a_question_with_two_or_three_short_answers_gets_buttons():
     assert ids(dict(ASKED, choices=["Yes"])) == plain                       # one answer is no choice
     assert ids(dict(ASKED, choices="Yes or no")) == plain
     assert ids(dict(ASKED, choices=["Yes", "x" * 49, 7, " "])) == plain     # one left after the cut
-    assert ids(dict(ASKED, outcome="left")) == plain                        # no question was asked
+    assert ids(dict(ASKED, outcome="drafted")) == plain                     # no question was asked
     assert ids(dict(ASKED, choices=["A", "B", "C", "D"]))[:4] == [
         "reply_choice_one", "reply_choice_two", "reply_choice_three", "reply_draft"]
     ns = _bot([])[0]
     assert ns["REPLY_CHOICE_CHARS"] == ledger_mod.REPLY_CHOICE_CHARS
     assert len(ns["REPLY_CHOICE_KEYS"]) == ledger_mod.REPLY_CHOICES_MAX
+
+
+def test_a_thread_a_run_judged_needs_no_reply_gets_no_card():
+    """A briefing run recorded that this message needs no reply now (the
+    work is done elsewhere, such as a document a hand-off wrote): Home and
+    the chat's reply scan leave it out, and so does the Replies card. It
+    never reads "no draft yet" beside work that is already done."""
+    left = {"outcome": "left", "inbound": "2026-10-05T16:00:00Z",
+            "note": "The table is drafted in a review request."}
+    ns, calls = _bot([_q("lee", 8, queued=left), _q("ana", 4)])
+    _tick(ns)
+    (card,) = calls["cards"]
+    assert "Lee" not in _text(card) and "Ana" in _text(card)
+    ns, calls = _bot([_q("lee", 8, queued=left)])
+    _tick(ns)
+    assert calls["cards"] == []
 
 
 def test_a_tap_on_an_answer_starts_the_turn_that_writes_it():
