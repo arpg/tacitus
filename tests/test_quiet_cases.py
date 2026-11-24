@@ -691,3 +691,14 @@ def test_the_weekly_review_lists_the_cases_set_for_later(conn):
                      closure={}, counts={}, now=datetime(2026, 11, 23, 15, tzinfo=timezone.utc), handed=[])
     assert (":calendar: Set for later (each comes back on its day):\n"
             "• *Letter for Sam Ortiz*: by Tue Dec 15, 1 place. Back on your list Tue Dec 8.") in text
+
+
+def test_the_day_a_case_comes_back_reads_as_a_person_says_it():
+    import case_surface as C
+    today = date(2026, 11, 23)
+    assert D.on_day(date(2026, 11, 24), today) == "tomorrow"
+    assert D.on_day(today, today) == "today"
+    assert D.on_day(date(2026, 12, 1), today) == "on Tue Dec 1"
+    case = {"case_kind": "letter", "do_by": "2026-12-01", "state": "accepted",
+            "parts": [{"name": "Northfield University", "due": "2026-12-01", "state": "accepted"}]}
+    assert C.quiet_words(case, today) == ":zzz: Set for Tue Dec 1. I bring it back tomorrow."
