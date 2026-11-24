@@ -165,7 +165,7 @@ SAID = {
     "poll": r"\b(poll|doodle|when2meet|whenisgood|rallly|timeful)\b",
 }
 _SAID_RE = {k: re.compile(v, re.I) for k, v in SAID.items()}
-_CHAT_RUN_RE = re.compile(r"^[0-9a-f]+-[0-9a-f]{6}$")
+_CHAT_RUN_RE = re.compile(r"^[0-9a-f]+-[0-9a-f]{6,12}$")
 
 
 class Usage:
