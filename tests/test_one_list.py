@@ -538,3 +538,155 @@ def test_a_case_turn_from_home_runs_in_the_cases_conversation(monkeypatch):
     calls["turns"].clear()
     ns["_home_case"]("rv-1", "draft", "", "")
     assert kept["case:rv-1"][0] == "main"
+
+
+# ── Needs you is part of Home ─────────────────────────────────────────
+
+def _talk(ch="main", tk="t9", text="Which project is the new grant for?", reason="A question waits for you.",
+          **over):
+    return {"channel": ch, "thread_key": tk, "text": text, "state": "needs_you", "state_reason": reason,
+            "stale": False, "_ids": [], "_convs": [], **over}
+
+
+def test_a_conversation_that_needs_you_is_an_answer_needed_item_once():
+    src = one_list(conversations=[
+        _talk(),
+        _talk(tk="t10", text="About the seminar date", _convs=["conv-r1"]),       # its reply is on Home
+        _talk(tk="t11", text="Slides question", _ids=["task-s2"]),               # names a listed row
+        _talk(tk="t12", text="Old thread", stale=True),
+        _talk(tk="t13", text="Waits on someone", state="waiting"),
+        _talk(ch="r1", tk="t14", text="Budget table check", _room="lab-budget")])
+    left = H.left(src)
+    talk = [x for x in left if x["kind"] == "conversation"]
+    assert [x["id"] for x in talk] == ["thread:main:t9", "thread:r1:t14", "thread:main:t12"]  # stale last
+    first = talk[0]
+    assert (first["label"], first["title"], first["detail"]) == \
+        ("Answer needed", "Which project is the new grant for?", "A question waits for you.")
+    assert first["href"] == "#/main/t9" and talk[1]["project"] == "lab-budget"
+    assert left[-1]["id"] == "thread:main:t12"
+    card = I.item(src, "thread:main:t9")
+    assert ids(card) == ["start", "done"] and card["brief"]["standing"] == ["A question waits for you."]
+    for w in [card["brief"]["what"], card["brief"]["next"], card["label"]]:
+        plain(w)
+    assert not any(x["kind"] == "conversation" for x in H.left(one_list(one_list=False, conversations=[_talk()])))
+
+
+def test_ask_opens_the_conversation_and_done_is_its_mark_done_after_the_undo():
+    src = one_list(conversations=[_talk()])
+    fe = _FE()
+    marked = []
+    fe.web_set_state = lambda ch, tk, state: marked.append((ch, tk, state)) or {}
+    h, _seen, clock, fe = _home(src, fe=fe)
+    got, _after = h.act("thread:main:t9", "start")
+    assert got["ok"] and got["goto"] == "#/main/t9" and fe.posts == []
+    got, _after = h.act("thread:main:t9", "done")
+    assert got["ok"] and got["undo"] and marked == []
+    assert "thread:main:t9" not in [x["ref"] for x in h.payload()["left"]]   # off the list while Undo runs
+    clock[0] += I.UNDO_S + 1
+    h.acts.commit_due()
+    assert marked == [("main", "t9", "done")]
+
+
+def test_the_conversations_name_what_they_are_about(threads):
+    """_needs: a thread's cards and id-shaped words, an item's own
+    conversation, its room."""
+    item_threads.record("conv-r2", "main", "t3")
+    item_threads.record("case:lc-1", "r1", "t4")
+
+    class Store:
+        def needs(self):
+            return [{"channel": "main", "thread_key": "t3", "state": "needs_you", "text": "x"},
+                    {"channel": "r1", "thread_key": "t4", "state": "needs_you", "text": "y"},
+                    {"channel": "main", "thread_key": "t5", "state": "needs_you", "text": "z"},
+                    {"channel": "main", "thread_key": "t6", "state": "waiting", "text": "w"}]
+
+        def thread(self, ch, tk, history=False):
+            return [{"text": "From Home (item task-s2). Write here what to do next."}] if tk == "t5" else [{"text": ""}]
+
+        def channel(self, cid):
+            return {"kind": "room", "name": "ea-lab-budget"} if cid == "r1" else {"kind": "main"}
+    fe = types.SimpleNamespace(store=Store())
+    rows = {r["thread_key"]: r for r in H._needs(fe)}
+    assert set(rows) == {"t3", "t4", "t5"}
+    assert rows["t3"]["_convs"] == ["conv-r2"] and rows["t4"]["_ids"] == ["lc-1"]
+    assert rows["t4"]["_room"] == "lab-budget" and "task-s2" in rows["t5"]["_ids"]
+
+
+# ── Edit stays in one conversation ───────────────────────────────────
+
+def _edit_ns(one=True):
+    """handle_edit_draft on the web chat (no windows), on stand-ins."""
+    src = (ROOT / "ea-chat-bot.py").read_text()
+    start = src.index("def handle_edit_draft(")
+    end = src.index("@app.view(\"edit_draft_modal\")")
+    posts, kept = [], {}
+
+    class Fe:
+        dm_takes_text = False
+        one_list = one
+
+        def supports(self, cap):
+            return False
+
+        def is_dm(self, ch):
+            return ch == "dm"
+
+        def post(self, channel="", thread_ts=None, text="", unfurl=True):
+            posts.append((channel, thread_ts, text))
+            return types.SimpleNamespace(id=f"q{len(posts)}")
+
+        def permalink(self, ch, mid):
+            return f"https://chat.example/#/{ch}/{mid}"
+    ns = {"FRONTEND": Fe(), "log": types.SimpleNamespace(debug=lambda *a: None, warning=lambda *a: None),
+          "_verify_button_user": lambda ev: True, "_one_list": lambda: one, "CHANNEL_ID": "main",
+          "_fetch_draft_body": lambda did, *a: {"subject": "Re: Seminar date"},
+          "_draft_account": lambda v: ("outlook", ""),
+          "_delivery_channel": lambda key: "dm" if key.startswith("dm") else "main",
+          "_item_conversation": lambda key, rid="", conv="", room=True: kept.get(key, ("main" if not room else "r-room", "")),
+          "_keep_item_conversation": lambda key, ch, th: kept.__setitem__(key, (ch, th)),
+          "app": types.SimpleNamespace(action=lambda name: (lambda fn: fn))}
+    ns["_card_value"] = lambda ev: ev.value
+    exec(compile(src[start:end], "bot[edit]", "exec"), ns)
+    return ns, posts, kept
+
+
+def _edit_ev(value):
+    return types.SimpleNamespace(value=value, card=types.SimpleNamespace(channel="dm", id="w7"), trigger_id="web:x")
+
+
+def test_edit_asks_in_the_drafts_own_conversation_and_says_the_card_changes_in_place():
+    ns, posts, _kept = _edit_ns()
+    ns["handle_edit_draft"](_edit_ev({"draft_id": "d1", "thread_ts": "t-item", "conversation_id": "conv-r1"}))
+    (asked, line) = posts
+    assert asked[:2] == ("main", "t-item")
+    assert asked[2].endswith("Tell me here and I will revise it on its Send card. You can also edit it in your mail client.")
+    assert line[:2] == ("dm", "w7") and line[2].endswith("The revised draft shows on this card.")
+    plain(line[2])
+
+
+def test_edit_on_a_draft_from_action_requests_asks_in_its_items_conversation_and_keeps_it():
+    ns, posts, kept = _edit_ns()
+    ns["handle_edit_draft"](_edit_ev({"draft_id": "d1", "thread_ts": "dm-7", "conversation_id": "conv-r1"}))
+    assert posts[0][:2] == ("main", None) and kept["conv-r1"] == ("main", "q1")   # its one conversation now
+    ns["handle_edit_draft"](_edit_ev({"draft_id": "d1", "thread_ts": "dm-7", "conversation_id": "conv-r1"}))
+    assert posts[2][:2] == ("main", "q1")                                           # the same one again
+    ns, posts, kept = _edit_ns(one=False)
+    ns["handle_edit_draft"](_edit_ev({"draft_id": "d1", "thread_ts": "dm-7", "conversation_id": "conv-r1"}))
+    assert posts[0][:2] == ("main", None) and kept == {}                            # off: a new one, as before
+    assert "post a new Send card" in posts[0][2] and "until the revised draft gets its new card" in posts[1][2]
+
+
+def test_a_revised_draft_replaces_its_send_card_in_place():
+    import test_draft_chain_e2e as T
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        ns, posted, _ = T._reconfirm_helpers(Path(td))
+        T._with_retire_stub(ns, posted, web=True)
+        crumbs = []
+        ns.update(_one_list=lambda: True,
+                  _post_dm_breadcrumb=lambda *a: crumbs.append(a))
+        ns["_note_draft_confirmation"]("AAMkD=", "DM1", "111.1", "C1", "T1")
+        ns["_reconfirm_updated_drafts"]("C1", "T1", {"AAMkD="}, "test")
+        assert posted == [("refreshed", "AAMkD=")] and crumbs == []          # no new card, no old one retired
+        ns["_reconfirm_updated_drafts"]("main", "t-item", {"AAMkD="}, "test")
+        assert crumbs == [("main", "t-item", "DM1", "111.1", "The Send button for the revised draft")]

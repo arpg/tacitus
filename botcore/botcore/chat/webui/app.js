@@ -960,7 +960,7 @@ function renderChannels() {
   $('menu').dataset.unread = others > 0 ? String(others) : '';
   // The Needs you entry above the channels, with the count of threads that need the owner this week.
   const need = needsRows().filter((r) => stateOf(r.channel, threadOf(r)) === 'needs_you' && !staleOf(r)).length;
-  $('needs-link').hidden = false;
+  $('needs-link').hidden = oneList(); // one list: what it listed is on Home, with Home's one count
   $('needs-link').classList.toggle('active', S.needsView);
   $('home-link').hidden = !homeOn();
   $('home-link').classList.toggle('active', S.homeView);
@@ -1257,6 +1257,7 @@ const HOME = 'home';
 const VISIT_MS = 30 * 60000; // back after this long, a visit: "since you last checked in" counts from the one before
 Object.assign(S, { home: null, homeView: false, homeAt: 0, homeStale: false, homeFocus: '', backHome: false, voted: {} });
 const homeOn = () => Boolean(S.me && S.me.home);
+const oneList = () => homeOn() && Boolean(S.me.one_list); // Home is the one place to act (docs/webchat.md, One list)
 const homeZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; } };
 const homeHash = () => (homeOn() ? hashFor(HOME) : hashFor((defaultChannel() || {}).id || ''));
 
@@ -1957,7 +1958,7 @@ async function route() {
   const { ch, tk, id } = parseHash();
   // A notification of the status light opens its sheet over the place the app shows.
   if (ch === STATUS) { location.replace(S.homeView || !S.channel ? homeHash() : hashFor(S.channel)); openStatus(); return; }
-  const needs = ch === NEEDS, home = ch === HOME && homeOn();
+  const needs = ch === NEEDS && !oneList(), home = ch === HOME && homeOn();
   // A link to a card in Action requests (the bot's pointer) opens its block in place, in the list.
   if (id && (chan(ch) || {}).kind === 'dm') { S.reqFocus = id; location.replace(hashFor(ch)); return; }
   // The app opens on Home (a bot from before it: Ask Tacitus); a link or the address names any other place.
@@ -4028,7 +4029,9 @@ async function saveHomeSettings(e) {
   if (!el.checked) return;
   inputs.forEach((i) => { i.disabled = true; });
   try {
-    renderHomeSettings(await call('POST', '/settings/home', { [el.name]: el.value }));
+    const out = await call('POST', '/settings/home', { [el.name]: el.value });
+    renderHomeSettings(out);
+    if (out.answers && S.me) { S.me.one_list = out.answers === 'home'; renderChannels(); } // Needs you comes and goes
     $('home-note').textContent = 'Saved.';
     S.homeStale = true;
   } catch (err) {

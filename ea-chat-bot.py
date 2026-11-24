@@ -3596,6 +3596,18 @@ def _reconfirm_updated_drafts(channel: str, thread_ts: str | None,
             log.info(f"Draft update predates its cancelled confirmation "
                      f"({label}): ...{draft_id[-12:]} — not reposting")
             continue
+        if state == "live" and _one_list() and _refresh_send_confirmation(draft_id):
+            # One list: the revised draft replaces its card in place, the one
+            # Send card of its item (Action requests holds only what needs
+            # the lock, so it is not lost far up a list). A conversation the
+            # card's own pointer is not in (an Edit asked in the item's
+            # conversation) gets that pointer once.
+            if (entry.get("ea_channel"), entry.get("thread_ts") or "") != (channel, thread_ts or "") \
+                    and entry.get("channel") and entry.get("message_ts"):
+                _post_dm_breadcrumb(channel, thread_ts, entry["channel"], entry["message_ts"],
+                                    "The Send button for the revised draft")
+            log.info(f"Draft revised ({label}): ...{draft_id[-12:]}: its :lock: block drawn again in place")
+            continue
         if state == "live":
             # A revision gets a new card at the bottom of the DM, and the
             # thread a new pointer to it: an old card edited in place far up
@@ -7903,14 +7915,19 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
             except Exception as e:
                 log.debug(f"edit tap: draft subject unread: {e}")
         about = f" to *{subject}*" if subject else ""
+        one = _one_list()
+        # One list: the revised draft replaces this card in place
+        # (_reconfirm_updated_drafts), so nothing new is promised.
         question = (f":pencil2: What should I change in the draft{about}? Tell me here and I "
-                    "will revise it and post a new Send card. You can also edit it in your "
-                    "mail client.")
+                    + ("will revise it on its Send card." if one else
+                       "will revise it and post a new Send card.")
+                    + " You can also edit it in your mail client.")
         asked = None
         # A DM that takes button presses only (the web chat's Action
         # requests) has no place to type the change: a draft whose
         # conversation is there, or that has none, is asked about in a new
-        # conversation in the EA channel.
+        # conversation in the EA channel; with one list, in its item's one
+        # conversation (the one Ask on its Home item opens), kept for it.
         taps_only = getattr(FRONTEND, "dm_takes_text", True) is False
         if key:
             channel = _delivery_channel(key)
@@ -7919,6 +7936,18 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
                     asked = FRONTEND.post(channel=channel, thread_ts=key, text=question)
                 except Exception as e:
                     log.warning(f"edit tap: the conversation of the draft refused the question: {e}")
+        conv = str(value.get("conversation_id") or "")
+        if asked is None and taps_only and one and conv:
+            # a new one in Ask Tacitus, never a room: the question names the
+            # draft's subject, and a kept thread's never goes to a room
+            channel, thread = _item_conversation(conv, room=False)
+            try:
+                asked = FRONTEND.post(channel=channel, thread_ts=thread or None, text=question)
+                if not thread:
+                    _keep_item_conversation(conv, channel, getattr(asked, "id", ""))
+            except Exception as e:
+                log.warning(f"edit tap: the item's conversation refused the question: {e}")
+                asked = None
         if asked is None and taps_only:
             channel = CHANNEL_ID
             try:
@@ -7938,8 +7967,9 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
             log.debug(f"edit pointer permalink failed: {e}")
         where = f"<{link}|in the conversation>" if link else "in the conversation"
         FRONTEND.post(channel=ev.card.channel, thread_ts=ev.card.id,
-                      text=f":pencil2: Tell me the change {where}. This card stays "
-                           "live until the revised draft gets its new card.",
+                      text=f":pencil2: Tell me the change {where}. "
+                           + ("The revised draft shows on this card." if one else
+                              "This card stays live until the revised draft gets its new card."),
                       unfurl=False)
         return
     value = _card_value(ev)

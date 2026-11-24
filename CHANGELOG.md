@@ -19,6 +19,12 @@ repository that preceded it.
   line, "This is on Home now.", and one notification opens Home where a
   card's used to. Settings, Home, Where you answer: In Action requests
   brings the cards back. Slack is unchanged.
+- **One count, one conversation.** With answers on Home, Needs you is part
+  of Home: a conversation that waits for your answer is an "Answer needed"
+  item (Ask opens it, Done marks it done, with Undo), and the drawer has
+  no Needs you entry or count. Edit on a Send card asks for the change in
+  the item's own conversation, and the revised draft shows on the same
+  card, with no second card and no new conversation.
 - **Six words for every button.** The buttons and the lines after a tap
   use six verbs: Send, Draft, Done, Later, Not done and Ask. Close, Mark
   done, Handled and Sent myself are Done (Done: I sent it on a Send
