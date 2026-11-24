@@ -11,9 +11,10 @@ repository that preceded it.
   done, Handled and Sent myself are Done (Done: I sent it on a Send
   card, No reply needed for a reply); Still open, Reopen, Needs me and Not
   done yet are Not done; Waiting on someone is Later: waiting on them;
-  Open in Ask Tacitus, Ask about it and Answer it are Ask; Draft it, Draft
-  a reply, Edit, Try again and Change the letter are Draft or Draft
-  again. A line after a tap says what happened in the same word ("Done.
+  Open in Ask Tacitus, Ask about it and Answer it are Ask; Draft it and
+  Draft a reply are Draft, and Change the letter is Edit the letter (Edit
+  changes a draft that exists; Try again retries one that did not start).
+  A line after a tap says what happened in the same word ("Done.
   It is off your list.", "Not done. It stays on your list."), and a line
   after a failure says what did not happen and what to do next. Old words
   typed before a card's code still work. A test keeps the words from

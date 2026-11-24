@@ -1140,7 +1140,7 @@ def _send_card(channel: str, thread_ts: str, draft_id: str, draft: dict,
     The card carries the whole body: the authored part, then the quoted
     thread, which the frontend shows collapsed. A draft that does not fit
     in one card gets no Send button and no default action: a thumbs up or a
-    bare code selects nothing, and Draft again has its own pencil chip."""
+    bare code selects nothing, and Edit has its own pencil chip."""
     value = {"thread_ts": thread_ts, "draft_id": draft_id,
              "conversation_id": draft.get("conversation_id", ""),
              "ea_channel": channel, "email_system": email_system,
@@ -1163,7 +1163,7 @@ def _send_card(channel: str, thread_ts: str, draft_id: str, draft: dict,
     lines = _draft_card_lines(draft, sched_warning)
     send = _chat.CardAction("approve_send", ":outbox_tray: Send", value, "primary", "send")
     cancel = _chat.CardAction("cancel_send", "Cancel", value, "danger", "cancel")
-    edit = _chat.CardAction("edit_draft", ":pencil2: Draft again", value, "", "edit")
+    edit = _chat.CardAction("edit_draft", ":pencil2: Edit", value, "", "edit")
     rest = [_chat.CardAction("draft_handled", ":white_check_mark: No reply needed", value, "",
                              "handled"),
             _chat.CardAction("sent_myself", ":incoming_envelope: Done: I sent it", value, "",
@@ -6186,9 +6186,9 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
     """One thread's card. A row that waits on the owner's decision (a
     briefing run's question, or the one a reply turn recorded with
     note-reply) carries `question` for the web chat's answer control.
-    `failed` marks a draft that did not start (Draft again in place, the
+    `failed` marks a draft that did not start (Try again in place, the
     owner's `answer` kept). `problem` is the web chat's "could not" card: why
-    the turn wrote no reply, with Draft again (the same `answer` again) and
+    the turn wrote no reply, with Try again (the same `answer` again) and
     Ask, and no answer control."""
     inert, one = _chat.card_text.inert, _chat.card_text.one_line
     desc = inert((row.get("description") or row.get("subject") or row["id"]).strip(), 110)
@@ -6215,7 +6215,7 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
     else:
         head.append("No draft yet.")
     if failed:
-        head.append("The draft did not start. Tap Draft again.")
+        head.append("The draft did not start. Tap Try again.")
     title = "\n".join(head)
     value = {"row": row["id"], "batch": batch_id}
     question: dict = {}
@@ -6230,7 +6230,7 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
     picks = _reply_choices(row) if state == "decision" and not problem else []
     if problem:
         again = dict(value, again=one(answer, _chat.ACTION_TEXT_CHARS)) if answer else value
-        actions = [_chat.CardAction("reply_draft", ":pencil2: Draft again", again, "primary", "again"),
+        actions = [_chat.CardAction("reply_draft", ":repeat: Try again", again, "primary", "again"),
                    _chat.CardAction("reply_discuss", ":speech_balloon: Ask",
                                     dict(value, why=one(problem, 200)), "", "ask")]
     elif picks:
@@ -6244,7 +6244,7 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
                                     "draft")]
     else:
         actions = [_chat.CardAction("reply_draft",
-                                    ":pencil2: Draft again" if failed else ":pencil2: Draft",
+                                    ":repeat: Try again" if failed else ":pencil2: Draft",
                                     value, "primary", "draft",
                                     ask=REPLY_ASK_ANSWER if state == "decision"
                                     else REPLY_ASK_SAY)]
@@ -7643,7 +7643,7 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
     view = {
         "type": "modal", "callback_id": "edit_draft_modal",
         "private_metadata": json.dumps(meta),
-        "title": {"type": "plain_text", "text": "Draft again"},
+        "title": {"type": "plain_text", "text": "Edit draft"},
         "submit": {"type": "plain_text", "text": "Save"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [

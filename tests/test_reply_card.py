@@ -1247,7 +1247,7 @@ def test_on_the_web_a_draft_that_did_not_start_offers_try_again_with_the_answer_
     ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
     ((card_id, card),) = fe.updates
     assert card_id == "m1" and card.question["failed"] and card.question["answer"] == "Three years."
-    assert "The draft did not start. Tap Draft again." in _text(card) and calls["status"] == []
+    assert "The draft did not start. Tap Try again." in _text(card) and calls["status"] == []
     assert not any("Ask me here" in t for _ts, t in calls["status"])
     assert ns["_reply_claim"]("response-lee")             # the row is free again
 

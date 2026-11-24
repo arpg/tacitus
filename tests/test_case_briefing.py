@@ -336,7 +336,7 @@ def test_the_letters_steps_in_its_kinds_words(env):
     assert CB.choice_of(pub["s2"], v)[0] == f"letter:submitted:{pub['s2']['part']['id']}"
     assert "It waits for your Send." in pub["s3"]["pub"]["confirm"] and "statement" in pub["s3"]["pub"]["detail"]
     assert CB.choice_of(pub["s3"], v) == ("letter:yes_ask", "")
-    assert pub["s4"]["pub"]["label"] == "Draft again"
+    assert pub["s4"]["pub"]["label"] == "Edit the letter"
     for s in pub.values():
         assert len(s["pub"]["label"]) <= CB.LABEL_MAX
         plain(s["pub"]["label"] + s["pub"].get("detail", "") + s["pub"].get("confirm", ""))

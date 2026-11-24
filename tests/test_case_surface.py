@@ -428,7 +428,7 @@ def test_the_case_block_offers_what_fits_its_state():
     acts = C.case_spec(undated, TODAY)["actions"]
     assert [a[0] for a in acts] == ["case_draft", "case_date_pick", "case_decline"]
     assert acts[0][1] == ":pencil2: Draft the answers" and acts[1][1] == ":calendar: Pick the date" and "part" not in acts[1][2]
-    assert C.case_spec(report(), TODAY)["actions"][0][1] == ":pencil2: Draft again"
+    assert C.case_spec(report(), TODAY)["actions"][0][1] == ":pencil2: Edit the report"
     kept = C.case_spec(review(), TODAY, "local")
     assert not any(ln.startswith("<https://") for ln in kept["lines"]) and "Pat Lee" not in json.dumps(kept)
 

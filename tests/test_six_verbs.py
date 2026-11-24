@@ -1,6 +1,8 @@
-"""The app's six verbs, Send, Draft, Done, Later, Not done and Ask: every
-button label the code can draw for a done, not-done, later, ask or draft
-act is one of their words, so the words do not drift again.
+"""The app's six verbs, Send, Draft, Done, Later, Not done and Ask, and
+the one exception, Edit (change a draft that exists): every button label
+the code can draw for a done, not-done, later, ask, draft or edit act is
+one of their words, so the words do not drift again. Try again is only
+the retry of something that failed.
 
 The labels are read from the code itself: every CardAction the bot builds
 (ea-chat-bot.py), every Home choice and step (home_items.py,
@@ -30,7 +32,8 @@ import home_deeper as HD  # noqa: E402
 # lock; "answer" is a question's own words (Yes, No, the offered answers,
 # a date); "pick" chooses among places (a room, a part); "go" opens a
 # place and does nothing there; "split" posts one card per item of a
-# batch; "recard" brings a draft's Send card back; "decline" says No to a
+# batch; "recard" brings a draft's Send card back; "retry" starts again a
+# draft that did not start; "decline" says No to a
 # work request after a Yes; "hold" puts a block on the calendar; "retry"
 # reads a briefing again.
 CARD = {
@@ -40,7 +43,7 @@ CARD = {
     "cancel_send": "cancel", "cancel_schedule_send": "cancel", "dismiss_bulk_send": "cancel",
     "cancel_event": "cancel", "cancel_event_update": "cancel", "cancel_event_delete": "cancel",
     "cancel_publish": "cancel", "plugin_card_cancel": "cancel", "cancel_browser": "cancel",
-    "edit_draft": "draft", "reply_draft": "draft",
+    "edit_draft": "edit", "reply_draft": "draft",
     "draft_handled": "done", "sent_myself": "done", "close_proposed": "done",
     "close_all_proposed": "done", "reply_not_needed": "done",
     "keep_open_proposed": "not_done", "reopen_closed": "not_done",
@@ -51,8 +54,10 @@ CARD = {
     "review_proposed": "split", "review_replies": "split",
 }
 # One id, more than one act, told apart by the label: Draft's id also
-# carries a question's typed answer and a draft's lost Send card.
-CARD_BY_LABEL = {("reply_draft", "Other answer"): "answer", ("reply_draft", "New Send card"): "recard"}
+# carries a question's typed answer, a draft's lost Send card and the retry
+# of a draft that did not start.
+CARD_BY_LABEL = {("reply_draft", "Other answer"): "answer", ("reply_draft", "New Send card"): "recard",
+                 ("reply_draft", "Try again"): "retry"}
 HOME = {
     "draft": "draft", "say": "draft", "not_needed": "done", "done": "done", "start": "ask",
     "waiting": "later", "later": "later", "reopen": "not_done", "open": "go", "outlook": "go",
@@ -61,7 +66,7 @@ HOME = {
 # A work case's choices and buttons, by the answer after the kind's prefix.
 CASE = {
     "yes": "answer", "yes_ask": "answer", "yes_date": "answer", "no": "answer", "date": "answer",
-    "date_pick": "answer", "draft": "draft", "all": "done", "decline": "decline",
+    "date_pick": "answer", "draft": "draft_or_edit", "all": "done", "decline": "decline",
     "delivered": "done", "submitted": "done", "returned": "done",
 }
 # The words each act may use. A Send-family label names its own act.
@@ -70,7 +75,11 @@ ALLOWED = {
     "not_done": r"Not done",
     "later": r"Later|Later: .+",
     "ask": r"Ask|Ask: .+",
-    "draft": r"Draft|Draft again|Draft with my words|Draft: .+|Draft (the|a) .+",
+    "draft": r"Draft|Draft with my words|Draft: .+|Draft (the|a) .+",
+    "edit": r"Edit|Edit the .+",
+    # a work case's one draft button: Draft before a draft exists, Edit after
+    "draft_or_edit": r"Draft|Draft (the|a) .+|Edit|Edit the .+",
+    "retry": r"Try again",
     "cancel": r"Cancel|\{\}",
     "send": r"Send|Send all \{\}|Schedule|Create|Reschedule|Delete|Publish|Push|\{\}",
 }
@@ -80,8 +89,8 @@ RETIRED = {
     "Sent myself", "Not needed", "All submitted", "Still open", "Reopen", "Not done yet",
     "Needs me", "Skip 3 days", "Waiting on someone", "Open in Ask Tacitus", "Ask about this",
     "Ask about it", "Answer it", "Start it with Tacitus", "Continue in a conversation",
-    "Draft it", "Draft a reply", "Draft the reply", "Tell Tacitus what to say", "Try again",
-    "Edit", "Keep", "Fill it in", "Change the letter", "Change the report", "Change the answers",
+    "Draft it", "Draft a reply", "Draft the reply", "Tell Tacitus what to say", "Draft again",
+    "Keep", "Fill it in", "Change the letter", "Change the report", "Change the answers",
     "Change the draft",
 }
 EMOJI = re.compile(r"^\s*(?::[a-z0-9_+-]+:\s*)+")
@@ -206,7 +215,7 @@ def test_the_deeper_briefing_steps_speak_the_verbs():
 
 def test_each_work_kind_says_its_verbs():
     for w in C.WORDS.values():
-        assert _check("draft", w.draft) and _check("draft", w.change), (w.kind, w.draft, w.change)
+        assert _check("draft", w.draft) and _check("edit", w.change), (w.kind, w.draft, w.change)
         assert _check("done", w.delivered_button.format(name="North Campus")), w.delivered_button
         assert _check("done", w.delivered_another), w.delivered_another
     labels = {_words(label) for _aid, label in _scan(ROOT / "preprocessor/case_briefing.py")}
@@ -230,7 +239,7 @@ def _case(kind, state):
 
 def test_a_case_card_and_its_home_item_speak_the_verbs(monkeypatch):
     """The block (Draft, the date, Decline, a part already done) and the
-    ready list (one Done per part, all of them, Draft again), on the card
+    ready list (one Done per part, all of them, Edit), on the card
     and on Home, for every kind."""
     monkeypatch.setattr(C, "_cases", lambda: None)
     today = date(2026, 11, 28)
@@ -256,7 +265,7 @@ def test_no_retired_label_comes_back():
         found += [(path, label) for _aid, label in _scan(ROOT / path) if _words(label) in RETIRED]
     js = (ROOT / "botcore/botcore/chat/webui/app.js").read_text(encoding="utf-8")
     html = (ROOT / "botcore/botcore/chat/webui/index.html").read_text(encoding="utf-8")
-    for label in RETIRED - {"Close", "Edit", "Keep", "Try again"}:
+    for label in RETIRED - {"Close", "Keep"}:
         if re.search(r"""['"`]%s['"`]""" % re.escape(label), js):
             found.append(("app.js", label))
         if re.search(r">%s<" % re.escape(label), html):
@@ -280,7 +289,10 @@ def test_typed_verbs_reach_the_older_words():
     send = [("approve_send", "primary", "send"), ("cancel_send", "danger", "cancel"),
             ("edit_draft", "", "edit"), ("draft_handled", "", "handled"), ("sent_myself", "", "sent")]
     assert cards._word_action(send, "no reply needed") == "draft_handled"
-    assert cards._word_action(send, "draft again") == "edit_draft"
+    assert cards._word_action(send, "edit") == "edit_draft"
+    retry = [("reply_draft", "primary", "again"), ("reply_discuss", "", "ask")]
+    assert cards._word_action(retry, "try again") == "reply_draft"
+    assert cards._word_action(retry, "again") == "reply_draft"
     assert cards._word_action(send, "handled") == "draft_handled"
     assert cards._word_action(send, "done") is None  # Done: I sent it is never a guess
     delete = [("approve_event_delete", "danger", "delete"), ("cancel_event_delete", "", "keep")]

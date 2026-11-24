@@ -300,7 +300,7 @@ project store: the sender asked something answerable, a form or link is
 requested, a meeting is being arranged, an intro or a yes is owed. This
 is the routine the user otherwise does by hand every morning. Creating
 the draft IS the ask under the ask-first tier: when a chat channel is
-configured the bot posts the Send card with Draft again and No reply needed buttons,
+configured the bot posts the Send card with Edit and No reply needed buttons,
 and one Send-all card when several are ready; without one the draft
 waits in the Drafts folder and the user sends it from Outlook. Never ask
 in the briefing whether you should draft.
@@ -540,7 +540,7 @@ handled_by_reply recap, step-6a closures count, drafts staged]
 *unmerge <id>* if wrong". Merges must be visible; a silent bad merge
 is the failure mode the user accepted this feature against.]
 
-:envelope: *Drafts ready* ([N]): [with a chat channel: "Send, Draft again or No reply needed on each card in your DM; one Send-all card when several are ready"; without one: "in your Outlook Drafts folder"]
+:envelope: *Drafts ready* ([N]): [with a chat channel: "Send, Edit or No reply needed on each card in your DM; one Send-all card when several are ready"; without one: "in your Outlook Drafts folder"]
 - [recipient/subject] — [what the reply says, in one line]
 - [recipient/subject] — [what the reply says]
 [Every draft created during this run, one line each. With a chat channel

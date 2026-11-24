@@ -66,7 +66,7 @@
           "action_id": "edit_draft",
           "text": {
             "emoji": true,
-            "text": ":pencil2: Draft again",
+            "text": ":pencil2: Edit",
             "type": "plain_text"
           },
           "type": "button",

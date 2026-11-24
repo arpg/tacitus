@@ -895,7 +895,7 @@ one-click confirm (closure.py):
 
 :grey_question: *Looks done?* (1) Done or Not done on each one's card in your DM: NSF annual report (submitted Friday in Research.gov).
 
-:envelope: *Drafts ready* (2): Send, Draft again or No reply needed on each card in your DM; one Send-all card when several are ready
+:envelope: *Drafts ready* (2): Send, Edit or No reply needed on each card in your DM; one Send-all card when several are ready
 - *Slides for Thursday's review* (Pat Rivera): Yes, the final slides go out tonight.
 - *Reviews for the robotics workshop* (Ana Diaz): Yes, both reviews will be in by October 23.
 

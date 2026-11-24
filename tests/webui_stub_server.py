@@ -1053,7 +1053,7 @@ class Stub:
             "quoted": "On Monday someone wrote:\n> Does the budget cover the trips?",
             "actions": [
                 {"id": "send", "label": "Send", "value": {"draft": "d1"}, "style": "primary", "word": "send"},
-                {"id": "edit", "label": ":pencil2: Draft again", "value": {"draft": "d1"}, "style": "", "word": "edit"},
+                {"id": "edit", "label": ":pencil2: Edit", "value": {"draft": "d1"}, "style": "", "word": "edit"},
                 {"id": "cancel", "label": "Cancel", "value": {"draft": "d1"}, "style": "danger", "word": "cancel"}],
             "select": None, "block_id": "", "footer": "Code ABCD", "fallback_text": "Confirm send",
             "thread_ts": tk, "ea_channel": MAIN, "content_fingerprint": "", "no_default": False})

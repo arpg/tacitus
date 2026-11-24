@@ -133,7 +133,7 @@ When the body proposes meeting times, a preflight line checks each one
 against the user's calendars (`validate-draft`) and the internal recipients'
 own (`check-attendees`), for the length the draft states; a calendar
 invite's Create card carries the same invitee check. It has five
-buttons: Send (mints the token and sends), Draft again (opens the body in
+buttons: Send (mints the token and sends), Edit (opens the body in
 a modal; Save runs `update-draft` and redraws the block so the reviewed
 text is the sent text), No reply needed (deletes the draft, archives the source
 thread and closes the ledger row: the owner dealt with it or no reply is
@@ -644,7 +644,7 @@ on the thread's own session, which reads the owner's typed answer; a
 resumed thread session with side sessions in its thread reads the thread
 so far, and every thread session there gets the ids of the drafts made in
 the thread (`_side_drafts_note`), so a change asked for there revises the
-right draft. On the web chat, which has no modal, Draft again on a Send card asks
+right draft. On the web chat, which has no modal, Edit on a Send card asks
 for the change in the conversation that the card's value names, with a
 link under the card. A draft from no conversation is asked about under
 its card. A question that a

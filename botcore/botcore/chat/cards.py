@@ -122,7 +122,7 @@ class ConfirmationCard:
     # Why a reply turn wrote no reply (the web chat's "could not" card for a
     # Replies row): {"text": the reason in plain words, "from", "since",
     # "about"}. The block folds to "Not drafted" and the reason; the card
-    # offers Draft again and Ask, never an answer control.
+    # offers Try again and Ask, never an answer control.
     problem: dict = field(default_factory=dict)
     # A press on this card that did nothing, in the bot's plain words (one
     # line): the card is redrawn in place with it and stays open, instead
@@ -179,7 +179,7 @@ WORD_ALIASES = {
     "done": ("close", "close all"),
     "not done": ("keep", "reopen"),
     "no reply needed": ("handled",),
-    "draft again": ("edit", "again", "draft"),
+    "try again": ("again", "draft"),
     "draft": ("again",),
     "cancel": ("keep", "one by one"),
 }

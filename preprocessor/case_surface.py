@@ -120,7 +120,7 @@ class Words:
     ask_title: str = ":memo: *A request for your work.* Will you do it?"
     home_yes: str = "Yes, I will do it"
     draft: str = "Draft"
-    change: str = "Draft again"
+    change: str = "Edit the draft"
     draft_ask: str = "what to say in it"
     delivered_button: str = "Delivered: {name}"
     delivered_another: str = "Delivered: another one"
@@ -177,7 +177,7 @@ LETTER = Words(
     question="Will you write it?",
     choices=(("yes", "Yes"), ("yes_ask", "Yes, ask for materials"), ("no", "No")),
     ask_title=":memo: *A letter request.* Will you write it?", home_yes="Yes, I will write it",
-    draft="Draft the letter", change="Draft again",
+    draft="Draft the letter", change="Edit the letter",
     delivered_button="Submitted: {name}", delivered_another="Submitted: another one",
     missing_work="the letter", missing_materials="the materials (CV, statement)",
     link="Open the portal for {name}",
@@ -207,7 +207,7 @@ REVIEW = Words(
     state_words=dict(_STATES, accepted="to do", ready="ready to return", returned="returned"),
     question="Will you do this review?", choices=(("yes", "Yes"), ("no", "No")),
     ask_title=":memo: *A review request.* Will you do this review?", home_yes="Yes, I will review it",
-    draft="Draft the report", change="Draft again", draft_ask="your points for the report",
+    draft="Draft the report", change="Edit the report", draft_ask="your points for the report",
     delivered_button="Returned: {name}", delivered_another="Returned: another one",
     missing_work="the report", missing_materials="the files to review",
     link="Open the review site for {name}",
@@ -235,7 +235,7 @@ FORM = Words(
                      ready="ready to submit", submitted="submitted"),
     question="Will you fill it in?", choices=(("yes", "Yes"), ("no", "No")),
     ask_title=":memo: *A form to fill in.* Will you fill it in?", home_yes="Yes, I will fill it in",
-    draft="Draft the answers", change="Draft again", draft_ask="anything to put in it",
+    draft="Draft the answers", change="Edit the answers", draft_ask="anything to put in it",
     delivered_button="Submitted: {name}", delivered_another="Submitted: another one",
     missing_work="the answers",
     heading="Forms to fill in", heading_due="Forms due",
@@ -263,7 +263,7 @@ REPORT = Words(
     question="Will you do it?",
     choices=(("yes", "Yes"), ("yes_ask", "Yes, ask for materials"), ("no", "No")),
     ask_title=":memo: *A report request.* Will you do it?", home_yes="Yes, I will do it",
-    draft="Draft the report", change="Draft again",
+    draft="Draft the report", change="Edit the report",
     delivered_button="Delivered: {name}", delivered_another="Delivered: another one",
     missing_work="the draft",
     heading="Reports you are writing", heading_due="Reports due",

@@ -1676,7 +1676,7 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
         out.append(f":link: auto-merged {m.get('count', '')} emails about "
                    f"{_clean(m.get('entity'), 60)}; say *unmerge {m.get('id', '')}* if wrong")
     if ok:
-        out += ["", f":envelope: *Drafts ready* ({len(ok)}): Send, Draft again or No reply needed on "
+        out += ["", f":envelope: *Drafts ready* ({len(ok)}): Send, Edit or No reply needed on "
                     f"each card in {_card_place()}; one Send-all card when several are ready"]
         out += [f"- {line}" for _r, line in ok]
     if lists["needs"]:
@@ -1760,7 +1760,7 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
         out += ["", f":memo: *{head}* ({len(lists['letters'])}):"]
         out += [f"- {line}" for _r, line in lists["letters"]]
     if lists["draft"]:
-        out += ["", f":envelope: *Drafts ready* ({len(lists['draft'])}): Send, Draft again or No reply "
+        out += ["", f":envelope: *Drafts ready* ({len(lists['draft'])}): Send, Edit or No reply "
                     f"needed on each card in {_card_place()}"]
         out += [f"- {line}" for _r, line in lists["draft"]]
     out += _queue_line(cands, drafts, lists, gone)

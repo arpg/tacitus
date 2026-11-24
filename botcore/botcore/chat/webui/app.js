@@ -1191,11 +1191,11 @@ function answerCard(msg, send = (body, box) => act(msg, body, box)) {
     else b.addEventListener('click', () => send({ action_id: a.id, value: a.value ?? '' }, box));
     return b;
   });
-  let chosen = picks.find((a) => words(a) === q.answer) || null; // a press that failed keeps its answer for Draft again
+  let chosen = picks.find((a) => words(a) === q.answer) || null; // a press that failed keeps its answer for Try again
   const field = ask ? h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
     'aria-label': 'Your answer', placeholder: picks.length ? 'Or type your answer' : 'Type your answer' }) : null;
   if (field && !chosen && q.answer) field.value = q.answer;
-  const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Draft again' : q.go || 'Draft');
+  const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Try again' : q.go || 'Draft');
   const chips = picks.map((a) => h('button', { type: 'button', class: 'btn answer-pick', 'data-action': a.id,
     onclick: () => { if (field) field.value = ''; chosen = null; send({ action_id: a.id, value: a.value ?? '' }, box).then(sync); } }, words(a)));
   const locked = Boolean(S.me && S.me.card_actions === false);
@@ -1215,7 +1215,7 @@ function answerCard(msg, send = (body, box) => act(msg, body, box)) {
   const from = [q.from && `From ${q.from}`, since && `waiting ${ageDays(since / 1000)}`].filter(Boolean).join(' · ');
   box.append(...[q.text ? h('p', { class: 'answer-q' }, oneLine(q.text, 300)) : null, from ? h('p', { class: 'answer-from' }, from) : null,
     q.about ? h('p', { class: 'answer-about' }, oneLine(q.about, 120)) : null,
-    q.failed ? h('p', { class: 'answer-failed', role: 'alert' }, 'The draft did not start. Your answer is kept: tap Draft again.') : null,
+    q.failed ? h('p', { class: 'answer-failed', role: 'alert' }, 'The draft did not start. Your answer is kept: tap Try again.') : null,
     h('fieldset', { class: 'card-actions answer-ctl' }, h('legend', {}, 'Your answer'),
       chips.length ? h('div', { class: 'answer-picks', role: 'group', 'aria-label': 'Quick answers' }, chips) : null, field, go),
     more.length ? h('div', { class: 'card-actions answer-more' }, more) : null, ...days,

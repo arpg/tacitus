@@ -559,7 +559,7 @@ def test_the_case_block_offers_what_fits_its_state():
     assert spec["title"] == ":memo: *Time to write the letter for Avery Quinn*: due tomorrow, 9 places."
     ids = [a[0] for a in spec["actions"]]
     assert ids == ["letter_draft", "letter_date_pick", "letter_decline"]
-    assert spec["actions"][0][1] == ":pencil2: Draft again"        # one destination is drafted
+    assert spec["actions"][0][1] == ":pencil2: Edit the letter"    # one destination is drafted
     assert spec["actions"][1][6] == {"proposed": "2026-12-01", "min": "2026-11-23", "max": "2027-11-24"}
     assert [a for a in spec["actions"] if a[5] and len(a) < 7] == [spec["actions"][0]]   # one field of words
     assert [o[1] for o in spec["select"][2]] == ["av4", "av5", "av6", "av7", "av8", "av9"]
@@ -579,7 +579,7 @@ def test_the_case_block_offers_what_fits_its_state():
 
 def test_the_ready_letter_is_one_delivery_list():
     """Once the letter is ready the block is the delivery list: each place
-    with its link and Submitted, All submitted, Draft again."""
+    with its link and Submitted, Submitted: all, Edit the letter."""
     c = avery()
     for d in c["destinations"][3:]:
         d["state"] = "ready"

@@ -1200,7 +1200,7 @@ so a conversation begun on one device is at hand on another
   `web_push_policy.report_title`). Never one: a thread that opens with a
   card or a card's status line, anything else the bot opened that the
   owner never wrote in (a briefing's slice in a project room, a notice,
-  an alert, a check, the reply to the question after a Draft again tap), the
+  an alert, a check, the reply to the question after an Edit tap), the
   digests, and anything
   in Action requests but a thread the owner opened by typing there before
   it took button presses only. A card, read or unread, waits in Action
@@ -1255,7 +1255,7 @@ and what the place does changed.
   conversation. The route answers the stored message in its new place, so
   nothing typed is lost. A card's own words go with its press, as before
   (CardAction.ask: the field above its buttons).
-- **Words the bot asks for go to Ask Tacitus.** Draft again on a Send card asks
+- **Words the bot asks for go to Ask Tacitus.** Edit on a Send card asks
   for the change in the draft's conversation; when that conversation is in
   Action requests, or there is none (a draft from a scheduled run), the
   question opens a new conversation in Ask Tacitus and the card points
@@ -1286,7 +1286,7 @@ and what the place does changed.
   buttons, which post to the card's own route (`/api/cards/...`) with its
   own value: a new way to see the card, never a new way to confirm. A
   device the bot does not let press cards sees them greyed out, as
-  anywhere. Under the card come the bot's lines in its thread (a Draft again
+  anywhere. Under the card come the bot's lines in its thread (an Edit
   question's pointer, Draft's progress) and a link to the conversation
   it came from. A case's card has its briefing above it (Home, "The
   briefing on a case"). Opening it reads its thread. The body scrolls with
@@ -1384,11 +1384,11 @@ and what the place does changed.
   for <person>: due Tue Dec 1, 4 places.", each open destination with its
   state and how it is submitted (its own date only when earlier than the
   case's), what is missing, a link line per portal, and Draft the letter
-  (Draft again once drafted, the card's only field of words), Change
+  (Edit the letter once drafted, the card's only field of words), Change
   the date (a date picker), Decline and a menu for a place already
   submitted. Once the letter is ready the card is the delivery list:
   Submitted per destination (a menu for more than three), Submitted: all,
-  Draft again; a place that asks after that is one line with its
+  Edit the letter; a place that asks after that is one line with its
   link. The card is posted again only when what it shows changed, or on a
   loud rung of the date (the day before, the day itself, the day after),
   the old one retired, so it tops the list and pushes. A press that did
@@ -1424,13 +1424,13 @@ and what the place does changed.
     (`--ledger-id`, `_reply_draft_carded` from the registry write): the
     card links to it, and the app opens it in the block's place (`next`).
     A Send card that posts late takes over the turn's card and any card of
-    the row still live (a question, could not, Draft again), so nothing
+    the row still live (a question, could not, Try again), so nothing
     wrong is left behind;
   - the turn's own record on the row, written after it began (`ledger.py
     note-reply`): `decision` is a new row card in the same thread with the
     answer control (its answer runs in the row's side session, so the
     turn that asked reads it); `blocked` is the "could not" card: why, in
-    plain words, with Draft again (the same answer again) and
+    plain words, with Try again (the same answer again) and
     Ask (`reply_discuss`: a new conversation in the EA channel opened
     by the bot's line that names the row), and no answer control; `left`
     (or `escalated`) closes the card with what happened;
@@ -1447,7 +1447,7 @@ and what the place does changed.
   on another card of the row says the reply is being written already, and
   a row whose draft exists offers its Send card. A card whose thread no
   longer waits says so within 10 minutes. A turn that did not start gives
-  the same card back, in place, with Draft again and the answer kept.
+  the same card back, in place, with Try again and the answer kept.
 - **Each request's own lines.** The bot's posts for a Replies row carry
   the row's tag (`ChatFrontend.tagging`, the web store's `message_tags`):
   the progress line, the turn's own posts and the row's cards. A request
@@ -1530,16 +1530,17 @@ and what the place does changed.
 ## The six verbs
 
 Every button the owner presses, on a card, on Home or in a thread's
-header, is one of six verbs, and the line after the press says what
-happened in the same verb, then the one fact he needs ("Done. It is off
-your list.", "Not done. It stays on your list.", "Later. It comes back on
-Friday."). A line after a failure says what did not happen and the one
+header, is one of six verbs, or Edit for a draft that exists, and the
+line after the press says what happened in the same verb, then the one
+fact he needs ("Done. It is off your list.", "Not done. It stays on your
+list.", "Later. It comes back on Friday."). A line after a failure says what did not happen and the one
 thing to do next ("Nothing was done. Try again in a minute.").
 
 | Verb | Its forms | Instead of |
 |---|---|---|
 | Send (behind the lock, with Cancel) | Send, Send all N, Schedule, Create, Reschedule, Delete, Publish, Push, a plugin's own word | |
-| Draft | Draft, Draft again, Draft with my words, Draft: X, Draft the letter (the report, the answers), Draft a question: X | Draft it, Draft a reply, Draft the reply, Edit, Try again, Tell Tacitus what to say, Fill it in, Change the letter |
+| Draft | Draft, Draft with my words, Draft: X, Draft the letter (the report, the answers), Draft a question: X | Draft it, Draft a reply, Draft the reply, Tell Tacitus what to say, Fill it in |
+| Edit (the one exception: change a draft that exists) | Edit, Edit the letter (the report, the answers, the draft) | Change the letter (the report, the answers, the draft) |
 | Done | Done, Done (N), Done: I sent it; a reply's No reply needed; a work part's Submitted (Returned, Delivered): X | Close, Close all, Mark done, Mark it done, Mark all done, Handled, Sent myself, Not needed, All submitted |
 | Later | Later (Tomorrow, Monday, Pick a date), Later: waiting on them, Later: a day | Skip 3 days, Waiting on someone, Wait until a day |
 | Not done | Not done | Still open, Reopen, Not done yet, Needs me |
@@ -1548,8 +1549,10 @@ thing to do next ("Nothing was done. Try again in a minute.").
 A question's own answers (Yes, No, the offered answers, a date) are its
 words, not verbs; so are a pick of a place (a room, a part), a link to a
 place (Open it in Action requests, Open in Outlook), One by one on a batch
-card, New Send card, Decline on a work case, Change the date, a calendar
-Hold and Try again on a briefing that could not be read. A word the owner
+card, New Send card, Decline on a work case, Change the date and a
+calendar Hold. Try again is only the retry of something that failed: a
+draft that did not start (its line reads "The draft did not start. Tap
+Try again.") or a briefing that could not be read. A word the owner
 types before a card's code keeps working: each action keeps its `word`,
 and the verbs reach it (`cards.WORD_ALIASES`). `tests/test_six_verbs.py`
 reads every label the code can draw and fails on a word outside these.
@@ -1654,7 +1657,7 @@ frontend archives.
 
 ## Windows
 
-A card button may open a window (a modal, Slack's view shape), as Draft again on
+A card button may open a window (a modal, Slack's view shape), as Edit on
 a draft's Send card does. Each click on the web gets a trigger
 (`WEB_TRIGGER`, `web:` and a random part) in its `ActionEvent` and in the
 route's answer. The core calls `open_modal(trigger, view)` as on Slack; the
@@ -2429,7 +2432,7 @@ first needs the owner. Never pushed: a note of something already done (a
 card with `undo`: the auto-close note "Done: ..." with Not done), the
 bot's own lines in Action requests (a reply turn's progress and result
 lines, a result its card already shows, the notice of dates set for
-letters, the Draft again pointer; what needs the owner there is a card, which
+letters, the Edit pointer; what needs the owner there is a card, which
 pushes), a line posted inside `quietly()` (the result of a press, in the
 conversation that asked for the card), a digest (a channel of
 kind `digest`), a notice in a thread
