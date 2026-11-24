@@ -58,7 +58,7 @@ gets a room of its own.
 
 | You say | The EA does |
 |---|---|
-| "reply to Nico and say Tuesday works" | Drafts in your voice; a card with Send / Edit / Handled / Cancel lands in Action requests (your DM on Slack) |
+| "reply to Nico and say Tuesday works" | Drafts in your voice; a card with Send / Draft again / No reply needed / Cancel lands in Action requests (your DM on Slack) |
 | "that's done" / "snooze the vendor thread until Wednesday" | Closes or snoozes the ledger item and archives the mail |
 | "find a time with Ari and Oakley next week" | Runs the solver over every calendar, proposes times, stages the invite behind a Create button |
 | "fill the When2Meet in that email" | Reads the poll, shows the conflicts, fills it when you say so |
@@ -197,7 +197,7 @@ tagged and without attendees.
 |---|---|---|
 | Triage and the obligations ledger | Stable | Reads the inbox before each briefing (morning, afternoon, weekly); in the assistant and collaborator modes it also checks new mail every 10 minutes during business hours. Finds what needs a reply and which threads were dropped, ranks them, and tracks each one until it closes. |
 | Drafts in your voice | Stable | Learns from 90 days of your sent mail how you write to each person: greeting, closing, length, formality. The draft to your dean reads differently from the draft to your student. |
-| The review card | Stable | One card per draft with Send, Edit, Handled, Sent myself and Cancel. The text you approve is the text that goes out. Outlook and Gmail share the flow. |
+| The review card | Stable | One card per draft with Send, Draft again, No reply needed, Done: I sent it and Cancel. The text you approve is the text that goes out. Outlook and Gmail share the flow. |
 | Scheduling | Stable | An OR-tools solver over Outlook and your Google calendars. Your rules live as recurring events on a calendar you edit in your calendar app. Detects reschedule requests within minutes. Fills When2Meet, Doodle and similar polls after you see the conflicts. |
 | Rooms and memory | Stable | One session per conversation and, in the collaborator mode, one specialist per project room. A project store holds people, filed mail and a decision journal. Rules you state in chat are stored in your words and applied wherever they fit. |
 | Web chat | Stable | The bot's own chat, installed on your phone as an app, with notifications and a relay for off the tailnet. Runs alone or beside Slack. The chat that new features land in first. See [docs/webchat.md](docs/webchat.md). |

@@ -6,6 +6,19 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Six words for every button.** The buttons and the lines after a tap
+  use six verbs: Send, Draft, Done, Later, Not done and Ask. Close, Mark
+  done, Handled and Sent myself are Done (Done: I sent it on a Send
+  card, No reply needed for a reply); Still open, Reopen, Needs me and Not
+  done yet are Not done; Waiting on someone is Later: waiting on them;
+  Open in Ask Tacitus, Ask about it and Answer it are Ask; Draft it, Draft
+  a reply, Edit, Try again and Change the letter are Draft or Draft
+  again. A line after a tap says what happened in the same word ("Done.
+  It is off your list.", "Not done. It stays on your list."), and a line
+  after a failure says what did not happen and what to do next. Old words
+  typed before a card's code still work. A test keeps the words from
+  drifting.
+
 - **One item stays in one place.** On the web chat the project rooms get
   no morning or afternoon briefing post: Home lists every item, and a
   room keeps its conversations (`"briefing_rooms": true` in

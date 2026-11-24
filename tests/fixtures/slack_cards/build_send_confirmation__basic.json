@@ -66,7 +66,7 @@
           "action_id": "edit_draft",
           "text": {
             "emoji": true,
-            "text": ":pencil2: Edit",
+            "text": ":pencil2: Draft again",
             "type": "plain_text"
           },
           "type": "button",
@@ -76,7 +76,7 @@
           "action_id": "draft_handled",
           "text": {
             "emoji": true,
-            "text": ":white_check_mark: Handled",
+            "text": ":white_check_mark: No reply needed",
             "type": "plain_text"
           },
           "type": "button",
@@ -86,7 +86,7 @@
           "action_id": "sent_myself",
           "text": {
             "emoji": true,
-            "text": ":incoming_envelope: Sent myself",
+            "text": ":incoming_envelope: Done: I sent it",
             "type": "plain_text"
           },
           "type": "button",

@@ -119,11 +119,11 @@ class Words:
     choices: tuple = (("yes", "Yes"), ("no", "No"))
     ask_title: str = ":memo: *A request for your work.* Will you do it?"
     home_yes: str = "Yes, I will do it"
-    draft: str = "Draft it"
-    change: str = "Change the draft"
+    draft: str = "Draft"
+    change: str = "Draft again"
     draft_ask: str = "what to say in it"
     delivered_button: str = "Delivered: {name}"
-    delivered_another: str = "Delivered another one"
+    delivered_another: str = "Delivered: another one"
     missing_work: str = "the draft"
     missing_materials: str = ""
     link: str = "Open the link for {name}"
@@ -177,8 +177,8 @@ LETTER = Words(
     question="Will you write it?",
     choices=(("yes", "Yes"), ("yes_ask", "Yes, ask for materials"), ("no", "No")),
     ask_title=":memo: *A letter request.* Will you write it?", home_yes="Yes, I will write it",
-    draft="Draft the letter", change="Change the letter",
-    delivered_button="Submitted: {name}", delivered_another="Submitted another one",
+    draft="Draft the letter", change="Draft again",
+    delivered_button="Submitted: {name}", delivered_another="Submitted: another one",
     missing_work="the letter", missing_materials="the materials (CV, statement)",
     link="Open the portal for {name}",
     heading="Letters you are writing", heading_due="Letters due",
@@ -207,8 +207,8 @@ REVIEW = Words(
     state_words=dict(_STATES, accepted="to do", ready="ready to return", returned="returned"),
     question="Will you do this review?", choices=(("yes", "Yes"), ("no", "No")),
     ask_title=":memo: *A review request.* Will you do this review?", home_yes="Yes, I will review it",
-    draft="Draft the report", change="Change the report", draft_ask="your points for the report",
-    delivered_button="Returned: {name}", delivered_another="Returned another one",
+    draft="Draft the report", change="Draft again", draft_ask="your points for the report",
+    delivered_button="Returned: {name}", delivered_another="Returned: another one",
     missing_work="the report", missing_materials="the files to review",
     link="Open the review site for {name}",
     heading="Reviews you are doing", heading_due="Reviews due",
@@ -235,8 +235,8 @@ FORM = Words(
                      ready="ready to submit", submitted="submitted"),
     question="Will you fill it in?", choices=(("yes", "Yes"), ("no", "No")),
     ask_title=":memo: *A form to fill in.* Will you fill it in?", home_yes="Yes, I will fill it in",
-    draft="Fill it in", change="Change the answers", draft_ask="anything to put in it",
-    delivered_button="Submitted: {name}", delivered_another="Submitted another one",
+    draft="Draft the answers", change="Draft again", draft_ask="anything to put in it",
+    delivered_button="Submitted: {name}", delivered_another="Submitted: another one",
     missing_work="the answers",
     heading="Forms to fill in", heading_due="Forms due",
     home_label="Form", home_label_new="Form request",
@@ -263,8 +263,8 @@ REPORT = Words(
     question="Will you do it?",
     choices=(("yes", "Yes"), ("yes_ask", "Yes, ask for materials"), ("no", "No")),
     ask_title=":memo: *A report request.* Will you do it?", home_yes="Yes, I will do it",
-    draft="Draft it", change="Change the draft",
-    delivered_button="Delivered: {name}", delivered_another="Delivered another one",
+    draft="Draft the report", change="Draft again",
+    delivered_button="Delivered: {name}", delivered_another="Delivered: another one",
     missing_work="the draft",
     heading="Reports you are writing", heading_due="Reports due",
     home_label="Report", home_label_new="Report request",
@@ -1623,7 +1623,7 @@ def case_spec(case: dict, today: date, lv: str = "full", *, reminder: str = "", 
     act = f"{w.prefix}_{w.deliver_choice}"
     select = None
     if f["open"]:
-        select = (act, f"Already {w.delivered_word} one",
+        select = (act, f"{w.delivered_word.capitalize()}: pick one",
                   [(_clean(d.get("name"), 60) if lv in ("full", "summary") else f"{w.part.capitalize()} {i}",
                     str(d.get("id") or "")) for i, d in enumerate(f["open"], 1)])
     return {"kind": w.prefix, "title": title, "lines": lines,
@@ -1673,7 +1673,7 @@ def ready_spec(case: dict, today: date, lv: str = "full", *, reminder: str = "",
                   [(_clean(d.get("name"), 60) if lv in ("full", "summary") else f"{w.part.capitalize()} {i}",
                     str(d.get("id") or "")) for i, d in enumerate(f["open"], 1)][CARD_BUTTONS:])
     if n > 1:
-        actions.append((f"{w.prefix}_all", f":white_check_mark: All {w.delivered_word}", value,
+        actions.append((f"{w.prefix}_all", f":white_check_mark: {w.delivered_word.capitalize()}: all", value,
                         "", "all", ""))
     actions.append((f"{w.prefix}_draft", ":pencil2: " + w.change, value, "", "draft", w.draft_ask))
     return {"kind": w.prefix, "title": title, "lines": lines,
@@ -1801,7 +1801,7 @@ def answer_which(q: dict, pick, *, runner=None) -> dict:
         return {"ok": False, "said": "This question changed since the card. Nothing was done."}
     out = (runner or _cli)(["answer", "--question", str(q.get("id") or ""), "--choice", text])
     if not out or out.get("error"):
-        return {"ok": False, "said": "I could not record your answer. Ask me in Ask Tacitus."}
+        return {"ok": False, "said": "Your answer was not recorded. Ask me in Ask Tacitus."}
     none = text == choices[-1] and text.lower().startswith("none")
     return {"ok": True, "said": "Recorded. Nothing is marked done." if none
             else "Recorded. That one is marked done."}
@@ -2076,7 +2076,7 @@ SAID = {"yes": "You said yes. It is on your list with its date.",
         "decline_quiet": "Declined. Nothing is sent.",
         "draft": "I am writing the draft.",
         "date": "I am recording the date.",
-        "all": "Marked as {done}. The case is closed."}
+        "all": "{Done}: all. It is off your list."}
 _PRIVATE = {"review": "A review's text never goes in a channel post, a room or the doc-review repo.",
             "form": "A form's personal data never goes in a channel post, a room or the doc-review repo."}
 
@@ -2088,9 +2088,9 @@ def action_choice(action_id: str) -> str:
 
 def _said(w: Words, key: str) -> str:
     if key == "delivered":
-        return f"Marked as {w.delivered_word}."
+        return f"{w.delivered_word.capitalize()}."
     if key == "all":
-        return f"All {w.delivered_word}. The case is closed."
+        return f"{w.delivered_word.capitalize()}: all. It is off your list."
     return w.said.get(key) or SAID.get(key, "Done.")
 
 
@@ -2180,7 +2180,7 @@ def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question:
 
     def done(out: dict, yes: str) -> dict:
         ok = bool(out) and not out.get("error")
-        return {"ok": ok, "said": yes if ok else "I could not record your answer. Ask me in Ask Tacitus."}
+        return {"ok": ok, "said": yes if ok else "Your answer was not recorded. Ask me in Ask Tacitus."}
     if choice in ("join_same", "join_other"):
         if not question:
             return {"ok": False, "said": "This question changed since the card. Nothing was done."}
@@ -2466,7 +2466,7 @@ def home_choices(case: dict, today: date, lv: str = "full") -> list[dict]:
             out.append({"id": f"{p}:{w.deliver_choice}:{d.get('id')}",
                         "label": w.delivered_button.format(name=nm)})
         if len(f["open"]) > 1:
-            out.append({"id": f"{p}:all", "label": f"All {w.delivered_word}"})
+            out.append({"id": f"{p}:all", "label": f"{w.delivered_word.capitalize()}: all"})
         out.append({"id": f"{p}:draft", "label": w.change, "input": "text"})
         return out + [{"id": "open", "label": "Open it in Action requests"}]
     by = D.do_by(case)

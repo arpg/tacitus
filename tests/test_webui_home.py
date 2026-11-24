@@ -230,7 +230,7 @@ def test_the_briefing_waits_at_the_bottom_and_a_link_opens_it(app):
     page.evaluate("goTo('#/home/morning-briefing')")
     expect(rep).to_have_attribute("open", "")
     expect(rep.locator(".text")).to_contain_text("Get done today")
-    rep.locator(".btn", has_text="Ask about it").click()
+    rep.locator(".btn", has_text="Ask").click()
     expect(page.locator("#text")).to_have_value("About this morning's briefing: ")
     assert not errors, errors
 

@@ -661,15 +661,15 @@ async function act(msg, body, box) {
   const controls = [...box.querySelectorAll('.card-actions button, .card-actions select, .card-actions input')];
   const note = box.querySelector('.card-note');
   controls.forEach((c) => { c.disabled = true; });
-  note.textContent = 'Sending...';
+  note.textContent = 'Working...';
   try {
     const r = await call('POST', `/cards/${enc(msg.channel)}/${enc(msg.id)}/actions`, body);
-    note.textContent = 'Sent. The card updates when Tacitus answers.';
+    note.textContent = 'Received. The card updates when Tacitus answers.';
     // A button that opens a window (Edit) answers it here once Tacitus has it.
     const w = r && r.trigger ? await call('GET', `/modals/${enc(r.trigger)}`) : null;
     if (w && w.modal) { note.textContent = ''; openModal(r.trigger, w.modal); }
   } catch (e) { // a refusal the bot words (a day out of its range) in its own words
-    note.textContent = e.status === 403 && T.relay ? noCards() : e.status === 400 ? e.message : `Not sent: ${e.message}`;
+    note.textContent = e.status === 403 && T.relay ? noCards() : e.status === 400 ? e.message : `Nothing was done: ${e.message}`;
   } finally {
     controls.forEach((c) => { c.disabled = false; });
   }
@@ -1191,11 +1191,11 @@ function answerCard(msg, send = (body, box) => act(msg, body, box)) {
     else b.addEventListener('click', () => send({ action_id: a.id, value: a.value ?? '' }, box));
     return b;
   });
-  let chosen = picks.find((a) => words(a) === q.answer) || null; // a press that failed keeps its answer for Try again
+  let chosen = picks.find((a) => words(a) === q.answer) || null; // a press that failed keeps its answer for Draft again
   const field = ask ? h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
     'aria-label': 'Your answer', placeholder: picks.length ? 'Or type your answer' : 'Type your answer' }) : null;
   if (field && !chosen && q.answer) field.value = q.answer;
-  const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Try again' : q.go || 'Draft the reply');
+  const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Draft again' : q.go || 'Draft');
   const chips = picks.map((a) => h('button', { type: 'button', class: 'btn answer-pick', 'data-action': a.id,
     onclick: () => { if (field) field.value = ''; chosen = null; send({ action_id: a.id, value: a.value ?? '' }, box).then(sync); } }, words(a)));
   const locked = Boolean(S.me && S.me.card_actions === false);
@@ -1215,7 +1215,7 @@ function answerCard(msg, send = (body, box) => act(msg, body, box)) {
   const from = [q.from && `From ${q.from}`, since && `waiting ${ageDays(since / 1000)}`].filter(Boolean).join(' · ');
   box.append(...[q.text ? h('p', { class: 'answer-q' }, oneLine(q.text, 300)) : null, from ? h('p', { class: 'answer-from' }, from) : null,
     q.about ? h('p', { class: 'answer-about' }, oneLine(q.about, 120)) : null,
-    q.failed ? h('p', { class: 'answer-failed', role: 'alert' }, 'The draft did not start. Your answer is kept: tap Try again.') : null,
+    q.failed ? h('p', { class: 'answer-failed', role: 'alert' }, 'The draft did not start. Your answer is kept: tap Draft again.') : null,
     h('fieldset', { class: 'card-actions answer-ctl' }, h('legend', {}, 'Your answer'),
       chips.length ? h('div', { class: 'answer-picks', role: 'group', 'aria-label': 'Quick answers' }, chips) : null, field, go),
     more.length ? h('div', { class: 'card-actions answer-more' }, more) : null, ...days,
@@ -1379,7 +1379,7 @@ function renderHome(box) {
   if (q) {
     main.push(h('section', { class: 'h-card h-question' }, h('h2', {}, `One question (${q.left} left)`), h('p', {}, q.text),
       q.why ? h('p', { class: 'h-detail' }, q.why) : null, q.example ? h('p', { class: 'h-detail' }, `For example: ${q.example}`) : null,
-      h('button', { type: 'button', class: 'btn primary', onclick: () => askAbout(q.ask) }, 'Answer it'),
+      h('button', { type: 'button', class: 'btn primary', onclick: () => askAbout(q.ask) }, 'Ask'),
       h('p', { class: 'h-detail' }, 'Say skip to pass it, or stop asking to end the questions.')));
   }
   const side = [];
@@ -1403,7 +1403,7 @@ function renderHome(box) {
   for (const r of x.reports || []) { // today's briefing and update, as they would have posted, each folded
     side.push(h('details', { class: `h-card h-report r-${r.kind}`, id: `home-${r.kind}`, open: S.homeFocus === r.kind || was(`r-${r.kind}`) },
       h('summary', {}, r.title), h('div', { class: 'text' }, markdown(r.text)),
-      h('button', { type: 'button', class: 'btn small', onclick: () => askAbout(`About ${r.title.toLowerCase()}: `) }, 'Ask about it')));
+      h('button', { type: 'button', class: 'btn small', onclick: () => askAbout(`About ${r.title.toLowerCase()}: `) }, 'Ask')));
   }
   keepOpen(box, [h('div', { class: 'h-page' }, h('div', { class: 'h-main' }, ...main), h('div', { class: 'h-side' }, ...side))],
     S.homeOpen && `.h-block[data-ref="${CSS.escape(S.homeOpen)}"]`);
@@ -1584,7 +1584,7 @@ function inputRow(it, m) {
   const ok = () => f.value.trim() && go(f.value.trim());
   f.addEventListener('input', () => { m.text = f.value; });
   f.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ok(); } });
-  return h('div', { class: 'card-actions' }, f, h('button', { type: 'button', class: 'btn primary', onclick: ok }, 'Draft it'));
+  return h('div', { class: 'card-actions' }, f, h('button', { type: 'button', class: 'btn primary', onclick: ok }, 'Draft'));
 }
 // The deeper briefing: its text (folded past a few lines, with Show more), its next steps as buttons (the last one
 // Ask, where the item's own choices have none), which model wrote it only where Settings shows agent and model details; while a newer
@@ -1734,7 +1734,7 @@ async function loadNeeds() {
 }
 
 // A tap within FLIP_GUARD_MS of the header button's label flipping was aimed at the old
-// label (a card's Close, then Mark done at once as a rule settles it): it does nothing.
+// label (a card's Done, then the header's Done at once as a rule settles it): it does nothing.
 const FLIP_GUARD_MS = 1500, shown = { key: '', label: '', at: 0 };
 
 function stateShown() {
@@ -1743,7 +1743,7 @@ function stateShown() {
   const btn = $('thread-state');
   btn.hidden = !S.thread || S.thread === NEW_THREAD;
   $('to-claude').hidden = btn.hidden;
-  const label = stateOf(S.channel, S.thread) === 'done' ? 'Needs me' : 'Mark done', key = tkey(S.channel, S.thread);
+  const label = stateOf(S.channel, S.thread) === 'done' ? 'Not done' : 'Done', key = tkey(S.channel, S.thread);
   if (key === shown.key && label !== shown.label) shown.at = Date.now();
   Object.assign(shown, { key, label });
   btn.textContent = label;
@@ -1772,23 +1772,23 @@ function onState(d) {
 }
 
 // Needs you's Older part: shut at first, its count on the button that opens
-// it, and one tap to mark them all done (asked once).
+// it, and one tap on Done for them all (asked once).
 function olderPart(rows) {
   const toggle = () => { S.olderOpen = !S.olderOpen; renderThreads(); $('older-toggle').focus(); };
   return h('section', { class: 'older', 'aria-label': 'Older' },
     h('div', { class: 'needs-head' },
       h('button', { type: 'button', id: 'older-toggle', class: 'older-toggle', 'aria-expanded': String(S.olderOpen), onclick: toggle },
         `Older (${rows.length})`),
-      h('button', { type: 'button', id: 'older-done', class: 'btn plain small', onclick: () => markAllDone(rows) }, 'Mark all done')),
+      h('button', { type: 'button', id: 'older-done', class: 'btn plain small', onclick: () => markAllDone(rows) }, `Done (${rows.length})`)),
     S.olderOpen ? rows.map((r) => threadCard(r, r.channel, true)) : null);
 }
 
 async function markAllDone(rows) {
   const n = rows.length;
-  if (!n || !confirm(`Mark all ${n} older ${n === 1 ? 'item' : 'items'} done? They leave Needs you. Nothing is sent or deleted.`)) return;
+  if (!n || !confirm(`Done with all ${n} older ${n === 1 ? 'item' : 'items'}? They leave Needs you. Nothing is sent or deleted.`)) return;
   const before = rows.map((r) => [r, S.states.get(tkey(r.channel, threadOf(r)))]);
   // Stamped now, so a list read before the bot answers each one keeps them done.
-  for (const [r] of before) putState(tkey(r.channel, threadOf(r)), { state: 'done', by: 'owner', at: Date.now() / 1000, reason: 'You marked it done.' });
+  for (const [r] of before) putState(tkey(r.channel, threadOf(r)), { state: 'done', by: 'owner', at: Date.now() / 1000, reason: 'You tapped Done.' });
   stateShown();
   let failed = 0, why = '';
   for (const [r, old] of before) { // one at a time: the bot answers each in turn
@@ -1812,7 +1812,7 @@ async function setState(ch, tk) {
   const old = S.states.get(key);
   const state = old && old.state === 'done' ? 'needs_you' : 'done';
   putState(key, { state, by: 'owner', at: old ? old.at : 0,
-    reason: state === 'done' ? 'You marked it done.' : 'You marked it as needing you.' });
+    reason: state === 'done' ? 'You tapped Done.' : 'You tapped Not done.' });
   stateShown();
   try {
     const row = await call('POST', `/threads/${enc(ch)}/${enc(tk)}/state`, { state });

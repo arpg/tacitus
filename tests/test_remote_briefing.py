@@ -232,7 +232,7 @@ def test_a_morning_run(mountain, priv):
     assert text.startswith(":sunny: *Morning Briefing, ")
     assert made == [("m-slides", "Yes, the slides go out tonight.", "cron-morning-briefing-1")]
     assert "*Drafts ready* (1)" in text and "Slides for the review" in text
-    assert "Needs you" in text and "a dean or a program officer" in text     # R2 hit a rail
+    assert "Answer needed" in text and "a dean or a program officer" in text     # R2 hit a rail
     assert "*Sent to Claude* (1)" in text and queued[0]["conversation_id"] == "c-paper"
     assert "NSF annual report" not in text.split("*Looks done?*")[0]     # proposed by the audit
     assert "*Looks done?* (1)" in text and "(submitted Friday)" in text
@@ -268,7 +268,7 @@ def test_the_afternoon_update(mountain, priv):
     assert text.startswith(":coffee: *Afternoon Update, ")
     assert "Lee wants a section" in text and "*Tomorrow preview:*" in text and "- 8:00 AM Review" in text
     assert "*Remaining today:*\n- 9:30 AM Lab meeting" in text
-    assert "Pending your response" in text
+    assert "Answer needed" in text
 
 
 def test_the_afternoon_update_holds_back_what_the_sent_folder_already_shows(priv):
@@ -966,9 +966,9 @@ def test_a_morning_run_works_the_reply_queue(mountain, priv):
     assert mark.inbound["row-kim"] == b["reply_backlog"][1]["since"]
     assert mark.choices == {"row-jo": ["Renew for one year", "Renew for three years"]}
     assert "*Drafts ready* (1)" in text and "- *Reply to Kim* (Kim): Yes, the date works." in text
-    assert "- *Reply to Jo* (Jo): Renew for one year or for three? (2d)" in text.split("*Needs you* (1)")[1]
+    assert "- *Reply to Jo* (Jo): Renew for one year or for three? (2d)" in text.split("*Answer needed* (1)")[1]
     assert _queue_text(text) == (
-        ":inbox_tray: *Reply queue*: 8 replies owed, the oldest for 7 days. 2 have a draft ready for "
+        ":inbox_tray: *Replies owed*: 8, the oldest for 7 days. 2 have a draft ready for "
         "Send. No draft yet: Reply to Bo (7d); Reply to Lee (4d); Reply to Di (4d, a meeting to place); "
         "About cy (3d, kept mail); and 1 more.")
     assert rec["backlog"] == {"asked": 3, "drafted": 1, "decisions": 1, "left": 1, "failed": 0,
@@ -988,7 +988,7 @@ def test_the_plans_own_work_is_recorded_on_its_queue_row_and_not_done_twice(moun
     assert [(rid, outcome) for rid, outcome, _n in mark.seen] == [("row-slides", "drafted"),
                                                                  ("row-dean", "decision")]
     assert mark.seen[0][2] == "draft-1" and mark.inbound["row-dean"] == b["reply_backlog"][1]["since"]
-    assert _queue_text(text) == (":inbox_tray: *Reply queue*: 3 replies owed, the oldest for 4 days. "
+    assert _queue_text(text) == (":inbox_tray: *Replies owed*: 3, the oldest for 4 days. "
                                  "1 has a draft ready for Send.")
     assert rec["backlog"]["asked"] == 0 and rec["decisions_from_rails"] == 1
 
@@ -1005,8 +1005,8 @@ def test_the_afternoon_update_carries_the_queues_drafts(mountain, priv):
     assert chat.calls == ["briefing-afternoon", "briefing-backlog"]
     assert ":envelope: *Drafts ready* (1)" in text and "- *Reply to Kim* (Kim): Yes, the date works." in text
     assert "- *Reply to Jo* (Jo): Renew for one year or for three? (3d)" in \
-        text.split("*Pending your response:*")[1]
-    assert _queue_text(text) == (":inbox_tray: *Reply queue*: 2 replies owed, the oldest for 3 days. "
+        text.split("*Answer needed:*")[1]
+    assert _queue_text(text) == (":inbox_tray: *Replies owed*: 2, the oldest for 3 days. "
                                  "1 has a draft ready for Send.")
     assert mark.seen == [("row-jo", "decision", "Renew for one year or for three?"),
                          ("row-kim", "drafted", "draft-2")]
@@ -1085,7 +1085,7 @@ def test_the_queue_waits_when_the_remote_model_is_down(priv):
                        drafter=lambda *a, **k: pytest.fail("drafted"),
                        mark=lambda *a, **k: pytest.fail("recorded"), audit=lambda *a, **k: {})
     assert calls == ["briefing-morning"] and rec["backlog"] == {}
-    assert _queue_text(text).endswith("1 reply owed, for 4 days. No draft yet: Reply to Kim (4d).")
+    assert _queue_text(text).endswith("*Reply owed*: 1, for 4 days. No draft yet: Reply to Kim (4d).")
 
     def half(messages, **kw):       # the plan answers; the queue's call does not
         if kw.get("purpose") == "briefing-backlog":
@@ -1106,19 +1106,19 @@ def test_the_queue_line_is_one_line_and_silent_with_nothing_to_send_or_name():
     assert line([]) == ""
     assert line(_queue(_owed("kim", 2), _owed("jo", 1))) == ""      # nothing to send, none at three days
     assert line(_queue(_owed("kim", 1, has_draft=True))) == \
-        ":inbox_tray: *Reply queue*: 1 reply owed, for 1 day. 1 has a draft ready for Send."
+        ":inbox_tray: *Reply owed*: 1, for 1 day. 1 has a draft ready for Send."
     # A draft this run staged counts as ready.
     assert line(_queue(_owed("kim", 2), _owed("jo", 1)), drafts=[{"ref": "Q1", "ok": True}]).endswith(
-        "2 replies owed, the oldest for 2 days. 1 has a draft ready for Send.")
+        "*Replies owed*: 2, the oldest for 2 days. 1 has a draft ready for Send.")
     # Five names at most; the count covers the rows the briefing's slice left out.
     many = _queue(*[_owed(f"p{n}", n) for n in range(9, 2, -1)], total=10)
     assert line(many) == (
-        ":inbox_tray: *Reply queue*: 10 replies owed, the oldest for 9 days. No draft yet: "
+        ":inbox_tray: *Replies owed*: 10, the oldest for 9 days. No draft yet: "
         "Reply to P9 (9d); Reply to P8 (8d); Reply to P7 (7d); Reply to P6 (6d); Reply to P5 (5d); "
         "and 5 more.")
     # A row the audit closed or parked this run is out of the line and the count.
     assert line(many, gone={"row-p9"}).startswith(
-        ":inbox_tray: *Reply queue*: 9 replies owed, the oldest for 8 days. No draft yet: Reply to P8 (8d);")
+        ":inbox_tray: *Replies owed*: 9, the oldest for 8 days. No draft yet: Reply to P8 (8d);")
 
 
 def test_the_audit_is_asked_about_every_row_the_queue_line_names():
@@ -1178,7 +1178,7 @@ def test_a_kept_row_the_plan_hands_off_stays_with_the_owner(priv):
     assert "*Sent to Claude* (1)" in text and rec["escalated"] == 1
     # The post names it in code's fixed words, at its level: the label
     # alone reads Facts only, so the sender and the subject may show.
-    needs = text.split("*Needs you*")[1].split("\n\n")[0]
+    needs = text.split("*Answer needed*")[1].split("\n\n")[0]
     assert needs == (" (1)\n- A kept message from notices@reviews.example.org on Oct 5 needs you: Review "
                      "confirmation. <https://outlook.example.com/mail/c-review|Open it in Outlook>.")
     # Nothing the models wrote about it, on any line: not the plan's why
@@ -1203,7 +1203,7 @@ def test_a_kept_row_with_no_label_is_caught_by_the_mail_records(priv):
     assert [q["conversation_id"] for q in queued] == ["c-paper"]
     # Kept on the machine: the date alone, no sender and no subject; with
     # no link found, the line still says where to open it.
-    needs = text.split("*Needs you*")[1].split("\n\n")[0]
+    needs = text.split("*Answer needed*")[1].split("\n\n")[0]
     assert needs == " (1)\n- A kept message from Oct 5 needs you. Open it in Outlook."
     assert "Review confirmation" not in text and "notices@reviews.example.org" not in text
     # When the check cannot run, the row stays with the owner too.
@@ -1308,7 +1308,7 @@ def test_the_local_writer_drafts_a_facts_reply_and_never_a_local_one(priv):
     drafts = text.split("*Drafts ready*")[1].split("\n\n")[0]
     assert "- A reply to the kept message from Pat Rivera on Oct 11 is ready: Lab access form." in drafts
     assert "the form is signed" not in text and "renew it" not in text
-    needs = text.split("*Needs you*")[1].split("\n\n")[0]
+    needs = text.split("*Answer needed*")[1].split("\n\n")[0]
     assert "- A kept message from Oct 11 needs you. Open it in Outlook." in needs
     assert "Badge renewal" not in text
 

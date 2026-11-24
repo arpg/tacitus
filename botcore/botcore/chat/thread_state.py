@@ -75,7 +75,7 @@ event each time the mark changes (is_stale). A `needs_you` conversation
 that a rule or the model set, whose owner last wrote NUDGE_AFTER_S ago
 or more, and that is not stale, gets one line (NUDGE_TEXT) from the bot
 (`nudge`, the web front end's post into its own store): once per
-conversation, never on a state the owner set (Needs me), an automated
+conversation, never on a state the owner set (Not done), an automated
 post, a card's own conversation or one with a live card, at most
 `nudge_cap` a tick, and none while `quiet()` says the owner's quiet
 hours hold. The rules and the model never read a nudge (its id is in
@@ -145,8 +145,8 @@ DEVICE_NOTICE_RE = re.compile(r"a new device asks to reach tacitus\b.*?pairing c
                               re.I | re.S)
 
 OWNER_REASONS = {
-    "done": "You marked this done.",
-    "needs_you": "You marked this as needing you.",
+    "done": "You tapped Done.",
+    "needs_you": "You tapped Not done.",
     "waiting": "You marked this as waiting on someone else.",
 }
 
@@ -311,7 +311,7 @@ STALE_S = 7 * 86400
 # nudge, once.
 NUDGE_AFTER_S = 24 * 3600
 NUDGE_CAP = 10
-NUDGE_TEXT = "Still need this? Reply here, or tap Mark done."
+NUDGE_TEXT = "Still need this? Reply here, or tap Done."
 # The web app's name for the DM, where every card waits for a tap.
 CARD_PLACE = "Action requests"
 CARD_WAITS = "Its request in Action requests waits for you."
@@ -450,7 +450,7 @@ def nudge_since(messages: list[dict]) -> float | None:
 def nudge_due(ctx: dict, now: float) -> bool:
     """True when the conversation gets the "Still need this?" line now: its
     state is needs_you and a rule or the model set it (one the owner set
-    with Needs me never: the owner just said so), the owner last wrote in
+    with Not done never: the owner just said so), the owner last wrote in
     it NUDGE_AFTER_S ago or more (never: no nudge), it is not on the stale
     shelf (active within STALE_S: an older one shelves instead), it opens
     neither with an automated post nor with a card, and no card in it or

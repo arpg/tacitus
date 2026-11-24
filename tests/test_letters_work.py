@@ -219,7 +219,7 @@ def test_button_submitted_counts_and_closes(ea):
     st = FakeStore([c])
     assert lw.answer("lc-1", "submitted", dest="d1", store=st)["said"] == "Submitted. 1 of 2 done."
     out = lw.answer("lc-1", "submitted", dest="d2", store=st)
-    assert "All letters for Rowan Vale are in" in out["said"]
+    assert "Submitted: all. The letter for Rowan Vale is off your list." in out["said"]
     assert lw.answer("lc-1", "submitted", dest="d2", store=st)["ok"] is False
 
 

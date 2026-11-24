@@ -58,7 +58,7 @@ def _requests(stub):
         {"label": "CC", "value": "kim@example.org"}, {"label": "Subject", "value": "Re: Grant report figures"}],
         body="Hi Pat,\n\nThe figures are attached.\n\nThanks",
         actions=[{"id": "approve_send", "label": ":outbox_tray: Send", "value": {"d": 1}, "style": "primary", "word": "send"},
-                 {"id": "edit_draft", "label": ":pencil2: Edit", "value": {"d": 1}, "style": "", "word": "edit"},
+                 {"id": "edit_draft", "label": ":pencil2: Draft again", "value": {"d": 1}, "style": "", "word": "edit"},
                  {"id": "cancel_send", "label": "Cancel", "value": {"d": 1}, "style": "danger", "word": "cancel"}])
     soon = _request(stub, "Create this event?", at=now - 3600, kind="event", fields=[
         {"label": "Subject", "value": "Review panel"}, {"label": "When", "value": "Thu, 10:00 to 10:30 AM"},
@@ -119,7 +119,7 @@ def test_a_request_folds_to_what_to_decide_and_opens_in_place_with_its_buttons(a
         ["pat@example.org, lee@example.org, sam@example.org", "kim@example.org", "Re: Grant report figures"])
     expect(card.locator(".card-body")).to_contain_text("The figures are attached.")
     assert page.evaluate("getComputedStyle(document.querySelector('.req.open .card-body')).maxHeight") == "none"
-    expect(card.locator(".card-actions button")).to_have_text([re.compile("Send$"), re.compile("Edit$"), "Cancel"])
+    expect(card.locator(".card-actions button")).to_have_text([re.compile("Send$"), re.compile("Draft again$"), "Cancel"])
     assert [card.locator(".card-actions button").nth(i).get_attribute("data-action") for i in range(3)] == \
         ["approve_send", "edit_draft", "cancel_send"]  # the card's own buttons
     if size == "phone":
@@ -166,7 +166,7 @@ def _decision(stub, picks=True, at=None, **question):
               "value": dict(value, choice="No, I cannot make the deadline"), "word": "two", "ask": ""},
              {"id": "reply_draft", "label": ":pencil2: Other answer", "value": value, "style": "", "word": "other",
               "ask": "your answer"}] if picks else
-            [{"id": "reply_draft", "label": ":pencil2: Draft the reply", "value": value, "style": "primary",
+            [{"id": "reply_draft", "label": ":pencil2: Draft", "value": value, "style": "primary",
               "word": "draft", "ask": "your answer"}])
     acts += reply_quiet(value)
     q = {"text": "Will you review the workshop paper by December 1?", "from": "Pat",
@@ -182,7 +182,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
     """A row that waits on the owner's decision folds to Answer needed and
     its question. Opened, the question is the headline, with who wrote and
     how long it has waited, then one Your answer control: the quick
-    answers, a line, and Draft the reply, pressable only with an answer.
+    answers, a line, and Draft, pressable only with an answer.
     Enter sends the line through the card's own action; the block shows the
     reply being written in place, then the draft's Send request opens in its
     place in the same list."""
@@ -212,7 +212,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
     assert stub.clicks == []  # no answer, no press
     field.fill("Yes, if the deadline can move to December 8.")
     expect(go).to_be_visible()
-    expect(go).to_have_text("Draft the reply")
+    expect(go).to_have_text("Draft")
     expect(go).to_be_enabled()
     field.fill("")
     expect(go).to_be_hidden()
@@ -238,7 +238,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
                             "value": {"row": "response-r1", "batch": "b1"},
                             "text": "Yes, if the deadline can move to December 8."}]
     expect(page.locator(f'.req.u-working[data-id="{m["id"]}"] .req-busy')).to_have_text(
-        "Writing the reply: Yes, if the deadline can move to December 8.")
+        "Drafting the reply: Yes, if the deadline can move to December 8.")
     stub.reply_hold.set()
     send = page.locator(".req.open:has(.card button:has-text('Send'))")
     expect(send).to_be_visible(timeout=8000)  # the draft's Send request, opened in its place
@@ -340,10 +340,10 @@ def test_a_draft_that_did_not_start_offers_try_again_with_the_answer_kept(app):
     page.evaluate("location.hash = '#/stream%3A7'")
     page.locator(f'.req[data-id="{m["id"]}"] .req-head').click()
     card = page.locator(".req.open .card.answer")
-    expect(card.locator(".answer-failed")).to_have_text("The draft did not start. Your answer is kept: tap Try again.")
+    expect(card.locator(".answer-failed")).to_have_text("The draft did not start. Your answer is kept: tap Draft again.")
     expect(card.locator(".answer-ctl input")).to_have_value("Yes, if the deadline can move.")
     go = card.locator(".answer-ctl .btn.primary")
-    expect(go).to_have_text("Try again")
+    expect(go).to_have_text("Draft again")
     expect(go).to_be_enabled()
     expect(card).not_to_contain_text("Ask me here")
     go.click()

@@ -1,6 +1,6 @@
 """A conversation done with anywhere clears its notifications everywhere
 (docs/webchat.md, Notifications (Web Push)): the service worker closes the
-notifications a clear push names, and shows a quiet "Handled." in their
+notifications a clear push names, and shows a quiet "Done." in their
 place only where the browser would count a push that showed nothing
 (`clearPlan`, per push service); a push closes the tags it carries
 (`close`: no clear reached them there, as on the iPhone) once its own
@@ -106,14 +106,14 @@ const snap = (o) => JSON.parse(JSON.stringify(o)); // a copy the later steps lea
   await w.fire({ title: 'Tacitus replied', body: 'Two meetings.', tag: 'main/t3' });
   got.left_open = { ...snap(w.out), open: w.open() };
 
-  // Chrome with the thread's only notification and no window in view: a quiet "Handled.", closed later.
+  // Chrome with the thread's only notification and no window in view: a quiet "Done.", closed later.
   w = load({ endpoint: FCM, held: ['main/t1'] });
   await w.fire(CLEAR);
   got.chromium_alone = { ...snap(w.out), timers: w.out.timers.map(([, ms]) => ms), open: w.open() };
   await w.runTimers();
   got.chromium_alone.after = w.open();
 
-  // A real push under the tag before the timer: the timer closes only the "Handled.".
+  // A real push under the tag before the timer: the timer closes only the "Done.".
   w = load({ endpoint: FCM, held: ['main/t1'] });
   await w.fire(CLEAR);
   await w.fire({ title: 'Tacitus replied', body: 'Moved.', tag: 'main/t1' });
@@ -171,7 +171,7 @@ def run_worker(tmp_path) -> dict:
     return json.loads(out.stdout)
 
 
-HANDLED = {"title": "Tacitus replied", "body": "Handled.", "tag": "main/t1", "silent": True,
+HANDLED = {"title": "Tacitus replied", "body": "Done.", "tag": "main/t1", "silent": True,
            "handled": True}
 
 

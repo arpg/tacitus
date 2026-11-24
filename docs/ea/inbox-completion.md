@@ -36,7 +36,7 @@ after it proposes the close, and the user confirms on the card.
 Some signals close at once, because the user confirmed their proposals
 each time (the hill climb, `preprocessor/closure_policy.py`). Such a row
 is `completed` with `closed_by.tier` `promoted`. The bot archives its
-mail and posts one note in the DM with a Reopen button. The row is
+mail and posts one note in the DM with a Not done button. The row is
 closed: never brief it as open, and never as a proposal. When the user
 says it is not done, reopen it: `python3
 /home/ea-bot/ea-system/preprocessor/ledger.py update --id <id> --status

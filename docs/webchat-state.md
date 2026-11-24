@@ -55,7 +55,7 @@ thread: the colleague has not replied yet").
    younger than the card registry keeps cards (7 days; an older card's
    buttons no longer act). A card marked `undo` is never live: it is a
    note of something already done whose button only undoes it (the
-   closure hill climb's note for a row it closed at once, with Reopen),
+   closure hill climb's note for a row it closed at once, with Not done),
    and it waits on nobody.
 2a. The relay's notice of a new device (its text names the pairing code):
    `needs_you` ("A phone waits for your approval.") while a device with
@@ -94,7 +94,7 @@ thread: the colleague has not replied yet").
 3c. A card whose status line shows the bot acting on the press
    (`:hourglass...`, "Sending...") within the last 20 minutes: `working`.
 4. A card acted on (its status line as the bot records it: Sent, Created,
-   Handled, Cancelled; not a failure, `:x:` or `:warning:`, and not an
+   Done, Cancelled; not a failure, `:x:` or `:warning:`, and not an
    expiry, `:zzz:`) and no later message that asks anything (a later
    owner message, or a bot message with a question mark outside links
    and code): `done`. A close-proposal card with no answer for 7 days
@@ -159,9 +159,9 @@ When a `needs_you` conversation's owner last wrote in it 24 hours ago or
 more (a conversation the owner never wrote in gets no nudge), and it is
 not on the stale shelf (active within 7 days: an older one shelves
 instead), the bot posts one line there: "Still need this? Reply here, or
-tap Mark done." The state's own `at` does not count. Once per
+tap Done." The state's own `at` does not count. Once per
 conversation (the `nudges` table). Never on a state the owner set
-(Needs me: the owner just said so), never on a conversation that opens
+(Not done: the owner just said so), never on a conversation that opens
 with an automated post (rule 7's test: a notifier key, or the title
 patterns) or with a card, and never while a card in it or linked to it
 is live (its button is the nudge). At most 10 a tick, the longest
@@ -341,14 +341,14 @@ the card gives way to its status line, so one tap settles the card, the
 rows and the thread. Done elsewhere confirms a linked row that carries a
 close proposal, and closes any other open linked row on the owner's word
 (its mail is archived as any close archives it) and logs the missed
-closure. Needs me rejects a close proposal (on a live card, its Still
-open) or reopens a row a signal closed in the last 7 days. See
+closure. Not done rejects a close proposal (on a live card, its Not
+done) or reopens a row a signal closed in the last 7 days. See
 docs/ea/closure-signals.md.
 
 The header button flips its label when a rule changes the open thread's
 state (a press on a card settles it a moment later). A tap that lands
 within 2 seconds of a flip was aimed at the old label, so the app drops
-it: a Close followed at once by Mark done never lands as Needs me.
+it: a card's Done followed at once by the header's Done never lands as Not done.
 
 ## API (under `base_path`, owner-only like the rest)
 
@@ -373,10 +373,10 @@ A needs row is the same with `"channel_name": "dm"`.
 ## The app
 
 - **Sticker** on each thread card: top-right beside the time. `needs_you` in the accent colour with weight, `waiting` in the warn colour, `working` muted with a small pulse (none under reduced motion), `done` muted with a check. `none` shows nothing. The reason is the card's `title` attribute and is read by screen readers.
-- **Needs you** at the top of the channel list, above the places, with a count badge of the `needs_you` threads that are not stale; tapping it shows the `/api/needs` list, which leaves out what waits on a tap (a request in Action requests, and a conversation whose state is only that its request waits, the row's `tap`: docs/webchat.md, Action requests), each card carrying its channel's name under the title; opening a card goes to that thread in its channel (the hash route). With stale rows the list has two parts: "This week" (the fresh rows) and "Older", shut at first, its count on the button that opens it ("Older (12)") and "Mark all done" beside it, which asks once ("Mark all 12 older items done? They leave Needs you. Nothing is sent or deleted.") and then posts `done` to the state route for each, one at a time.
+- **Needs you** at the top of the channel list, above the places, with a count badge of the `needs_you` threads that are not stale; tapping it shows the `/api/needs` list, which leaves out what waits on a tap (a request in Action requests, and a conversation whose state is only that its request waits, the row's `tap`: docs/webchat.md, Action requests), each card carrying its channel's name under the title; opening a card goes to that thread in its channel (the hash route). With stale rows the list has two parts: "This week" (the fresh rows) and "Older", shut at first, its count on the button that opens it ("Older (12)") and "Done (N)" beside it, which asks once ("Mark all 12 older items done? They leave Needs you. Nothing is sent or deleted.") and then posts `done` to the state route for each, one at a time.
 - **A stale sticker** is muted (no accent, no amber) and says how long the state has waited: "Needs you · 9 days", "Waiting · 16 days", in every list.
 - **Filter chips** at the top of a channel's thread list: All, Needs you, Waiting, Done. The choice is per browser (localStorage), default All.
-- **Override**: in the thread header a small button "Mark done" (or "Needs me" when the state is done); long-press on a card does the same on a phone. It calls the state route; the sticker updates from the SSE event.
+- **Override**: in the thread header a small button "Done" (or "Not done" when the state is done); long-press on a card does the same on a phone. It calls the state route; the sticker updates from the SSE event.
 - The app keeps every id and class the tests pin; new strings are plain words; the line cap in `test_the_app_stays_small` rises with a reason line.
 
 ## Out of scope for v0
@@ -397,7 +397,7 @@ bot side changed it here:
   of the owner conversations open at 24 hours never settle, and 13 of 16
   live cards were 9 to 32 days old): `stale` on the rows and the events,
   marked by the tick past 7 days; the app's "This week" and "Older" with
-  "Mark all done", the muted sticker with its age, and a count of the
+  "Done (N)", the muted sticker with its age, and a count of the
   fresh ones only.
 - **The nudge** after 24 hours (the `nudges` table): one line, once, never
   read by the rules or the model.
@@ -461,7 +461,7 @@ bot side changed it here:
   `channel_name`), as the app reads it.
 - **Writing back to the ledger**, out of scope in v0, is in: an owner's
   Done closes a linked open row on their word and logs the missed
-  closure, and Needs me rejects a proposal or reopens a recent
+  closure, and Not done rejects a proposal or reopens a recent
   automatic close (docs/ea/closure-signals.md). The engine has an
   `observer` for this, which also keeps each tap and model answer as a
   closure label.
@@ -473,6 +473,6 @@ bot side changed it here:
   existed): each linked card is one line in the prompt's messages, local
   and hosted alike, and both prompts say what a card in Action requests
   is.
-- **No nudge after Needs me** (the nudge asked "Still need this?" a day
-  after the owner tapped Needs me): a state the owner set is never
+- **No nudge after Not done** (the nudge asked "Still need this?" a day
+  after the owner tapped Not done): a state the owner set is never
   nudged, and the nudge's clock is the owner's last message alone.

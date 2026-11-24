@@ -182,20 +182,20 @@ def build_home_view(desk: list, unfiled: list, projects: list,
                                      "text": "file to…"},
                      "options": options},
                     {"type": "button", "action_id": "home_ask_item",
-                     "text": {"type": "plain_text", "text": "💬 ask",
+                     "text": {"type": "plain_text", "text": "💬 Ask",
                               "emoji": True},
                      "value": it["id"]},
                     {"type": "button", "action_id": "home_item_done",
-                     "text": {"type": "plain_text", "text": "✓ done",
+                     "text": {"type": "plain_text", "text": "✓ Done",
                               "emoji": True},
                      "value": it["id"],
                      "confirm": {
-                         "title": {"type": "plain_text", "text": "Close item"},
+                         "title": {"type": "plain_text", "text": "Done?"},
                          "text": {"type": "plain_text",
-                                  "text": "Closes the ledger item and "
-                                          "archives its email."},
+                                  "text": "It leaves your list and its "
+                                          "email is archived."},
                          "confirm": {"type": "plain_text", "text": "Done"},
-                         "deny": {"type": "plain_text", "text": "Keep"}}},
+                         "deny": {"type": "plain_text", "text": "Not done"}}},
                 ],
             })
         if len(unfiled) > MAX_UNFILED:

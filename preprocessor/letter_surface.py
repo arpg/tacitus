@@ -367,10 +367,10 @@ def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question:
 
     def done(out: dict, yes: str) -> dict:
         ok = bool(out) and not out.get("error")
-        return {"ok": ok, "said": yes if ok else "I could not record your answer. Ask me in Ask Tacitus."}
+        return {"ok": ok, "said": yes if ok else "Your answer was not recorded. Ask me in Ask Tacitus."}
     if choice in ("join_same", "join_other"):
         if not question:
-            return {"ok": False, "said": "This question changed since the card. Nothing was done."}
+            return {"ok": False, "said": "It changed since the card. Nothing was done."}
         return done(run(["answer", "--question", question, "--choice", STORE_ANSWERS[choice]]),
                     "Recorded: one letter case now." if choice == "join_same"
                     else "Recorded: two people, two letter cases.")
@@ -410,14 +410,14 @@ def answer(case: dict, choice: str, *, dest: str = "", text: str = "", question:
         for d in opn:
             if run(["record-submitted", "--dest", str(d.get("id") or ""), "--evidence",
                     "the owner said all are submitted, in Action requests"]).get("error"):
-                return {"ok": False, "said": "I could not record your answer. Ask me in Ask Tacitus."}
-        return {"ok": bool(opn), "said": "All submitted. The case is closed." if opn
-                else "This changed since the card. Nothing was done."}
+                return {"ok": False, "said": "Your answer was not recorded. Ask me in Ask Tacitus."}
+        return {"ok": bool(opn), "said": "Submitted: all. It is off your list." if opn
+                else "It changed since the card. Nothing was done."}
     if choice == "submitted":
         if not dest:
             return {"ok": False, "said": "Pick the destination you submitted."}
         return done(run(["record-submitted", "--dest", dest, "--evidence",
-                         "the owner said so in Action requests"]), "Marked as submitted.")
+                         "the owner said so in Action requests"]), "Submitted.")
     return {"ok": True, "said": "I am writing the letter's draft.",
             "turn": _turn_prompt(case, choice, dest, text)}
 

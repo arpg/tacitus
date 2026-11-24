@@ -191,13 +191,13 @@ def test_a_step_presses_the_case_cards_own_answer(app):
 
 
 def test_a_step_that_asks_first_needs_the_owners_yes(app):
-    """Mark it submitted is the card's Submitted for that destination: it
+    """The Submitted step is the card's Submitted for that destination: it
     asks first, and a No to the question presses nothing."""
     from playwright.sync_api import expect
     page, stub, errors = case_app(app, steps=[{"id": "s1", "kind": "mark_delivered", "params": {"part": "p1"}}],
                                   drafted=True)
     block = opened(page)
-    step = block.locator(".h-deeper").get_by_role("button", name="Mark it submitted Harbor Tech PhD")
+    step = block.locator(".h-deeper").get_by_role("button", name="Submitted Harbor Tech PhD")
     asked = []
     page.once("dialog", lambda d: (asked.append(d.message), d.dismiss()))
     step.click()
@@ -245,10 +245,10 @@ def test_a_form_item_gets_the_same_briefing_in_its_own_words(app):
     expect(text).to_contain_text("The answers.")
     expect(text).not_to_contain_text("letter")
     steps = block.locator(".h-deeper [role='group'] > *")
-    expect(steps).to_have_text(["Fill it in", "Open the link Annual disclosure"])
+    expect(steps).to_have_text(["Draft the answers", "Open the link Annual disclosure"])
     expect(block.locator(".h-deeper").get_by_role("link", name="Open the link Annual disclosure")).to_have_attribute(
         "href", FORM_LINK)
-    block.locator(".h-deeper").get_by_role("button", name="Fill it in").click()
+    block.locator(".h-deeper").get_by_role("button", name="Draft the answers").click()
     wait_for(lambda: stub.case_presses == [(FID, "draft", "", "")])
     assert stub.letter_presses == []
     assert not errors, errors

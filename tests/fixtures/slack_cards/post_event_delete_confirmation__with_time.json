@@ -70,7 +70,7 @@
           "action_id": "cancel_event_delete",
           "text": {
             "emoji": true,
-            "text": "Keep",
+            "text": "Cancel",
             "type": "plain_text"
           },
           "type": "button",
@@ -154,7 +154,7 @@
                 "action_id": "cancel_event_delete",
                 "text": {
                   "emoji": true,
-                  "text": "Keep",
+                  "text": "Cancel",
                   "type": "plain_text"
                 },
                 "type": "button",
@@ -293,7 +293,7 @@
             "action_id": "cancel_event_delete",
             "text": {
               "emoji": true,
-              "text": "Keep",
+              "text": "Cancel",
               "type": "plain_text"
             },
             "type": "button",

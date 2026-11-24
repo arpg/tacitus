@@ -146,7 +146,7 @@ class Bot:
         self.drafts.append((rid, words, answer))
         self.fe.store.messages[("dm", "p1")] = {"channel": "dm", "id": "p1", "thread_key": "p1"}
         return {"ok": True, "channel": "dm", "id": "p1",
-                "said": "Tacitus is writing the reply. Its Send card comes to Action requests."}
+                "said": "Drafting the reply. Its Send card comes to Action requests."}
 
     def not_needed(self, rid, note):
         self.closed.append((rid, note))
@@ -238,7 +238,7 @@ def test_a_to_do_says_its_date_and_last_step_and_offers_start_done_waiting_later
     assert task["brief"]["standing"] == ["Last step today: asked the committee for its slide template."]
     assert task["brief"]["asked"] == "You said you would send them this week."
     src = F.sources()
-    # already waits on someone, and its date passed (else it is off the list): no Waiting on someone
+    # already waits on someone, and its date passed (else it is off the list): no Later: waiting on them
     src.rows["task-s2"].update(type="waiting", deadline=(TODAY - timedelta(days=2)).isoformat())
     assert ids(I.item(src, "item:task-s2")) == ["start", "done", "later"]
     src.rows["task-s2"]["close_proposal"] = {"why": "The slides went out on Friday"}
@@ -373,7 +373,7 @@ def test_draft_a_reply_starts_the_replies_draft_turn_and_goes_where_send_comes()
     fe, h, bot, _c = home()
     out, after = h.act("reply:response-r2", "draft")
     assert bot.drafts == [("response-r2", "", "")] and after is None
-    assert out == {"ok": True, "said": "Tacitus is writing the reply. Its Send card comes to Action requests.",
+    assert out == {"ok": True, "said": "Drafting the reply. Its Send card comes to Action requests.",
                    "goto": "#/dm/p1/p1"}
 
 
@@ -399,7 +399,7 @@ def test_an_answer_tap_drafts_the_reply_that_says_it():
 
 
 def test_a_line_that_says_no_reply_is_needed_is_no_reply_needed_never_a_draft(monkeypatch):
-    """Tell Tacitus what to say, or an answer, that says only that no reply
+    """Draft with my words, or an answer, that says only that no reply
     is needed runs No reply needed, with its Undo; a longer line is the
     reply's words."""
     Ledger(monkeypatch)
@@ -487,7 +487,7 @@ def test_not_done_yet_reopens_a_row_closed_today(monkeypatch):
     monkeypatch.setattr(I._wts(), "RUN", led)
     _fe, h, _bot, _c = home()
     out, _after = h.act("closed:row-c1", "reopen")
-    assert out == {"ok": True, "said": "Opened again. It is back on your list."}
+    assert out == {"ok": True, "said": "Not done. It is back on your list."}
     assert ("ledger.py", "update") in led.verbs() and ("item_feedback.py", "--id") in led.verbs()
 
 
@@ -592,7 +592,7 @@ def test_waiting_marks_the_row_as_owed_by_others(monkeypatch):
     led = Ledger(monkeypatch)
     _fe, h, _bot, clock = home()
     out, _a = h.act("item:task-s2", "waiting")
-    assert out["said"] == "Waiting on someone else. It is off your list."
+    assert out["said"] == "Later. It comes back on Sunday."
     clock[0] += I.UNDO_S
     assert h.acts.commit_due() == [{"op": "waiting", "id": "task-s2", "ok": True}]
     got = dict(zip(led.calls[0][2::2], led.calls[0][3::2]))

@@ -128,26 +128,26 @@ def test_the_override_posts_and_the_sticker_follows_the_event(app):
     btn = page.locator("#thread-state")
     expect(btn).to_be_hidden()  # no thread open
     open_thread(page, "Draft a reply")
-    expect(btn).to_have_text("Mark done")
+    expect(btn).to_have_text("Done")
     btn.click()
     wait_for(lambda: stub.state_posts)
     assert stub.state_posts == [{"channel": W.MAIN, "thread_key": tk, "state": "done"}]
     card = _card(page, "Draft a reply")
     expect(card.locator(".sticker")).to_have_text("Done")
     expect(card).to_have_attribute("title", "You set this.")  # the bot's reason, from its answer and event
-    expect(btn).to_have_text("Needs me")
+    expect(btn).to_have_text("Not done")
     expect(page.locator("#needs-count")).to_have_text("1")
     # A rule moves it back: the event alone changes the sticker and the button.
     stub.set_state(W.MAIN, tk, "needs_you", reason="A new message asks for you.")
     expect(card.locator(".sticker.st-needs_you")).to_be_visible()
     expect(card).to_have_attribute("title", "A new message asks for you.")
-    expect(btn).to_have_text("Mark done")
+    expect(btn).to_have_text("Done")
     expect(page.locator("#needs-count")).to_have_text("2")
-    # Needs me sends needs_you, once its label has stood long enough to be
-    # the one aimed at: a tap right after a rule flipped it (a card's Close,
-    # then Mark done at once) was aimed at the old label and does nothing.
+    # Not done sends needs_you, once its label has stood long enough to be
+    # the one aimed at: a tap right after a rule flipped it (a card's Done,
+    # then the header's Done at once) was aimed at the old label and does nothing.
     stub.set_state(W.MAIN, tk, "done", reason="The card was acted on.")
-    expect(btn).to_have_text("Needs me")
+    expect(btn).to_have_text("Not done")
     btn.click()
     page.wait_for_timeout(400)
     assert len(stub.state_posts) == 1
@@ -224,12 +224,13 @@ def test_needs_you_keeps_this_week_apart_from_the_older_shelf(app):
     assert stale_bg != fresh_bg and stale_bg != page.evaluate(bg, ".sticker.st-waiting:not(.stale)")
     assert page.evaluate(SMALL_TARGETS) == []
     assert page.evaluate(SIDEWAYS)[0] == 0
-    # Mark all done asks once, in plain words; No changes nothing
+    # Done (3) asks once, in plain words; No changes nothing
     asked = []
+    expect(page.locator("#older-done")).to_have_text("Done (3)")
     page.once("dialog", lambda d: (asked.append(d.message), d.dismiss()))
     page.click("#older-done")
     wait_for(lambda: asked)
-    assert asked == ["Mark all 3 older items done? They leave Needs you. Nothing is sent or deleted."]
+    assert asked == ["Done with all 3 older items? They leave Needs you. Nothing is sent or deleted."]
     assert not stub.state_posts
     page.once("dialog", lambda d: d.accept())
     page.click("#older-done")
@@ -270,7 +271,7 @@ def test_a_state_the_bot_shelves_leaves_the_count_and_shows_its_age(app):
     # a state the owner set ages from the owner's tap
     stub.set_state(W.MAIN, tk, "needs_you", "owner", "You set this.", at=time.time() - 10 * 86400 - 60, stale=True)
     expect(sticker).to_have_text("Needs you · 10 days")
-    # the owner's Needs me makes it fresh again
+    # the owner's Not done makes it fresh again
     stub.set_state(W.MAIN, tk, "needs_you", "owner", "You set this.")
     expect(sticker).to_have_text("Needs you")
     expect(count).to_have_text("2")

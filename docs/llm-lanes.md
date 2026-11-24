@@ -765,12 +765,12 @@ line; it never falls back to a Claude run.
   the mail tick. The run never waits for it, and a failed call leaves the
   local briefings as they are.
 - **The owner's decisions are not the model's** (`preprocessor/draft_gate.py`).
-  A close of a row in the owner's words, or by his click (Handled, Not
-  needed), is his decision on that conversation (`ledger.owner_decisions`,
+  A close of a row in the owner's words, or by his click (No reply
+  needed on a Send card or a reply), is his decision on that conversation (`ledger.owner_decisions`,
   read from the close events). Every later row on the conversation
   carries it as `owner_said`: the ledger's add paths write it into the
   row's notes, and the briefing, the reply queue, the Replies card, the
-  Draft it turn, the inbox scan block and the nightly reconcile read it.
+  Draft turn, the inbox scan block and the nightly reconcile read it.
   No scheduled lane drafts against it. A follow-up on a thread he said
   gets no reply is never a draft or a to-do: it is one quiet question,
   asked once under the item's title ("They asked again. On Nov 14 you
@@ -893,20 +893,20 @@ one-click confirm (closure.py):
 
 :white_check_mark: *Quietly handled*: 2 answered by your replies; 2 draft(s) staged.
 
-:grey_question: *Looks done?* (1) Close or keep each one on its card in your DM, or tell me here: NSF annual report (submitted Friday in Research.gov).
+:grey_question: *Looks done?* (1) Done or Not done on each one's card in your DM: NSF annual report (submitted Friday in Research.gov).
 
-:envelope: *Drafts ready* (2): Send, Edit or Handled on each block in your DM; one Send-all card when several are ready
+:envelope: *Drafts ready* (2): Send, Draft again or No reply needed on each card in your DM; one Send-all card when several are ready
 - *Slides for Thursday's review* (Pat Rivera): Yes, the final slides go out tonight.
 - *Reviews for the robotics workshop* (Ana Diaz): Yes, both reviews will be in by October 23.
 
-:question: *Needs you* (2)
+:question: *Answer needed* (2)
 - *Faculty meeting agenda* (Dean's Office): Reply needs you (a dean or a program officer): Two items: the lab move and the open hires.
 - *Simulator license renewal* (Robin Cho): Renew the simulator license for one year or for three? (9d)
 
 :arrow_up: *Sent to Claude* (1): one topic each in the EA channel
 - *Co-authoring the survey* (Lee Wong): a section of a paper to write
 
-:inbox_tray: *Reply queue*: 3 replies owed, the oldest for 9 days. 1 has a draft ready for Send. No draft yet: Lab visit in November (4d, a meeting to place).
+:inbox_tray: *Replies owed*: 3, the oldest for 9 days. 1 has a draft ready for Send. No draft yet: Lab visit in November (4d, a meeting to place).
 
 :calendar: 1 scheduling request(s): handling in the scheduling channel.
 
@@ -932,10 +932,10 @@ The afternoon update for the same day:
 *Tomorrow preview:*
 - 8:00 AM Program review
 
-*Pending your response:*
+*Answer needed:*
 - *Travel form for the Portland trip*: still not filed
 
-:inbox_tray: *Reply queue*: 3 replies owed, the oldest for 9 days. 1 has a draft ready for Send. No draft yet: Simulator license renewal (9d); Lab visit in November (4d, a meeting to place).
+:inbox_tray: *Replies owed*: 3, the oldest for 9 days. 1 has a draft ready for Send. No draft yet: Simulator license renewal (9d); Lab visit in November (4d, a meeting to place).
 
 _written by the remote model_
 ```

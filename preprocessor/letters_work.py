@@ -851,10 +851,10 @@ def answer(case_id, choice: str, *, dest: str = "", text: str = "", actor: str =
                 return {"ok": True, "said": "No letter for that place. The rest stay open."}
             why = _no_reply_why(case)
             if why:
-                return {"ok": True, "said": f"You said no. The letter for {who} is closed. "
+                return {"ok": True, "said": f"You said no. The letter for {who} is off your list. "
                                             f"No reply is drafted: {why}."}
             return {"ok": True,
-                    "said": f"You said no. The letter for {who} is closed. A short reply that says no is next.",
+                    "said": f"You said no. The letter for {who} is off your list. A short reply that says no is next.",
                     **turn("The owner said no" + (" after an earlier yes" if told_yes else "") + ". The "
                            "case is declined already. Draft a short, kind reply that says no: "
                            f"letters_work.py decide --case {case.get('id')} --answer no --owner-said \"No\""
@@ -872,22 +872,22 @@ def answer(case_id, choice: str, *, dest: str = "", text: str = "", actor: str =
         if choice == "all":
             dests = _dests(case, states=OPEN_STATES)
             if not dests:
-                return {"ok": False, "said": "Every place is already closed."}
+                return {"ok": False, "said": "Nothing was done: every place is already submitted or closed."}
             for d in dests:
                 store.set_state(d.get("id"), "submitted", "the owner said all are submitted, in "
                                 "Action requests", actor)
-            return {"ok": True, "said": f"Submitted. All letters for {who} are in. The case is closed."}
+            return {"ok": True, "said": f"Submitted: all. The letter for {who} is off your list."}
         if choice == "submitted":
             dests = _dests(case, dest or text, states=OPEN_STATES)
             if not dests:
-                return {"ok": False, "said": "That place is already closed."}
+                return {"ok": False, "said": "Nothing was done: that place is already submitted or closed."}
             for d in dests:
                 store.set_state(d.get("id"), "submitted", "the owner said so in Action requests", actor)
             case = _case(store, case_id)
             alld = [d for d in case.get("destinations") or [] if (d.get("state") or "") != "declined"]
             done = [d for d in alld if (d.get("state") or "") == "submitted"]
             if done and len(done) == len(alld):
-                return {"ok": True, "said": f"Submitted. All letters for {who} are in. The case is closed."}
+                return {"ok": True, "said": f"Submitted: all. The letter for {who} is off your list."}
             return {"ok": True, "said": f"Submitted. {len(done)} of {len(alld)} done."}
     except (LetterError, ValueError) as e:
         return {"ok": False, "said": str(e)[:200]}

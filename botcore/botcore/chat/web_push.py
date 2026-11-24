@@ -38,7 +38,7 @@ thread is done with somewhere (the owner writes in it, a page shows it, its
 card settles, the owner marks it done) each subscription still holding one
 gets a clear (`Pusher.clear`, {"type": "clear", "tag", "title"}): the service
 worker closes the notifications under the tag, and shows a quiet
-"Handled." in their place where the browser would otherwise count a push
+"Done." in their place where the browser would otherwise count a push
 that showed nothing. A clear goes to one subscription at most once in
 CLEAR_GAP_S and CLEAR_DAY_CAP times a day, and never to Apple's push
 service (NO_CLEAR_HOSTS). A subscription that gets no clear for a tag
@@ -553,7 +553,7 @@ class Pusher:
         there since the thread was last cleared). The payload,
         {"type": "clear", "tag", "title"}, tells the service worker to close
         the notifications under the tag; `title` is the one the thread's
-        notification showed, for the quiet "Handled." the worker shows where
+        notification showed, for the quiet "Done." the worker shows where
         the browser would count a push that showed nothing. A subscription on
         Apple's service, or one past its budget (one clear in clear_gap_s,
         clear_day_cap a day), gets none: the tag waits as unclosed for it

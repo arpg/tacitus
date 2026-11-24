@@ -535,7 +535,7 @@ def test_one_date_then_quiet_until_it_is_time(conn, monkeypatch):
     now_shown = calls["updates"][-1][1]
     now_shown._mid = block._mid
     _press(ns, now_shown, "letter_all")
-    assert "All letters for Sam Ortiz are in" in calls["status"][-1][1]
+    assert "Submitted: all. The letter for Sam Ortiz is off your list." in calls["status"][-1][1]
     assert letters.case(conn, cid)["status"] == "closed"
     assert _tick(ns, calls) == []
 

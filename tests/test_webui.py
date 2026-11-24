@@ -590,9 +590,9 @@ def test_every_string_the_person_sees_is_plain():
     for name in ("app.js", "sw.js", "bundle.js"):
         strings = _js_strings(read(name))
         # The reader keeps its place: the file's first, middle and last words are found.
-        for sentinel in {"app.js": ("Hidden text", "Mark all done", "${}/sw.js"),
+        for sentinel in {"app.js": ("Hidden text", "Not done", "${}/sw.js"),
                          "sw.js": ("bundle.js", "notificationclick", "message"),
-                         "bundle.js": ("not base64url", "Handled.", "${} is not a headers block")}[name]:
+                         "bundle.js": ("not base64url", "Done.", "${} is not a headers block")}[name]:
             assert sentinel in strings, (name, sentinel)
         said += [s for s in strings if not CODE_LIKE.match(s) and s not in NOT_SHOWN]
     page = _Shown()

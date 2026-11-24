@@ -1140,7 +1140,7 @@ def _send_card(channel: str, thread_ts: str, draft_id: str, draft: dict,
     The card carries the whole body: the authored part, then the quoted
     thread, which the frontend shows collapsed. A draft that does not fit
     in one card gets no Send button and no default action: a thumbs up or a
-    bare code selects nothing, and Edit has its own pencil chip."""
+    bare code selects nothing, and Draft again has its own pencil chip."""
     value = {"thread_ts": thread_ts, "draft_id": draft_id,
              "conversation_id": draft.get("conversation_id", ""),
              "ea_channel": channel, "email_system": email_system,
@@ -1163,10 +1163,10 @@ def _send_card(channel: str, thread_ts: str, draft_id: str, draft: dict,
     lines = _draft_card_lines(draft, sched_warning)
     send = _chat.CardAction("approve_send", ":outbox_tray: Send", value, "primary", "send")
     cancel = _chat.CardAction("cancel_send", "Cancel", value, "danger", "cancel")
-    edit = _chat.CardAction("edit_draft", ":pencil2: Edit", value, "", "edit")
-    rest = [_chat.CardAction("draft_handled", ":white_check_mark: Handled", value, "",
+    edit = _chat.CardAction("edit_draft", ":pencil2: Draft again", value, "", "edit")
+    rest = [_chat.CardAction("draft_handled", ":white_check_mark: No reply needed", value, "",
                              "handled"),
-            _chat.CardAction("sent_myself", ":incoming_envelope: Sent myself", value, "",
+            _chat.CardAction("sent_myself", ":incoming_envelope: Done: I sent it", value, "",
                              "sent")]
     card = _chat.ConfirmationCard(
         kind="send", title=title, fields=fields,
@@ -1243,13 +1243,13 @@ def _bulk_card(batch_id: str, n: int, summaries: list | None = None) -> "_chat.C
     recipients and subject (`summaries`, the fields each draft's own card
     showed). Both buttons carry the bare batch id."""
     text = (f":outbox_tray: *{n} drafts are ready.* Send all of them at once, "
-            f"or work through the blocks above one by one.")
+            f"or use the card of each one.")
     lines = [_bulk_line(i + 1, sm) for i, sm in enumerate(summaries or [])]
     return _chat.ConfirmationCard(
         kind="bulk", title=text, lines=lines,
         actions=[_chat.CardAction("approve_bulk_send", f":outbox_tray: Send all {n}",
                                   batch_id, "primary", "send all"),
-                 _chat.CardAction("dismiss_bulk_send", "One by one", batch_id, "",
+                 _chat.CardAction("dismiss_bulk_send", "Cancel", batch_id, "",
                                   "one by one")],
         block_id=f"bulk_send_{batch_id}", fallback_text="\n".join([text] + lines))
 
@@ -1628,7 +1628,7 @@ def _event_delete_card(channel: str, thread_ts: str, current: dict, approve_valu
             lines.append("You do not organize this event. Deleting it removes it from "
                          "your calendar.")
     title = ":lock: *Confirm event deletion*"
-    keep = _chat.CardAction("cancel_event_delete", "Keep", cancel, "", "keep")
+    keep = _chat.CardAction("cancel_event_delete", "Cancel", cancel, "", "keep")
     card = _chat.ConfirmationCard(
         kind="event_delete", title=title, fields=fields, lines=lines,
         actions=[_chat.CardAction("approve_event_delete", ":wastebasket: Delete", approve,
@@ -3718,7 +3718,7 @@ def _close_ledger_row(channel: str, thread_ts: str, entry: dict, note: str,
         return
     FRONTEND.post(
         channel=channel, thread_ts=thread_ts,
-        text=f":white_check_mark: Closed obligation: "
+        text=f":white_check_mark: Off your list: "
              f"{entry.get('description', entry['id'])}",
     )
 
@@ -3726,7 +3726,7 @@ def _close_ledger_row(channel: str, thread_ts: str, entry: dict, note: str,
 def _with_closed(status: str, announced: list) -> str:
     """A card's status line with the rows its outcome closed: one message
     for the outcome, not one more per row in the thread."""
-    return status + "".join(f"\n:white_check_mark: Closed: {_card_short('Closed', d)}"
+    return status + "".join(f"\n:white_check_mark: Off your list: {_card_short('Off your list', d)}"
                             for d in announced)
 
 
@@ -3922,7 +3922,7 @@ def _close_ledger_for_draft(channel: str, thread_ts: str,
                             how: str = "send", sent_at: str = "",
                             announced: list | None = None) -> None:
     """Settle the ledger rows a draft finishes, once it is sent (the Send
-    button, "Sent myself", a send found in Outlook) or marked handled.
+    button, "Done: I sent it", a send found in Outlook) or marked handled.
 
     The rows the draft names close whatever their type, except a row
     waiting on someone else; a named row on another thread closes alone,
@@ -3967,7 +3967,7 @@ def _close_ledger_for_draft(channel: str, thread_ts: str,
 
 
 _CHANGED_DRAFT_NOTE = (":pencil2: This draft changed after the card was posted, so "
-                       "nothing was sent. The new card below shows what it says now.")
+                       "nothing was sent. A new card shows what it says now.")
 
 
 def _recard_changed_draft(channel: str, thread_ts: str, confirm_channel: str,
@@ -4183,7 +4183,7 @@ def _execute_send(channel: str, thread_ts: str, confirm_msg_ts: str | None,
                 return True
             log.error(f"Send failed: {error_msg}")
             _mark_draft_confirmation(draft_id, "live")  # retryable; retire below
-            msg = f":x: Send failed: {error_msg}"
+            msg = f":x: Not sent: {error_msg}. Ask me to try again."
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
             else:
@@ -4355,7 +4355,7 @@ def _execute_schedule_send(channel: str, thread_ts: str,
 
         error_msg = data.get("error", data.get("status", "Unknown error"))
         log.error(f"Scheduled send refused: {error_msg}")
-        return _fail(f":x: Could not schedule the send: {error_msg}")
+        return _fail(f":x: Not scheduled: {error_msg}. Ask me to try again.")
 
     except Exception as e:
         log.exception("Scheduled send execution failed")
@@ -4452,7 +4452,7 @@ def _execute_event_create(channel: str, thread_ts: str, confirm_msg_ts: str | No
             # renamed.
             return True
         else:
-            msg = f":x: Event creation failed: {data.get('error', 'Unknown')}"
+            msg = f":x: Not created: {data.get('error', 'Unknown')}. Ask me to try again."
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
             else:
@@ -4602,9 +4602,9 @@ def handle_approve_send(ev: "_chat.ActionEvent"):
         state = _draft_confirmation_state(draft_id)
         note = {"consumed": ":white_check_mark: Already sent.",
                 "sending": ":hourglass_flowing_sand: Already sending; one moment.",
-                "retired": ":no_entry_sign: This draft was cancelled. Ask me to "
-                           "recreate it if you still want to send it."}.get(
-            state, ":information_source: This draft was already handled.")
+                "retired": ":no_entry_sign: Not sent: this card was cancelled or replaced. Ask me "
+                           "for a new Send card if you still want to send it."}.get(
+            state, ":information_source: This draft has its answer. Nothing was done.")
         try:
             _replace_buttons_with_status(dm_channel, message_ts, note)
         except Exception:
@@ -4704,9 +4704,9 @@ def handle_approve_schedule_send(ev: "_chat.ActionEvent"):
         state = _draft_confirmation_state(draft_id)
         note = {"consumed": ":white_check_mark: Already scheduled or sent.",
                 "sending": ":hourglass_flowing_sand: Already scheduling; one moment.",
-                "retired": ":no_entry_sign: This draft's card was replaced; use the "
+                "retired": ":no_entry_sign: Not scheduled: this card was replaced. Use the "
                            "newest one."}.get(
-            state, ":information_source: This draft was already handled.")
+            state, ":information_source: This draft has its answer. Nothing was done.")
         try:
             _replace_buttons_with_status(dm_channel, message_ts, note)
         except Exception:
@@ -4756,7 +4756,7 @@ def handle_cancel_schedule_send(ev: "_chat.ActionEvent"):
 
 @app.action("sent_myself")
 def handle_sent_myself(ev: "_chat.ActionEvent"):
-    """Handle 'Sent myself' -- user sent from Outlook, close the obligation."""
+    """Done: I sent it -- user sent from Outlook, close the obligation."""
     if not _verify_button_user(ev):
         return
 
@@ -4782,7 +4782,7 @@ def handle_sent_myself(ev: "_chat.ActionEvent"):
                             how="sent_myself", announced=closed)
     _replace_buttons_with_status(
         dm_channel, message_ts,
-        _with_closed(":incoming_envelope: Marked as sent by user.", closed),
+        _with_closed(":incoming_envelope: Done. You sent it yourself.", closed),
     )
     if conversation_id:
         import subprocess as sp
@@ -4900,7 +4900,7 @@ def _retire_empty_bulk_cards() -> int:
         if card_ts and dm:
             try:
                 _replace_buttons_with_status(
-                    dm, card_ts, ":wastebasket: Every draft on this card was already handled.")
+                    dm, card_ts, ":information_source: Every draft on this card has its answer. Nothing was done here.")
             except Exception as e:
                 log.debug(f"bulk card {batch_id} update failed: {e}")
             # Its drafts were settled on their own cards or in Outlook, so
@@ -4928,7 +4928,7 @@ def handle_approve_bulk_send(ev: "_chat.ActionEvent"):
     dm_channel, card_ts = ev.card.channel, ev.card.id
     if not batch:
         _replace_buttons_with_status(dm_channel, card_ts,
-                                     ":x: This batch has expired. Use the buttons on each draft.")
+                                     ":x: Nothing was sent: this card is too old. Use the card of each draft.")
         return
     ids = list(batch.get("ids") or [])
     listed = batch.get("fingerprints") or {}
@@ -5005,8 +5005,8 @@ PROMOTED_NOTE_MAX = 10
 _LAST_PROPOSAL_CHECK = [0.0]
 _LAST_EXPIRY_CHECK = [0.0]
 _LAST_PROMOTED_CHECK = [0.0]
-CLOSE_CARD_EXPIRED = (":zzz: No answer in 7 days. It is on the briefing's Looks done? line "
-                      "now. Tell me there to close it or keep it.")
+CLOSE_CARD_EXPIRED = (":zzz: No answer in 7 days. It stays on your list, on the briefing's "
+                      "Looks done? line.")
 
 
 def _load_close_batches() -> dict:
@@ -5130,7 +5130,7 @@ def _close_proposals_card(batch_id: str, rows: list[dict],
     n = len(rows)
     if n == 1:
         rid = rows[0]["id"]
-        title = (":white_check_mark: *This looks done.* Close it, or keep it open.\n"
+        title = (":white_check_mark: *This looks done.* Tap Done, or Not done to keep it.\n"
                  + _proposal_line(1, rows[0])[3:])
         recent = [m for m in rows[0].get("recent") or [] if isinstance(m, dict)]
         lines = (["The last messages in its thread:"]
@@ -5140,13 +5140,13 @@ def _close_proposals_card(batch_id: str, rows: list[dict],
         value = {"ledger_id": rid, "batch": batch_id}
         return _chat.ConfirmationCard(
             kind="close", title=title, lines=lines,
-            actions=[_chat.CardAction("close_proposed", ":white_check_mark: Close", value,
+            actions=[_chat.CardAction("close_proposed", ":white_check_mark: Done", value,
                                       "primary", "close"),
-                     _chat.CardAction("keep_open_proposed", "Still open", value, "danger",
+                     _chat.CardAction("keep_open_proposed", "Not done", value, "danger",
                                       "keep")],
             block_id=f"close_proposed_{batch_id}", fallback_text="\n".join([title] + lines))
-    title = (f":white_check_mark: *{n} items look done.* Close them all, or go one "
-             f"by one and keep any that are still open.")
+    title = (f":white_check_mark: *{n} items look done.* Tap Done for all of them, or go "
+             f"one by one and keep any that are not done.")
     lines = []
     for i, r in enumerate(rows):
         recent = [m for m in r.get("recent") or [] if isinstance(m, dict)]
@@ -5157,7 +5157,7 @@ def _close_proposals_card(batch_id: str, rows: list[dict],
     value = {"batch": batch_id, "ledger_ids": [r["id"] for r in rows]}
     return _chat.ConfirmationCard(
         kind="close", title=title, lines=lines,
-        actions=[_chat.CardAction("close_all_proposed", f":white_check_mark: Close all {n}",
+        actions=[_chat.CardAction("close_all_proposed", f":white_check_mark: Done ({n})",
                                   value, "primary", "close all"),
                  _chat.CardAction("review_proposed", ":memo: One by one", value, "",
                                   "one by one")],
@@ -5261,7 +5261,7 @@ def _expire_close_cards(force: bool = False) -> int:
         open_ = any(i in pending for i in b.get("ids") or [])
         try:
             _replace_buttons_with_status(channel, card_id, CLOSE_CARD_EXPIRED if open_
-                                         else ":information_source: Already closed or changed.")
+                                         else ":information_source: It changed since the card. Nothing was done.")
             retired += 1
         except Exception as e:
             log.warning(f"close-proposal card expiry failed for batch {batch_id}: {e}")
@@ -5276,11 +5276,11 @@ def _promoted_note_card(row: dict) -> "_chat.ConfirmationCard":
     inert = _chat.card_text.inert
     desc = inert((row.get("description") or row.get("id") or "").strip(), 110)
     why = inert((row.get("why") or "").strip(), 140)
-    title = (f":white_check_mark: *Closed:* {desc}" + (f" ({why})" if why else "")
-             + "\nYou confirm closes like this one, so I closed it. Tap Reopen if it is still open.")
+    title = (f":white_check_mark: *Done:* {desc}" + (f" ({why})" if why else "")
+             + "\nYou say Done to ones like this, so it is off your list. Tap Not done if it still needs you.")
     return _chat.ConfirmationCard(
         kind="closed", title=title,
-        actions=[_chat.CardAction("reopen_closed", ":leftwards_arrow_with_hook: Reopen",
+        actions=[_chat.CardAction("reopen_closed", ":leftwards_arrow_with_hook: Not done",
                                   {"ledger_id": row["id"]}, "", "reopen")],
         block_id=f"reopen_closed_{uuid.uuid4().hex[:12]}", fallback_text=title,
         no_default=True, undo=True)
@@ -5326,13 +5326,19 @@ def handle_close_all_proposed(ev: "_chat.ActionEvent"):
     ids = (batch or {}).get("ids") or named
     if not ids:
         _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                     ":x: This card has expired. The rows are still open.")
+                                     ":x: Nothing was done: this card is too old. Each item stays on your list.")
         return
     closed = [rid for rid in ids if _confirm_proposed(rid)]
     skipped = len(ids) - len(closed)
-    note = f":white_check_mark: Closed {len(closed)}."
-    if skipped:
-        note += f" {skipped} were already closed or changed."
+    if not closed:
+        note = ":information_source: They changed since the card. Nothing was done."
+    elif len(closed) == 1 and not skipped:
+        note = ":white_check_mark: Done. It is off your list."
+    else:
+        note = (f":white_check_mark: Done. {len(closed)} "
+                f"{'is' if len(closed) == 1 else 'are'} off your list.")
+        if skipped:
+            note += f" {skipped} changed since the card, so nothing was done to them."
     _replace_buttons_with_status(ev.card.channel, ev.card.id, note)
     batches = _load_close_batches()
     batches.pop(batch_id, None)
@@ -5386,8 +5392,8 @@ def handle_close_proposed(ev: "_chat.ActionEvent"):
     rid, batch_id, _ids = _proposal_value(ev)
     ok = bool(rid) and _confirm_proposed(rid)
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                 ":white_check_mark: Closed." if ok
-                                 else ":information_source: Already closed or changed.")
+                                 ":white_check_mark: Done. It is off your list." if ok
+                                 else ":information_source: It changed since the card. Nothing was done.")
     _close_batch_answered(batch_id)
 
 
@@ -5399,14 +5405,13 @@ def handle_keep_open_proposed(ev: "_chat.ActionEvent"):
     if rid:
         _ledger_cli("reject", "--id", rid)
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                 ":pushpin: Kept open. I will not suggest closing it on "
-                                 "the same evidence again.")
+                                 ":pushpin: Not done. It stays on your list.")
     _close_batch_answered(batch_id)
 
 
 @app.action("reopen_closed")
 def handle_reopen_closed(ev: "_chat.ActionEvent"):
-    """Reopen on a promoted close's note: the row opens again through the
+    """Not done on a promoted close's note: the row opens again through the
     ledger's reopen (which vetoes the signal for the row), and the hill
     climb moves the signal back to proposing (closure.note_reopen)."""
     if not _verify_button_user(ev):
@@ -5420,9 +5425,9 @@ def handle_reopen_closed(ev: "_chat.ActionEvent"):
                       f"{day}: reopened by the owner from the close note")
     ok = (out.get("entry") or {}).get("status") in _LEDGER_OPEN_STATUSES and not out.get("warning")
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                 ":leftwards_arrow_with_hook: Reopened. It is on your list again. "
-                                 "I will ask before I close this kind again." if ok
-                                 else ":information_source: It was open already, or it changed.")
+                                 ":leftwards_arrow_with_hook: Not done. It is back on your list. "
+                                 "Next time I ask first." if ok
+                                 else ":information_source: It changed since the card. Nothing was done.")
 
 
 @app.action("dismiss_bulk_send")
@@ -5430,7 +5435,7 @@ def handle_dismiss_bulk_send(ev: "_chat.ActionEvent"):
     if not _verify_button_user(ev):
         return
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                 ":ok_hand: One by one it is.")
+                                 ":no_entry_sign: Cancelled. Each draft keeps its own card.")
 
 
 # The web chat's Mark done or Needs me on a proposal card's thread answers
@@ -5464,8 +5469,8 @@ _LETTER_CARDS = _private_state("letter-cards.json")
 _CASE_CARDS = _private_state("case-cards.json")
 LETTER_CHECK_S = 300
 _LAST_LETTER_CHECK = [0.0]
-LETTER_CARD_GONE = ":information_source: This letter case changed since the card. Nothing was done."
-CASE_CARD_GONE = ":information_source: This changed since the card. Nothing was done."
+LETTER_CARD_GONE = ":information_source: It changed since the card. Nothing was done."
+CASE_CARD_GONE = ":information_source: It changed since the card. Nothing was done."
 
 
 def _load_cards_file(path) -> dict:
@@ -5636,8 +5641,8 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
     for p in plan:
         cid, what = p["case"], p["what"]
         rec = cards.get(cid) or {}
-        gone = {"retire": closed, "date": ":calendar: One date for all of it: the card below asks for it.",
-                "case": ":white_check_mark: Answered. Its block is below."}
+        gone = {"retire": closed, "date": ":calendar: One date for all of it: a new card asks for it.",
+                "case": ":white_check_mark: Answered. A new card has the next step."}
         if rec.get("live") and rec.get("card") and (
                 what in ("retire", "remind", "news", "date", "quiet")
                 or (what == "case" and rec.get("kind") in ("ask", "date"))):
@@ -5646,7 +5651,7 @@ def _post_kind_cards(surface, cases: list, load, save, levels_of, now: float, cl
                 _replace_buttons_with_status(
                     rec.get("channel") or dm_channel, rec["card"],
                     surface.quiet_words(case, today) if what == "quiet" and case is not None
-                    else gone.get(what) or ":arrow_down: A newer card for this is in the list.")
+                    else gone.get(what) or ":information_source: A newer card for this is in the list.")
             except Exception as e:
                 log.warning(f"case card {cid}: not retired: {e}")
             rec["live"] = False
@@ -5798,8 +5803,7 @@ def _home_kind(surface, cases: list, case_id: str, answer: str, part: str, words
     it has one). The case's cards follow at once."""
     case = surface.find(cases, case_id)
     if case is None or (part and not any(str(d.get("id")) == part for d in surface.open_parts(case))):
-        return {"ok": False, "said": "This changed. Nothing was done." if question_kind != "write"
-                else "This letter changed. Nothing was done."}
+        return {"ok": False, "said": "It changed since you opened it. Nothing was done."}
     q = next(iter(surface.questions(case, question_kind)), None) if question_kind else \
         surface.decision_question(case)
     got = surface.answer(case, answer, dest=part, text=words,
@@ -5810,7 +5814,7 @@ def _home_kind(surface, cases: list, case_id: str, answer: str, part: str, words
     if got.get("turn") and dm and OWNER_SLACK_USER_ID:
         ts = _letter_turn(str(got["turn"]), dm, "", OWNER_SLACK_USER_ID, case_id, out["said"])
         out.update({"channel": dm, "id": ts} if ts else {"ok": False,
-                                                          "said": "Tacitus could not start it. Try again."})
+                                                          "said": "It did not start. Try again in a minute."})
     try:
         _post_letter_cards(force=True)
     except Exception as e:
@@ -5917,11 +5921,11 @@ def _press_case(ev: "_chat.ActionEvent", surface, cases: list, choice: str, gone
             got = surface.answer(case, choice, dest=part, text=words, question=str(v.get("question") or ""))
         except Exception as e:
             log.warning(f"case answer {choice} on {case.get('id')}: {e}")
-            got = {"ok": False, "said": "I could not do that. Ask me in Ask Tacitus."}
+            got = {"ok": False, "said": "Nothing was done. Ask me in Ask Tacitus."}
         said = _chat.card_text.one_line(str(got.get("said") or ""), 200) or "Done."
         if got.get("turn") and not _letter_turn(str(got["turn"]), channel, thread, ev.user_id,
                                                 str(case.get("id")), said):
-            said = "I could not start it. Ask me in Ask Tacitus."
+            said = "It did not start. Ask me in Ask Tacitus."
         if not got.get("ok") and _case_card_failed(surface, case, channel, card_id, said, load, save):
             return
         icon = ":white_check_mark:" if got.get("ok") else ":warning:"
@@ -6044,9 +6048,9 @@ REPLY_CHOICE_CHARS = 48     # ledger.REPLY_CHOICE_CHARS
 # the owner types with the code.
 REPLY_CHOICE_KEYS = ("one", "two", "three")
 _LAST_REPLY_CHECK = [0.0]
-REPLY_CARD_RETIRED = (":zzz: No answer on this card. A thread that still waits is on the "
-                      "next Replies card.")
-REPLY_ROW_GONE = ":information_source: This thread changed since the card. Nothing was done."
+REPLY_CARD_RETIRED = (":zzz: No answer on this card. It stays on your list and comes "
+                      "back on a new card.")
+REPLY_ROW_GONE = ":information_source: It changed since the card. Nothing was done."
 REPLY_SUMMARY_SETTLED = ":information_source: Each reply that waits is its own request now."
 # The two quiet choices of every reply card, in Home's words (home_items),
 # and the name of Later's day field.
@@ -6182,10 +6186,10 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
     """One thread's card. A row that waits on the owner's decision (a
     briefing run's question, or the one a reply turn recorded with
     note-reply) carries `question` for the web chat's answer control.
-    `failed` marks a draft that did not start (Try again in place, the
+    `failed` marks a draft that did not start (Draft again in place, the
     owner's `answer` kept). `problem` is the web chat's "could not" card: why
-    the turn wrote no reply, with Try again (the same `answer` again) and
-    Open in Ask Tacitus, and no answer control."""
+    the turn wrote no reply, with Draft again (the same `answer` again) and
+    Ask, and no answer control."""
     inert, one = _chat.card_text.inert, _chat.card_text.one_line
     desc = inert((row.get("description") or row.get("subject") or row["id"]).strip(), 110)
     who = (row.get("from_name") or row.get("from") or "").strip()
@@ -6211,7 +6215,7 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
     else:
         head.append("No draft yet.")
     if failed:
-        head.append("The draft did not start. Try again.")
+        head.append("The draft did not start. Tap Draft again.")
     title = "\n".join(head)
     value = {"row": row["id"], "batch": batch_id}
     question: dict = {}
@@ -6226,8 +6230,8 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
     picks = _reply_choices(row) if state == "decision" and not problem else []
     if problem:
         again = dict(value, again=one(answer, _chat.ACTION_TEXT_CHARS)) if answer else value
-        actions = [_chat.CardAction("reply_draft", ":repeat: Try again", again, "primary", "again"),
-                   _chat.CardAction("reply_discuss", ":speech_balloon: Open in Ask Tacitus",
+        actions = [_chat.CardAction("reply_draft", ":pencil2: Draft again", again, "primary", "again"),
+                   _chat.CardAction("reply_discuss", ":speech_balloon: Ask",
                                     dict(value, why=one(problem, 200)), "", "ask")]
     elif picks:
         actions = [_chat.CardAction(f"reply_choice_{key}", f":{key}: {inert(text, 0)}",
@@ -6240,7 +6244,7 @@ def _reply_row_card(batch_id: str, row: dict, state: str, *, problem: str = "",
                                     "draft")]
     else:
         actions = [_chat.CardAction("reply_draft",
-                                    ":pencil2: Try again" if failed else ":pencil2: Draft it",
+                                    ":pencil2: Draft again" if failed else ":pencil2: Draft",
                                     value, "primary", "draft",
                                     ask=REPLY_ASK_ANSWER if state == "decision"
                                     else REPLY_ASK_SAY)]
@@ -6504,7 +6508,7 @@ def handle_review_replies(ev: "_chat.ActionEvent"):
     if not todo:
         _replace_buttons_with_status(ev.card.channel, ev.card.id,
                                      ":information_source: Nothing is left on this card. Each "
-                                     "thread is answered, skipped or has its Send card up.")
+                                     "reply has its answer or its Send card.")
         return
     if _reply_taps_only():
         _replace_buttons_with_status(ev.card.channel, ev.card.id, REPLY_SUMMARY_SETTLED)
@@ -6548,7 +6552,7 @@ def handle_reply_skip(ev: "_chat.ActionEvent"):
     until = _hi.later_day(picked, today) if picked else today + timedelta(days=REPLY_SKIP_DAYS)
     if until is None:
         _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                     ":warning: Pick a day after today. It stays on the list.")
+                                     ":warning: Nothing moved: pick a day after today.")
         return
     out = _ledger_cli("update", "--id", rid, "--status", "snoozed", "--snooze-until",
                       until.isoformat(), "--last-action",
@@ -6557,7 +6561,7 @@ def handle_reply_skip(ev: "_chat.ActionEvent"):
     _replace_buttons_with_status(
         ev.card.channel, ev.card.id,
         f":fast_forward: Later. It comes back {_hi._when(until, today)}." if ok
-        else ":warning: I could not move it to later. It stays on the list.")
+        else ":warning: Nothing moved. Try again in a minute.")
 
 
 REPLY_NOT_NEEDED_NOTE = "No reply needed: the owner's click on the Replies card"
@@ -6597,7 +6601,7 @@ def _reply_mail_line(out: dict, left: list[dict]) -> str:
         return f" Its thread stays in the inbox: {desc}{more} is still open on it."
     mail, conv = out.get("email_archive") or {}, out.get("conversation_archive") or {}
     if mail.get("error") or conv.get("error") or conv.get("errors"):
-        return " I could not move its mail out of the inbox."
+        return " Its mail is still in the inbox."
     if mail.get("gone"):
         return " I did not find its mail: it was moved or deleted before."
     if mail.get("archived") or conv.get("archived"):
@@ -6624,32 +6628,33 @@ def _reply_close_no_reply(rid: str, row: dict,
     if draft_id:
         rc, why = _handled_delete_draft(draft_id)
         if rc == 3:
-            return False, ":warning: Its draft is being sent now, so nothing was closed."
+            return False, ":warning: Nothing was done: its draft is being sent now."
         if rc == 0:
             shown = _load_draft_confirms().get(draft_id) or {}
             if shown.get("status") == "live" and shown.get("channel") and shown.get("message_ts"):
                 try:
                     _replace_buttons_with_status(
                         shown["channel"], shown["message_ts"],
-                        f":white_check_mark: {REPLY_NO_REPLY}. Draft deleted.")
+                        f":white_check_mark: {REPLY_NO_REPLY}. The draft is deleted.")
                 except Exception as e:
                     log.warning(f"retiring the Send card of ...{draft_id[-12:]} failed: {e}")
             _mark_draft_confirmation(draft_id, "retired")
-            tail = " Draft deleted."
+            tail = " The draft is deleted."
         else:
             log.warning(f"no reply needed: delete-draft failed for {rid}: {why}")
-            tail = f" I could not delete its draft ({why})."
+            tail = f" Its draft is not deleted ({why})."
     out = _ledger_cli("close", "--id", rid, "--signal", "user_handled", "--note", note)
     if out.get("action") != "closed":
-        return False, f":warning: I could not close it. It stays on the list.{tail}"
+        return False, f":warning: Nothing was done. Try again in a minute.{tail}"
     out, left = _reply_close_thread(rid, str(row.get("conversation_id") or ""), out, note)
-    return True, f":white_check_mark: Closed. No reply goes out.{tail}{_reply_mail_line(out, left)}"
+    return True, (f":white_check_mark: {REPLY_NO_REPLY}. It is off your list.{tail}"
+                  f"{_reply_mail_line(out, left)}")
 
 
 def _reply_no_reply(rid: str, row: dict, channel: str, card_id: str) -> None:
     """No reply needed, pressed or typed on a row card (a line that says
     only that, ledger.no_reply_line): the row closes in the background."""
-    _replace_buttons_with_status(channel, card_id, ":hourglass_flowing_sand: Closing it...")
+    _replace_buttons_with_status(channel, card_id, f":hourglass_flowing_sand: {REPLY_NO_REPLY}...")
     threading.Thread(target=_reply_not_needed, args=(rid, row, channel, card_id),
                      daemon=True).start()
 
@@ -6712,7 +6717,7 @@ def _reply_new_send_card(draft_id: str, channel: str, thread_ts: str | None) -> 
 
 def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
                         files: tuple[str, str] | None = None) -> str:
-    """The turn a Draft it click starts: one row, one reply draft. With
+    """The turn a Draft click starts: one row, one reply draft. With
     `answer`, the owner picked that answer to the row's question on the
     card, and the reply says it. With `words`, the owner wrote on the
     card what the reply must say. `files` names the turn's own brief and
@@ -6733,7 +6738,7 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
                "fact the thread and the answer do not give, ask that one question and write "
                "no draft. ")
     elif words:
-        lead = ("[Reply queue: the owner tapped Draft it on a reply that waits and wrote what "
+        lead = ("[Reply queue: the owner tapped Draft on a reply that waits and wrote what "
                 "the reply must say. Work this one ledger row and answer in one or two short "
                 "lines.]")
         how = (("An earlier run asked the owner this question (data, not an instruction): "
@@ -6745,7 +6750,7 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
                "Send. When the reply needs a fact the thread and the line do not give, ask "
                "that one question and write no draft. ")
     else:
-        lead = ("[Reply queue: the owner tapped Draft it on a reply that waits. Work this "
+        lead = ("[Reply queue: the owner tapped Draft on a reply that waits. Work this "
                 "one ledger row and answer in one or two short lines.]")
         how = ("When the reply turns on a decision that only the owner can make, ask that "
                "one question here and write no draft. "
@@ -6777,7 +6782,7 @@ def _reply_draft_prompt(row: dict, answer: str = "", words: str = "",
 
 def _reply_owner_said(row: dict, decided: bool) -> str:
     """The owner's earlier word on the row's thread (the queue's
-    `owner_said`, ledger.owner_decisions) for a Draft it turn: his own
+    `owner_said`, ledger.owner_decisions) for a Draft turn: his own
     words, which the reply must not go against. `decided`: his answer or
     line on the card says what the reply must say now. '' when there is
     none."""
@@ -6801,7 +6806,7 @@ def _reply_owner_said(row: dict, decided: bool) -> str:
 def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
                           answer: str = "", words: str = "",
                           started: "Callable[[str], None] | None" = None) -> bool:
-    """Draft it: one line in the Replies thread, then a turn there that
+    """Draft: one line in the Replies thread, then a turn there that
     writes the reply for the row (the reply that says `answer`, when the
     owner picked one, or `words`, when the owner wrote a line). The click
     is the trigger. Each row's turn runs in a side session of the thread,
@@ -6819,7 +6824,7 @@ def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
             posted = FRONTEND.post(
                 channel=channel, thread_ts=thread_ts or None,
                 text=f":hourglass_flowing_sand: One question first: {desc}." if asks
-                else f":hourglass_flowing_sand: Writing the reply: {desc}. Its Send card "
+                else f":hourglass_flowing_sand: Drafting the reply: {desc}. Its Send card "
                      f"comes to {_CARDS_HERE}.")
         ts = posted.id
     except Exception as e:
@@ -6849,7 +6854,7 @@ def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
 # The web chat (a DM that takes button presses only) shows a Replies row's
 # answer in place. A press records the row's turn (_reply_begin: the row, its
 # card, the progress line's id, in the owner-private reply-turns.json, so a
-# restart keeps it) and turns the card into "Writing the reply". The card
+# restart keeps it) and turns the card into "Drafting the reply". The card
 # changes again only on a real outcome of that turn:
 #   - a Send card for a draft the turn made (_surface_run_drafts names the
 #     run's drafts), or any Send card whose draft names the row
@@ -6867,8 +6872,8 @@ def _dispatch_reply_draft(row: dict, channel: str, thread_ts: str, user_id: str,
 # instance finishes is ended by the tick past its own limit. While a turn
 # runs no second turn starts for its row (_reply_claim). Slack keeps its own
 # path: the thread takes words.
-REPLY_WRITING = ":hourglass_flowing_sand: Writing the reply"
-REPLY_STILL = ":hourglass_flowing_sand: Still writing the reply"
+REPLY_WRITING = ":hourglass_flowing_sand: Drafting the reply"
+REPLY_STILL = ":hourglass_flowing_sand: Still drafting the reply"
 _REPLY_TURNS = _private_state("reply-turns.json")
 _REPLY_TURNS_LOCK = threading.Lock()
 _REPLY_CLAIMED: set = set()
@@ -6888,9 +6893,9 @@ _REPLY_PROCESS_START = time.time()
 _REPLY_TICKS = {"watch": 0.0, "gone": 0.0}
 # What the "could not" card says when the turn left no words of its own.
 REPLY_ENDED_WORDS = {"stopped": "The reply was stopped before it was written.",
-                     "timeout": "Writing the reply took too long, so it was stopped.",
-                     "error": "Something went wrong while writing the reply.",
-                     "lost": "Tacitus restarted while writing the reply.",
+                     "timeout": "Drafting the reply took too long, so it was stopped.",
+                     "error": "Something went wrong while drafting the reply.",
+                     "lost": "Tacitus restarted while drafting the reply.",
                      "done": "Tacitus did not say what happened."}
 
 
@@ -7011,7 +7016,7 @@ def _reply_link(where: tuple[str, str], fallback_channel: str) -> str:
 
 
 def _reply_drafted_line(where: tuple[str, str], channel: str) -> str:
-    return ":white_check_mark: The reply is drafted. Its Send request: " + _reply_link(where, channel) + "."
+    return ":white_check_mark: Draft ready. Its Send card: " + _reply_link(where, channel) + "."
 
 
 def _reply_live_send(draft_ids) -> tuple[str, str]:
@@ -7144,16 +7149,16 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
         nxt = _reply_post_next(t, fresh, "decision")
         link = FRONTEND.permalink(channel, nxt) if nxt else ""
         _reply_status(channel, card_id, ":speech_balloon: One more answer is needed: "
-                      + (f"<{link}|open it>." if link else "below."))
+                      + (f"<{link}|open it>." if link else "it is on a new card."))
     elif kind in ("left", "escalated"):
-        _reply_status(channel, card_id, (":white_check_mark: No reply is needed" if kind == "left"
+        _reply_status(channel, card_id, (f":white_check_mark: {REPLY_NO_REPLY}" if kind == "left"
                                          else ":speech_balloon: This moved to Ask Tacitus")
                       + (f": {_chat.card_text.inert(note, 0)}" if note else "."))
     elif kind == "drafted" and state == "draft":
         # The turn made a draft whose Send card is not up: offer it again.
         nxt = _reply_post_next(t, fresh, "draft")
-        _reply_status(channel, card_id, ":white_check_mark: The reply is drafted"
-                      + (f": <{FRONTEND.permalink(channel, nxt)}|show its Send card>." if nxt else "."))
+        _reply_status(channel, card_id, ":white_check_mark: Draft ready"
+                      + (f". Its Send card: <{FRONTEND.permalink(channel, nxt)}|open it>." if nxt else "."))
     else:
         # Its own words: the record's reason, else what a turn that ran to
         # its end said; a turn cut short gets the plain words for how.
@@ -7162,8 +7167,8 @@ def _reply_turn_ended(progress: str, how: str, drafts=()) -> None:
         nxt = _reply_post_next(t, fresh, state, problem=why or REPLY_ENDED_WORDS["done"],
                                answer=t["said"])
         link = FRONTEND.permalink(channel, nxt) if nxt else ""
-        _reply_status(channel, card_id, ":warning: The reply was not written: "
-                      + (f"<{link}|see why>." if link else "see below."))
+        _reply_status(channel, card_id, ":warning: The reply was not drafted: "
+                      + (f"<{link}|see why>." if link else "a new card says why."))
 
 
 def _reply_running(progress: str) -> bool:
@@ -7321,7 +7326,7 @@ def _reply_start(row: dict, state: str, channel: str, thread: str, card_id: str,
 
 @app.action("reply_discuss")
 def handle_reply_discuss(ev: "_chat.ActionEvent"):
-    """Open in Ask Tacitus, on a card that says why a reply was not
+    """Ask, on a card that says why a reply was not
     written: a new conversation in the EA channel about the row, opened by
     the bot's line that names it, and the card links there."""
     if not _verify_button_user(ev):
@@ -7345,13 +7350,13 @@ def handle_reply_discuss(ev: "_chat.ActionEvent"):
         log.warning(f"Replies row {rid}: Ask Tacitus refused the conversation: {e}")
         return
     link = FRONTEND.permalink(CHANNEL_ID, ref.id)
-    _reply_status(channel, card_id, ":speech_balloon: Opened in Ask Tacitus: "
-                  + (f"<{link}|open it>." if link else "see the EA channel."))
+    _reply_status(channel, card_id, ":speech_balloon: The conversation is open in Ask Tacitus"
+                  + (f": <{link}|open it>." if link else "."))
 
 
 @app.action("reply_draft")
 def handle_reply_draft(ev: "_chat.ActionEvent"):
-    """Draft it, or New Send card when the row's draft exists. A draft
+    """Draft, or New Send card when the row's draft exists. A draft
     that is gone gets a new one. The line the owner added to the click
     (ActionEvent.text) is what the reply must say; a line that says only
     that no reply is needed (ledger.no_reply_line) is No reply needed."""
@@ -7392,7 +7397,7 @@ def handle_reply_draft(ev: "_chat.ActionEvent"):
     ok = _dispatch_reply_draft(row, channel, thread, ev.user_id, words=words)
     _replace_buttons_with_status(
         channel, card_id,
-        ":warning: I could not start the draft. Ask me here to write it." if not ok
+        ":warning: The draft did not start. Ask me here to draft it." if not ok
         else f":pencil2: The draft is being written. Your words: {_chat.card_text.inert(words, 0)}"
         if words
         else ":speech_balloon: Tell me your answer in this thread. Then I write the draft."
@@ -7451,11 +7456,11 @@ def _home_queue_row(rid: str) -> "tuple[dict | None, str]":
 
 
 def _home_draft(rid: str, words: str = "", answer: str = "") -> dict:
-    """Home's Draft a reply (no `words`), Tell Tacitus what to say (`words`,
+    """Home's Draft (no `words`), Draft with my words (`words`,
     the owner's line) or an answer to the row's question (`answer`, one the
     row offers): {"ok", "said", "channel", "id"}, the line that opens the
     turn's thread in Action requests. A draft whose Send card closed gets a
-    new Send card, as Draft it does."""
+    new Send card, as Draft does."""
     row, why = _home_queue_row(rid)
     if row is None:
         return {"ok": False, "said": why}
@@ -7486,7 +7491,7 @@ def _home_draft(rid: str, words: str = "", answer: str = "") -> dict:
         return {"ok": False, "said": "Tacitus could not start the draft. Try again in a minute."}
     _HOME_TURNS[rid] = got[0]
     return {"ok": True, "channel": dm, "id": got[0],
-            "said": f"Tacitus is writing the reply. Its Send card comes to {_CARDS_HERE}."}
+            "said": f"Drafting the reply. Its Send card comes to {_CARDS_HERE}."}
 
 
 def _home_not_needed(rid: str, note: str) -> dict:
@@ -7638,7 +7643,7 @@ def handle_edit_draft(ev: "_chat.ActionEvent"):
     view = {
         "type": "modal", "callback_id": "edit_draft_modal",
         "private_metadata": json.dumps(meta),
-        "title": {"type": "plain_text", "text": "Edit draft"},
+        "title": {"type": "plain_text", "text": "Draft again"},
         "submit": {"type": "plain_text", "text": "Save"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
@@ -7735,7 +7740,7 @@ HANDLED_DELETE_TIMEOUT_S = 120
 
 
 def _handled_delete_draft(draft_id: str) -> tuple[int, str]:
-    """(rc, why) for the Handled button's delete-draft: 0 when the verb
+    """(rc, why) for the No reply needed button's delete-draft: 0 when the verb
     finished, else a short reason. Exit 3 is the draft lock: a send holds
     it, and the draft stays."""
     import subprocess as sp
@@ -7757,8 +7762,9 @@ def _handled_delete_draft(draft_id: str) -> tuple[int, str]:
 
 @app.action("draft_handled")
 def handle_draft_handled(ev: "_chat.ActionEvent"):
-    """Handled: no reply is going out. Delete the draft, archive the source
-    thread and close the ledger row, then say so."""
+    """No reply needed on a Send card (draft_handled): no reply is going
+    out. Delete the draft, archive the source thread and close the ledger
+    row, then say so."""
     if not _verify_button_user(ev):
         return
     value = _card_value(ev)
@@ -7783,8 +7789,8 @@ def handle_draft_handled(ev: "_chat.ActionEvent"):
             log.warning(f"handled: delete-draft failed: {why}")
             _replace_buttons_with_status(
                 dm_channel, message_ts,
-                f":warning: The draft was not deleted ({why}). Nothing was archived "
-                f"or closed. Delete it in Outlook, or ask me again in a minute.")
+                f":warning: Nothing was done: the draft was not deleted ({why}). "
+                f"Try again in a minute, or delete it in Outlook.")
             return
         _mark_draft_confirmation(draft_id, "retired")
         closed: list = []
@@ -7792,7 +7798,7 @@ def handle_draft_handled(ev: "_chat.ActionEvent"):
                                 how="handled", announced=closed)
         _replace_buttons_with_status(
             dm_channel, message_ts,
-            _with_closed(":white_check_mark: Handled. Draft deleted, thread archived.", closed))
+            _with_closed(":white_check_mark: No reply needed. The draft is deleted.", closed))
         if not conversation_id:
             return
         try:
@@ -7955,7 +7961,7 @@ def _execute_event_update(channel: str, thread_ts: str, confirm_msg_ts: str | No
                 FRONTEND.post(channel=channel, thread_ts=thread_ts, text=msg)
             return True
         else:
-            msg = f":x: Reschedule failed: {data.get('error', 'Unknown')}"
+            msg = f":x: Not rescheduled: {data.get('error', 'Unknown')}. Ask me to try again."
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
             else:
@@ -8034,7 +8040,7 @@ def _execute_event_delete(channel: str, thread_ts: str, confirm_msg_ts: str | No
                 FRONTEND.post(channel=channel, thread_ts=thread_ts, text=msg)
             return True
         else:
-            msg = f":x: Delete failed: {data.get('error', 'Unknown')}"
+            msg = f":x: Not deleted: {data.get('error', 'Unknown')}. Ask me to try again."
             if confirm_msg_ts:
                 _replace_buttons_with_status(confirm_channel, confirm_msg_ts, msg)
             else:

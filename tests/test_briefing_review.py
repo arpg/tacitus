@@ -399,7 +399,7 @@ def test_each_fault_class_and_what_the_post_shows(tmp_path, priv):
     assert "co-authors finish" not in top and "Send Sam the install guide" in top
     assert "Follow-up due" not in text
     assert "Drafts ready" not in text
-    needs = text.split("*Needs you*")[1]
+    needs = text.split("*Answer needed*")[1]
     assert 'I held the reply I wrote: you closed this thread on Oct 9: "Not joining. No reply." Tell me' in needs
     assert "Department town hall" not in text.split(":clipboard:")[0]
     assert "*Looks done?* (1)" in text and "Review Tuesday's workshop run of show" in text
@@ -842,7 +842,7 @@ def test_the_whole_morning_with_the_upstream_rules_and_the_review(tmp_path, priv
     # The gate turned both replies into his decisions before a word was
     # written: no draft, no Send card, and nothing for the review to hold.
     assert written == [] and "Drafts ready" not in text and "Held the reply" not in footer
-    needs = body.split("*Needs you*")[1].split("\n\n")[0]
+    needs = body.split("*Answer needed*")[1].split("\n\n")[0]
     assert needs.count("Pilot program") == 1 and needs.count("Spring workshop panel") == 1
     assert body.count("Pilot program") == 1 and "join the pilot" not in text
     # The do-list: the row closed since the briefing's copy is gone (code),

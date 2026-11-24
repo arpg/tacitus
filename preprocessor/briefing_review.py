@@ -40,7 +40,7 @@ changes only what it can prove from those records:
      card) or send anything.
   5. Code applies the verdicts: dropped items leave the post and the
      rooms, a held reply is never staged (no Send card; it becomes a
-     question under "Needs you"), a dropped hand-off is not queued, and
+     question under "Answer needed"), a dropped hand-off is not queued, and
      the post ends with what the check changed and why.
 
 The wait is bounded (TIMEOUT_S). When the hosted model fails, times out
@@ -90,10 +90,10 @@ MOVES = {"morning-briefing": ("top", "flex", "needs"),
          "afternoon-catchup": ("since", "pending"),
          "weekly-audit": ("critical", "important")}
 SECTION_NAMES = {
-    "top": "Get done today", "flex": "Flexes", "needs": "Needs you",
+    "top": "Get done today", "flex": "Flexes", "needs": "Answer needed",
     "draft": "Drafts ready (the owner gets a Send card)", "escalated": "Sent to Claude",
     "due": "the date banner at the top", "followup": "a Follow-up due line",
-    "since": "Since this morning", "pending": "Pending your response",
+    "since": "Since this morning", "pending": "Answer needed",
     "critical": "Critical", "important": "Important", "also": "Also open here (a room post)",
     "letters": "Letters and other work he owes (one line per case: a letter, a review, a form, a report)",
 }
@@ -1271,7 +1271,7 @@ def footer(review: dict, items: list[dict]) -> list[str]:
         lines.append(f"Left out *{t.get(r, r)}*: {_reason(v)}.")
     for r, why in (review.get("hold") or {}).items():
         lines.append(f"Held the reply to *{t.get(r, r)}*: {sentence(why or 'it needs you')} "
-                     "It is under Needs you, with no Send card.")
+                     "It is under Answer needed, with no Send card.")
     for r, to in (review.get("move") or {}).items():
         lines.append(f"Moved *{t.get(r, r)}* to {SECTION_NAMES.get(to, to)}"
                      + (f": {_reason({'why': (review.get('whys') or {}).get(r, '')})}."
@@ -1669,7 +1669,7 @@ def settle_drafts(drafts: list[dict], cands: dict, checked: dict, *, run_id: str
                   pending: PendingDrafts | None = None, mark=None, stage=None,
                   withdraw=None) -> dict:
     """Act on the check for each reply this run wrote. A held one becomes
-    a decision for the owner (under "Needs you", with why) and is never
+    a decision for the owner (under "Answer needed", with why) and is never
     staged; one staged before the check (a stand-in drafter) is deleted
     from Drafts. The rest are staged now; one create-reply refuses for a
     scheduled lane (draft_gate.cron_refusal) becomes the gate's decision,

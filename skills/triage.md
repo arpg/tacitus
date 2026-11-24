@@ -56,7 +56,7 @@ python3 ~/ea-system/preprocessor/graph_actions.py create-event \
   --subject "<title>" --start "<iso>" --end "<iso>" --attendees "<emails>"
 ```
 
-**Mark done:** the user asked for it, so close the row with their words:
+**Done:** the user asked for it, so close the row with their words:
 `ledger.py close --id <id> --note "<reason>" --user-said "<their words>"`.
 
 ### 4. Report results

@@ -339,7 +339,7 @@ def test_draft_it_starts_a_turn_in_the_cards_thread():
     ns, calls = _bot([row])
     _tick(ns)
     card = calls["cards"][0]
-    assert card.actions[0].label == ":pencil2: Draft it"
+    assert card.actions[0].label == ":pencil2: Draft"
     assert "I need your answer before I write it: One year or three?" in _text(card)
     ns["handle_reply_draft"](_ev(card.actions[0].value, "m1", "t1"))
     (turn,) = calls["turns"]
@@ -357,7 +357,7 @@ def test_draft_it_starts_a_turn_in_the_cards_thread():
     plain, calls = _bot([_q("ann", 4)])
     _tick(plain)
     plain["handle_reply_draft"](_ev(calls["cards"][0].actions[0].value))
-    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Drafting the reply: ")
     assert calls["status"][-1] == ("m1", ":pencil2: The draft is being written.")
 
 
@@ -365,7 +365,7 @@ def test_draft_it_takes_a_line_of_the_owners_words():
     ns, calls = _bot([_q("ann", 4)])
     _tick(ns)
     draft = calls["cards"][0].actions[0]
-    assert (draft.label, draft.ask) == (":pencil2: Draft it", "what the reply must say")
+    assert (draft.label, draft.ask) == (":pencil2: Draft", "what the reply must say")
     assert [a.ask for a in calls["cards"][0].actions[1:]] == ["The day it comes back", ""]
     ns["handle_reply_draft"](_ev(draft.value, "m1", "t1",
                                  text="  Say yes,\nbut not before the 20th.  " + "x" * 400))
@@ -375,7 +375,7 @@ def test_draft_it_takes_a_line_of_the_owners_words():
     assert "the owner's instruction for this reply and for nothing else" in prompt
     assert "a decline too: the draft waits for the owner's Send" in prompt
     assert "note-reply --id response-ann" in prompt
-    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Drafting the reply: ")
     ts, status = calls["status"][-1]
     assert _plain(status).startswith(
         ":pencil2: The draft is being written. Your words: Say yes, but not before the 20th.")
@@ -415,7 +415,7 @@ def test_a_line_on_a_question_is_the_answer():
     assert "One year or three?" in prompt and "data, not an instruction" in prompt
     assert 'The owner wrote this line on the card: "Three years."' in prompt
     assert "ask that one question here in one line" not in prompt
-    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Drafting the reply: ")
     assert _plain(calls["status"][-1][1]) == (
         ":pencil2: The draft is being written. Your words: Three years.")
 
@@ -549,7 +549,7 @@ def test_a_tap_on_an_answer_starts_the_turn_that_writes_it():
     assert "Renew for one year\"" not in prompt                  # the answer not picked is not there
     assert "--ledger-id response-lee" in prompt and "note-reply --id response-lee" in prompt
     assert "the draft waits for the owner's Send" in prompt
-    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Drafting the reply: ")
     from botcore.chat import card_text
     ts, status = calls["status"][-1]
     assert (ts, card_text.strip_inert(status)) == (
@@ -666,7 +666,7 @@ def test_later_snoozes_the_row_to_the_day_picked_or_three_days_on():
     n = len(calls["cli"])
     ns["handle_reply_skip"](_ev(later.value, "m4", text="2026-10-12"))
     assert len(calls["cli"]) == n + 1 and calls["cli"][-1][0] == "reply-queue"   # no update
-    assert calls["status"][-1] == ("m4", ":warning: Pick a day after today. It stays on the list.")
+    assert calls["status"][-1] == ("m4", ":warning: Nothing moved: pick a day after today.")
 
 
 def test_later_on_slack_is_a_date_picker_whose_row_comes_from_the_card_registry():
@@ -711,9 +711,9 @@ def test_not_needed_deletes_the_draft_and_closes_the_row():
     assert calls["cli"][-1] == ("close", "--id", "response-pat", "--signal", "user_handled",
                                 "--note", "No reply needed: the owner's click on the Replies card")
     assert [text for _ts, text in calls["status"][-3:]] == [
-        ":hourglass_flowing_sand: Closing it...",
-        ":white_check_mark: No reply needed. Draft deleted.",
-        ":white_check_mark: Closed. No reply goes out. Draft deleted."]
+        ":hourglass_flowing_sand: No reply needed...",
+        ":white_check_mark: No reply needed. The draft is deleted.",
+        ":white_check_mark: No reply needed. It is off your list. The draft is deleted."]
 
 
 CLOSE_NOTE = "No reply needed: the owner's click on the Replies card"
@@ -738,13 +738,13 @@ def test_not_needed_says_where_the_mail_is():
             (dict(done, email_archive={"archived": False, "gone": True, "note": "stale"}),
              " I did not find its mail: it was moved or deleted before."),
             (dict(done, email_archive={"archived": False, "error": "timeout"}),
-             " I could not move its mail out of the inbox."),
+             " Its mail is still in the inbox."),
             (dict(done, email_archive={"archived": True},
                   conversation_archive={"archived": True, "errors": ["one failed"]}),
-             " I could not move its mail out of the inbox."),
+             " Its mail is still in the inbox."),
             (done, "")]:                                     # a row from no email
         calls = _not_needed(row, closes={"response-pat": out})
-        assert calls["status"][-1][1] == ":white_check_mark: Closed. No reply goes out." + tail
+        assert calls["status"][-1][1] == ":white_check_mark: No reply needed. It is off your list." + tail
         assert not [a for a in calls["cli"] if a[0] == "search"]
 
 
@@ -764,7 +764,7 @@ def test_not_needed_closes_the_threads_other_reply_rows():
         ("search", "--conversation-id", "conv-1", "--status", "open,follow_up,snoozed"),
         ("close", "--id", "kept-conv-1", "--signal", "user_handled", "--note", CLOSE_NOTE)]
     assert calls["status"][-1][1] == (
-        ":white_check_mark: Closed. No reply goes out. Its mail is out of the inbox.")
+        ":white_check_mark: No reply needed. It is off your list. Its mail is out of the inbox.")
 
 
 def test_not_needed_leaves_a_row_that_no_reply_finishes():
@@ -782,14 +782,14 @@ def test_not_needed_leaves_a_row_that_no_reply_finishes():
                          "conversation_kept": ["task-budget", "response-wait"]}})
     assert [a[2] for a in calls["cli"] if a[0] == "close"] == ["response-pat"]
     assert _plain(calls["status"][-1][1]) == (
-        ":white_check_mark: Closed. No reply goes out. Its thread stays in the inbox: "
+        ":white_check_mark: No reply needed. It is off your list. Its thread stays in the inbox: "
         "Send the budget sheet and 1 more is still open on it.")
 
 
 def test_not_needed_that_does_not_close_says_so():
     calls = _not_needed(_q("pat", 6, conversation_id="conv-1"),
                         closes={"response-pat": {"ok": False, "action": "refused"}})
-    assert calls["status"][-1][1] == ":warning: I could not close it. It stays on the list."
+    assert calls["status"][-1][1] == ":warning: Nothing was done. Try again in a minute."
     assert not [a for a in calls["cli"] if a[0] == "search"]
 
 
@@ -800,7 +800,7 @@ def test_not_needed_changes_nothing_while_the_draft_is_being_sent():
     _tick(ns)
     ns["handle_reply_not_needed"](_ev(calls["cards"][0].actions[2].value))
     assert not [a for a in calls["cli"] if a[0] == "close"]
-    assert calls["status"][-1][1].startswith(":warning: Its draft is being sent now")
+    assert calls["status"][-1][1].startswith(":warning: Nothing was done: its draft is being sent now")
 
 
 def test_a_click_on_a_thread_that_no_longer_waits_does_nothing():
@@ -814,7 +814,7 @@ def test_a_click_on_a_thread_that_no_longer_waits_does_nothing():
     for handler, action in (("handle_reply_draft", actions[0]), ("handle_reply_skip", actions[1]),
                             ("handle_reply_not_needed", actions[2])):
         ns[handler](_ev(action.value))
-        assert calls["status"][-1][1].startswith(":information_source: This thread changed")
+        assert calls["status"][-1][1].startswith(":information_source: It changed since the card")
     assert {a[0] for a in calls["cli"]} == {"reply-queue"}
     assert not calls["turns"] and not calls["deleted"]
 
@@ -857,7 +857,7 @@ def test_a_line_that_says_no_reply_is_needed_is_no_reply_needed_and_starts_no_tu
         assert ("close", "--id", "response-pat", "--signal", "user_handled",
                 "--note", CLOSE_NOTE) in calls["cli"]
         assert [t for _ts, t in calls["status"]][-2:] == [
-            ":hourglass_flowing_sand: Closing it...", ":white_check_mark: Closed. No reply goes out."]
+            ":hourglass_flowing_sand: No reply needed...", ":white_check_mark: No reply needed. It is off your list."]
     ns, calls = _bot([_q("pat", 6)])
     _tick(ns)
     ns["handle_reply_draft"](_ev(calls["cards"][0].actions[0].value,
@@ -1035,8 +1035,8 @@ def test_web_a_draft_the_turn_made_links_its_send_request_and_nothing_else_shows
     _turn(ns, calls, draft="d-7", journal=journal, confirms=confirms)
     ns["handle_reply_draft"](_ev(VALUE, text="Three years, at the same rate."))
     statuses = [(_ts, _plain(t)) for _ts, t in calls["status"]]
-    assert statuses == [("m1", ":hourglass_flowing_sand: Writing the reply: Three years, at the same rate."),
-                        ("m1", ":white_check_mark: The reply is drafted. Its Send request: "
+    assert statuses == [("m1", ":hourglass_flowing_sand: Drafting the reply: Three years, at the same rate."),
+                        ("m1", ":white_check_mark: Draft ready. Its Send card: "
                                "<https://chat.example/#/dm/w77/w77|open it>.")]
     assert len(calls["turns"]) == 1 and calls["cards"] == []
     (t,) = turns.values()
@@ -1055,11 +1055,11 @@ def test_web_a_late_send_card_attaches_and_corrects_the_card_shown_before():
     ns["handle_reply_draft"](_ev(VALUE, card_id="m7", text="Three years."))
     problem = calls["cards"][-1]                                   # posted as m1
     assert problem.problem["text"] == "Tacitus did not say what happened." and problem.question == {}
-    assert calls["status"][-1] == ("m7", ":warning: The reply was not written: "
+    assert calls["status"][-1] == ("m7", ":warning: The reply was not drafted: "
                                          "<https://chat.example/#/dm/m1/m1|see why>.")
     journal.append({"action": "created", "draft_id": "d-9", "ledger_ids": ["response-lee"], "ts": "x"})
     ns["_reply_draft_carded"]("d-9", "dm", "w99")
-    drafted = ":white_check_mark: The reply is drafted. Its Send request: <https://chat.example/#/dm/w99/w99|open it>."
+    drafted = ":white_check_mark: Draft ready. Its Send card: <https://chat.example/#/dm/w99/w99|open it>."
     assert ("m7", drafted) in calls["status"] and ("m1", drafted) in calls["status"]
     (t,) = turns.values()
     assert t["outcome"] == "drafted"
@@ -1119,7 +1119,7 @@ def test_web_only_a_question_is_a_question_and_unmarked_text_is_could_not():
     _turn(ns, calls, record={"outcome": "left", "note": "They answered the question themselves.", "inbound": "x"})
     ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
     assert calls["cards"] == []
-    assert _plain(calls["status"][-1][1]) == ":white_check_mark: No reply is needed: They answered the question themselves."
+    assert _plain(calls["status"][-1][1]) == ":white_check_mark: No reply needed: They answered the question themselves."
 
     old = _q("lee", 8, queued=dict(ASKED, at="2020-01-01T00:00:00Z"))   # a briefing run's, not this turn's
     ns, calls, fe, turns, *_ = _setup(row=old, said="I looked, and the thread asks something unclear?")
@@ -1133,8 +1133,8 @@ def test_web_only_a_question_is_a_question_and_unmarked_text_is_could_not():
 
 def test_web_a_turn_cut_short_says_so_in_plain_words():
     for how, words in (("stopped", "The reply was stopped before it was written."),
-                       ("timeout", "Writing the reply took too long, so it was stopped."),
-                       ("error", "Something went wrong while writing the reply.")):
+                       ("timeout", "Drafting the reply took too long, so it was stopped."),
+                       ("error", "Something went wrong while drafting the reply.")):
         ns, calls, fe, turns, *_ = _setup()
         _turn(ns, calls, how=how)
         ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
@@ -1165,7 +1165,7 @@ def test_web_a_restart_mid_turn_ends_truthfully():
     start = turns[progress]["started"]
     ns["_active_threads"].add(progress)
     ns["_reply_watch_tick"](start + ns["REPLY_STILL_S"] + 1)
-    assert _plain(calls["status"][-1][1]) == ":hourglass_flowing_sand: Still writing the reply: Three years."
+    assert _plain(calls["status"][-1][1]) == ":hourglass_flowing_sand: Still drafting the reply: Three years."
     n = len(calls["status"])
     ns["_reply_watch_tick"](start + ns["REPLY_STILL_S"] + 30)
     assert len(calls["status"]) == n                             # not again before REPLY_REFRESH_S
@@ -1176,7 +1176,7 @@ def test_web_a_restart_mid_turn_ends_truthfully():
     ns["_active_threads"].discard(progress)
     ns["_reply_watch_tick"](start + ns["REPLY_TURN_LIMIT_S"] + 120)
     assert turns[progress]["outcome"] == "problem"
-    assert calls["cards"][-1].problem["text"] == "Tacitus restarted while writing the reply."
+    assert calls["cards"][-1].problem["text"] == "Tacitus restarted while drafting the reply."
 
 
 def test_web_a_turn_the_old_process_left_ends_soon_after_a_restart():
@@ -1197,7 +1197,7 @@ def test_web_a_turn_the_old_process_left_ends_soon_after_a_restart():
     ns["_REPLY_TICKS"]["watch"] = 0
     ns["_reply_watch_tick"](start + ns["REPLY_RESTART_GRACE_S"] + 20)
     assert turns[progress]["outcome"] == "problem"
-    assert calls["cards"][-1].problem["text"] == "Tacitus restarted while writing the reply."
+    assert calls["cards"][-1].problem["text"] == "Tacitus restarted while drafting the reply."
 
 
 def test_web_open_in_ask_tacitus_starts_a_conversation_about_the_row():
@@ -1206,7 +1206,7 @@ def test_web_open_in_ask_tacitus_starts_a_conversation_about_the_row():
     channel, thread, text = calls["posts"][-1]
     assert (channel, thread) == ("main", None)
     assert "Reply to Lee" in text and "The thread has no address." in text and "`response-lee`" in text
-    assert calls["status"][-1] == ("m4", ":speech_balloon: Opened in Ask Tacitus: "
+    assert calls["status"][-1] == ("m4", ":speech_balloon: The conversation is open in Ask Tacitus: "
                                          f"<https://chat.example/#/main/p{len(calls['posts'])}/p{len(calls['posts'])}|open it>.")
 
 
@@ -1247,7 +1247,7 @@ def test_on_the_web_a_draft_that_did_not_start_offers_try_again_with_the_answer_
     ns["handle_reply_draft"](_ev(VALUE, text="Three years."))
     ((card_id, card),) = fe.updates
     assert card_id == "m1" and card.question["failed"] and card.question["answer"] == "Three years."
-    assert "The draft did not start. Try again." in _text(card) and calls["status"] == []
+    assert "The draft did not start. Tap Draft again." in _text(card) and calls["status"] == []
     assert not any("Ask me here" in t for _ts, t in calls["status"])
     assert ns["_reply_claim"]("response-lee")             # the row is free again
 
@@ -1258,7 +1258,7 @@ def test_web_a_line_that_says_no_reply_is_needed_closes_the_row_with_no_turn():
     assert turns == {} and not calls["turns"] and not calls["posts"]
     assert ("close", "--id", "response-lee", "--signal", "user_handled", "--note", CLOSE_NOTE) \
         in calls["cli"]
-    assert calls["status"][-1] == ("m1", ":white_check_mark: Closed. No reply goes out.")
+    assert calls["status"][-1] == ("m1", ":white_check_mark: No reply needed. It is off your list.")
 
 
 # ── the web chat: each reply that waits is its own block ─────────────────
@@ -1443,7 +1443,7 @@ def test_on_the_real_web_chat_two_rows_in_one_thread_each_show_their_own_outcome
     with turns stood in: two rows' cards share the One by one thread. Row
     A's turn makes a draft; row B's leaves no record. GET /api/requests
     then shows A's card linking to its Send request (`next`), B's could-not
-    card ("Not written", its reason), each block with only its own row's
+    card ("Not drafted", its reason), each block with only its own row's
     lines, and an untagged line of the thread in no block."""
     from preprocessor.chat.web_frontend import WebFrontend
     from preprocessor.chat.types import MessageRef
@@ -1522,7 +1522,7 @@ def test_on_the_real_web_chat_two_rows_in_one_thread_each_show_their_own_outcome
         assert all("ben" in x["text"].lower() for x in b["lines"]) and b["lines"]
         assert not any("Still working" in x["text"] for j in items.values() for x in j.get("lines") or [])
         could_not = items[b["next"]]
-        assert (could_not["action"], could_not["waiting"]) == ("Not written", True)
+        assert (could_not["action"], could_not["waiting"]) == ("Not drafted", True)
         assert could_not["what"] == "Turn words for ben."
         assert could_not["card"]["problem"]["text"] == "Turn words for ben."
         assert not could_not["card"]["question"]
@@ -1563,9 +1563,9 @@ def test_home_draft_starts_the_replies_draft_turn_on_a_new_line_in_action_reques
     ns, calls = _home_bot([_q("ana", 1)])
     got = ns["_home_draft"]("response-ana")
     assert got == {"ok": True, "channel": "dm", "id": "p1",
-                   "said": "Tacitus is writing the reply. Its Send card comes to this DM."}
+                   "said": "Drafting the reply. Its Send card comes to this DM."}
     assert calls["posts"][0][:2] == ("dm", None)                 # a new line, its own thread
-    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Writing the reply: ")
+    assert calls["posts"][0][2].startswith(":hourglass_flowing_sand: Drafting the reply: ")
     (turn,) = calls["turns"]
     assert turn[:3] == ("dm", "p1", "p1") and turn[4] == "U1"
     assert "--ledger-id response-ana" in turn[3] and calls["sessions"][0].endswith("reply-response-ana")
@@ -1612,7 +1612,7 @@ def test_home_not_needed_is_the_replies_cards_not_needed_with_homes_note():
     row = _q("pat", 2, queued={"outcome": "drafted", "draft_id": "d-old"}, conversation_id="conv-pat")
     ns, calls = _home_bot([row], confirms={"d-old": {"status": "retired"}})
     got = ns["_home_not_needed"]("response-pat", "No reply needed: the owner's tap on Home")
-    assert got["ok"] and _plain(got["said"]).startswith(":white_check_mark: Closed. No reply goes out. Draft deleted.")
+    assert got["ok"] and _plain(got["said"]).startswith(":white_check_mark: No reply needed. It is off your list. The draft is deleted.")
     assert calls["deleted"] == ["d-old"]
     assert ("close", "--id", "response-pat", "--signal", "user_handled",
             "--note", "No reply needed: the owner's tap on Home") in calls["cli"]

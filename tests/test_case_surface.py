@@ -419,7 +419,7 @@ def test_the_case_block_offers_what_fits_its_state():
     assert [(a[0], a[1]) for a in spec["actions"]] == [
         ("case_draft", ":pencil2: Draft the report"), ("case_date_pick", ":calendar: Change the date"),
         ("case_decline", "Decline")]
-    assert spec["select"] == ("case_delivered", "Already returned one", [("Referee report", "rp1")])
+    assert spec["select"] == ("case_delivered", "Returned: pick one", [("Referee report", "rp1")])
     assert "Missing: the report." in spec["lines"]
     assert "<https://review.example.org/ms/123|Open the review site for Referee report>" in spec["lines"]
     assert all("ledger_id" not in a[2] for a in spec["actions"])
@@ -427,8 +427,8 @@ def test_the_case_block_offers_what_fits_its_state():
     undated["parts"][0]["due"] = ""
     acts = C.case_spec(undated, TODAY)["actions"]
     assert [a[0] for a in acts] == ["case_draft", "case_date_pick", "case_decline"]
-    assert acts[0][1] == ":pencil2: Fill it in" and acts[1][1] == ":calendar: Pick the date" and "part" not in acts[1][2]
-    assert C.case_spec(report(), TODAY)["actions"][0][1] == ":pencil2: Change the draft"
+    assert acts[0][1] == ":pencil2: Draft the answers" and acts[1][1] == ":calendar: Pick the date" and "part" not in acts[1][2]
+    assert C.case_spec(report(), TODAY)["actions"][0][1] == ":pencil2: Draft again"
     kept = C.case_spec(review(), TODAY, "local")
     assert not any(ln.startswith("<https://") for ln in kept["lines"]) and "Pat Lee" not in json.dumps(kept)
 
@@ -469,7 +469,7 @@ def test_an_answer_runs_the_stores_verbs_and_one_turn_for_the_rest(monkeypatch):
     quiet = C.answer(dict(form(), decision=""), "no", runner=runner)
     assert quiet == {"ok": True, "said": "You said no. Nothing is sent."} and calls[-1] == ["decline", "--case", "fm-1"]
     got = C.answer(review(), "delivered", dest="rp1", runner=runner)
-    assert got["said"] == "Marked as returned."
+    assert got["said"] == "Returned."
     assert calls[-1] == ["record-delivered", "--part", "rp1", "--evidence", "the owner said so in Action requests"]
     assert not C.answer(review(), "delivered", runner=runner)["ok"]
     undated = form()
@@ -500,7 +500,7 @@ def test_a_letter_answer_still_goes_the_letters_way():
     calls = []
     got = C.answer(C._tag(letter(), "letter"), "delivered", dest="ld1",
                    runner=lambda argv: calls.append(argv) or {"ok": True})
-    assert got["said"] == "Marked as submitted." and calls[-1][:3] == ["record-submitted", "--dest", "ld1"]
+    assert got["said"] == "Submitted." and calls[-1][:3] == ["record-submitted", "--dest", "ld1"]
 
 
 def test_the_parse_of_a_due_date():
@@ -542,7 +542,7 @@ def test_the_slack_front_end_draws_both_cards_and_the_folded_block_names_them():
     fields = [{"label": "From", "value": "Pat Lee"}, {"label": "Subject", "value": "Paper review for Pat Lee"},
               {"label": "When", "value": "Next due Tue Dec 1"}]
     assert ar.block({"card": {"kind": "case", "title": "x", "fields": fields}}) == {
-        "action": "Work to do", "who": "From Pat Lee", "what": "Paper review for Pat Lee", "when": "Next due Tue Dec 1"}
+        "action": "Work", "who": "From Pat Lee", "what": "Paper review for Pat Lee", "when": "Next due Tue Dec 1"}
     assert ar.block({"card": {"kind": "case_ask", "title": "x", "fields": fields}})["action"] == "Work request"
 
 

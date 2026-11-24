@@ -96,7 +96,7 @@ never yours.
   draft and lists `questions` (its `[ASK: ...]` marks). A letter is the
   owner's evaluation: a fact the materials do not support is a question
   for the owner, never a sentence. Ask them, put the answers in the
-  letter (Edit), and check again.
+  letter (edit the file), and check again.
 - One letter for several places uses `{{program}}` and `{{addressee}}`.
   `letters_work.py variants --case <id> --base <letter.md>` makes one
   copy per place and refuses a copy that still names another place. A

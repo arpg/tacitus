@@ -375,7 +375,7 @@ def test_invite_builds_the_event_from_the_thread_and_stages_it_live(monkeypatch)
     assert staged[0][0] == "stage-event" and staged[0][1] == {"event": rec["event"]} and staged[0][2]["thread_ts"] == "t1"
     assert rec["reply"].startswith(":calendar: I staged an invite to dana@example.edu,sol.ashcombe@example.org: "
                                    "Survey outline sync, Fri Nov 6, 9:00-9:45 AM MT")
-    assert "overlaps Lab meeting" in rec["reply"] and "Create button" in rec["reply"]
+    assert "overlaps Lab meeting" in rec["reply"] and "your DM" not in rec["reply"]  # the bot's pointer says where
     assert rec["body"] == "" and [s["step"] for s in rec["steps"]] == ["read", "intent", "calendar", "validate"]
 
 

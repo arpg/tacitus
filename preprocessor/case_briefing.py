@@ -1014,8 +1014,8 @@ def offered(steps: list[dict], v: dict, *, today: date) -> list[dict]:
     allowed = {_move_key(m) for m in allowed_moves(v)}
     w = v["words"]
     by_ref = {p["ref"]: p for p in v["parts"]}
-    labels = {"draft": w.change if v["drafted"] else w.draft, "ask_materials": "Ask for what is missing",
-              "set_due": "Set the date", "mark_delivered": f"Mark it {w.delivered_word}",
+    labels = {"draft": w.change if v["drafted"] else w.draft, "ask_materials": "Draft: ask for what is missing",
+              "set_due": "Set the date", "mark_delivered": _cap(w.delivered_word),
               "open_link": w.link.split(" for ")[0]}
     out = []
     for s in steps or []:
@@ -1624,7 +1624,7 @@ def step(fe, ref: str, step_id: str, item: dict | None = None, *, case: dict | N
         return {"choice": choice, "arg": arg_, "move": True}
     except Exception:
         log.exception("case briefing: the step %s on %s failed", step_id, ref)
-        return {"ok": False, "said": "Tacitus could not do that. Try again."}
+        return {"ok": False, "said": "Nothing was done. Try again in a minute."}
 
 
 def look(case_ids, *, now: float | None = None) -> int:

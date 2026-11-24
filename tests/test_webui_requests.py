@@ -19,12 +19,12 @@ VALUE = {"row": "response-r1", "batch": "b1"}
 
 def _not_written(stub, why="The thread has no address to answer."):
     """The card the bot posts when a reply turn could not write the reply:
-    its reason, Try again (the answer it repeats), Open in Ask Tacitus,
-    Later and No reply needed; no answer control."""
+    its reason, Draft again (the answer it repeats), Ask, Later and No
+    reply needed; no answer control."""
     import webui_stub_server as W
-    acts = [{"id": "reply_draft", "label": ":repeat: Try again", "value": dict(VALUE, again="Yes, three years."),
+    acts = [{"id": "reply_draft", "label": ":pencil2: Draft again", "value": dict(VALUE, again="Yes, three years."),
              "style": "primary", "word": "again", "ask": ""},
-            {"id": "reply_discuss", "label": ":speech_balloon: Open in Ask Tacitus", "value": dict(VALUE, why=why),
+            {"id": "reply_discuss", "label": ":speech_balloon: Ask", "value": dict(VALUE, why=why),
              "style": "", "word": "ask", "ask": ""}] + reply_quiet(VALUE)
     return stub.add(W.DM, "", kind="card", event="card", card={
         "kind": "replies", "title": f":inbox_tray: *Review request*\nFrom Pat, 2 days ago.\nI could not write it: {why}",
@@ -35,9 +35,9 @@ def _not_written(stub, why="The thread has no address to answer."):
 
 
 def test_a_reply_that_was_not_written_says_why_and_offers_try_again_not_an_answer(app):
-    """Folded, it reads Not written and its reason; opened, the reason with
-    Try again first and Open in Ask Tacitus, no answer field pretending it
-    is a question. Try again presses the card's own action, which carries
+    """Folded, it reads Not drafted and its reason; opened, the reason with
+    Draft again first and Ask, no answer field pretending it
+    is a question. Draft again presses the card's own action, which carries
     the answer it repeats."""
     from playwright.sync_api import expect
     page, stub, errors = app(**PHONE)
@@ -45,14 +45,14 @@ def test_a_reply_that_was_not_written_says_why_and_offers_try_again_not_an_answe
     m = _not_written(stub)
     page.evaluate("location.hash = '#/stream%3A7'")
     block = page.locator(f'.req[data-id="{m["id"]}"]')
-    expect(block.locator(".req-act")).to_have_text("Not written")
+    expect(block.locator(".req-act")).to_have_text("Not drafted")
     expect(block.locator(".req-what")).to_have_text("The thread has no address to answer.")
     block.locator(".req-head").click()
     card = block.locator(".req-body .card")
     expect(card).to_contain_text("I could not write it: The thread has no address to answer.")
     expect(card.locator(".answer-ctl, input:not([type='date'])")).to_have_count(0)  # Later's day only
     buttons = card.locator(".card-actions button")
-    expect(buttons.first).to_have_text("🔁 Try again")
+    expect(buttons.first).to_have_text("✏️ Draft again")
     assert [buttons.nth(i).get_attribute("data-action") for i in range(4)] == \
         ["reply_draft", "reply_discuss", "reply_skip", "reply_not_needed"]
     assert page.evaluate(SMALL_TARGETS) == [] and page.evaluate(SIDEWAYS) == [0, 0]

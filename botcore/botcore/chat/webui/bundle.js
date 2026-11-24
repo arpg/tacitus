@@ -171,14 +171,14 @@
   }
 
   // What a clear shows once the thread's notifications are closed, which no browser counts as one shown:
-  // 'replace' (a quiet "Handled." under the tag) or 'none'. `left`: the app's notifications still open;
+  // 'replace' (a quiet "Done." under the tag) or 'none'. `left`: the app's notifications still open;
   // `inView`: a window of the app in view.
   function clearPlan({ service, left, inView }) {
     if (service === 'apple') return 'replace';
     return left > 0 || (service === 'chromium' && inView) ? 'none' : 'replace';
   }
 
-  // The quiet "Handled." closes after this long: past the push's end, when Chrome counts, and past Firefox's
+  // The quiet "Done." closes after this long: past the push's end, when Chrome counts, and past Firefox's
   // three seconds. A worker stopped sooner leaves it, and the thread's next push replaces it.
   const HANDLED_MS = 8000;
 
@@ -195,7 +195,7 @@
       const plan = clearPlan({ service: pushService(sub && sub.endpoint), left: open.length - mine.length,
         inView: wins.some((w) => w.visibilityState === 'visible') });
       if (plan === 'none') return undefined;
-      return reg.showNotification(String(d.title || 'Tacitus'), { body: 'Handled.', icon: new URL('icon-192.png', reg.scope).href,
+      return reg.showNotification(String(d.title || 'Tacitus'), { body: 'Done.', icon: new URL('icon-192.png', reg.scope).href,
         tag: tag || undefined, silent: true, data: { url: '', handled: true } })
         // Outside the push's lifetime: Chrome counts the open notifications as it ends.
         .then(() => { setTimeout(() => reg.getNotifications(tag ? { tag } : undefined)

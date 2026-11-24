@@ -458,13 +458,13 @@ def test_a_draft_that_leaves_drafts_outside_its_card_is_retired_with_the_right_l
         "_close_ledger_for_draft": close,
         "_file_admissions_after_send": lambda conv: filed.append(conv),
         "_retire_empty_bulk_cards": lambda: None,
-        "_with_closed": lambda s, a: s + "".join(f"\n:white_check_mark: Closed: {d}" for d in a),
+        "_with_closed": lambda s, a: s + "".join(f"\n:white_check_mark: Off your list: {d}" for d in a),
         "_card_ref": lambda ch, ts: (ch, ts),
         "FRONTEND": types.SimpleNamespace(file_card=lambda ref: moved.append(ref) or True),
     })
     assert ns["_reconcile_vanished_drafts"](force=True) == 2
     assert dict(lines) == {"1": ":incoming_envelope: Sent from Outlook.\n"
-                                ":white_check_mark: Closed: Reply to Nico about the review",
+                                ":white_check_mark: Off your list: Reply to Nico about the review",
                            "2": ":wastebasket: Deleted in Outlook; not sent."}
     assert sorted(marks) == [("dGone", "consumed"), ("dSent", "consumed")]
     assert closed == ["cSent"] and filed == ["cSent"]
@@ -476,7 +476,7 @@ def test_a_draft_that_leaves_drafts_outside_its_card_is_retired_with_the_right_l
 
 def test_a_draft_outcome_names_its_closed_rows_once():
     """Each draft outcome closes its rows first and names them on its one
-    status line; none posts a 'Closed obligation' per row in the thread."""
+    status line; none posts an 'Off your list' line per row in the thread."""
     for fn in ("_execute_send", "handle_sent_myself", "handle_draft_handled",
                "_reconcile_vanished_drafts"):
         body = _fn_src(fn)
@@ -485,12 +485,12 @@ def test_a_draft_outcome_names_its_closed_rows_once():
         assert "_with_closed(" in body[i_close:], fn
     row = _fn_src("_close_ledger_row")
     i = row.index("if announced is not None:")
-    assert row.index("return", i) < row.index("Closed obligation"), "a collected row posts nothing"
+    assert row.index("return", i) < row.index("Off your list"), "a collected row posts nothing"
     ns = {"_card_short": lambda label, v: str(v)}
     exec(_fn_src("_with_closed"), ns)
     assert ns["_with_closed"]("Sent.", []) == "Sent."
-    assert ns["_with_closed"]("Sent.", ["A", "B"]) == ("Sent.\n:white_check_mark: Closed: A"
-                                                        "\n:white_check_mark: Closed: B")
+    assert ns["_with_closed"]("Sent.", ["A", "B"]) == ("Sent.\n:white_check_mark: Off your list: A"
+                                                        "\n:white_check_mark: Off your list: B")
 
 
 def test_a_send_files_an_applicant_conversation():
@@ -670,7 +670,7 @@ def test_a_send_all_card_whose_drafts_were_handled_elsewhere_is_filed():
           "FRONTEND": types.SimpleNamespace(file_card=lambda ref: moved.append(ref) or True)}
     exec(compile(_fn_src("_retire_empty_bulk_cards"), "bot[bulk]", "exec"), ns)
     assert ns["_retire_empty_bulk_cards"]() == 1
-    assert lines == [("stream:6", "77", ":wastebasket: Every draft on this card was already handled.")]
+    assert lines == [("stream:6", "77", ":information_source: Every draft on this card has its answer. Nothing was done here.")]
     assert moved == [("stream:6", "77")], "the settled card is filed; the live one stays"
     assert saved and list(saved[-1]) == ["b-live"]
 

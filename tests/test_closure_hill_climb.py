@@ -458,7 +458,7 @@ def test_the_nightly_run_writes_the_policy_and_posts_each_change_once(ea, monkey
     assert out["renewals_repaired"] == 0 and out["posted"] == 1
     (lines,) = posted
     assert lines == ["Closure policy: llm:reconcile-lapsed now closes at once. You get a note "
-                     "with a Reopen button. Why: 16 of 16 proposals right; none kept open in "
+                     "with a Not done button. Why: 16 of 16 proposals right; none kept open in "
                      "the last 10."]
     assert "\u2014" not in lines[0]
     data = cp.load()

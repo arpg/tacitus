@@ -36,10 +36,10 @@ from . import thread_state as _ts
 ACTIONS = {
     "send": "Send email", "bulk": "Send emails", "schedule": "Send later",
     "event": "Create meeting", "event_update": "Move meeting", "event_delete": "Delete meeting",
-    "publish": "Publish", "close": "Close item", "closed": "Closed for you",
-    "replies": "Reply needed", "room": "Pick a room", "invite": "Answer an invite",
-    "letter_ask": "Letter request", "letter": "Letter to write",
-    "case_ask": "Work request", "case": "Work to do",
+    "publish": "Publish", "close": "Looks done", "closed": "Done for you",
+    "replies": "Reply owed", "room": "Pick a room", "invite": "Answer an invite",
+    "letter_ask": "Letter request", "letter": "Letter",
+    "case_ask": "Work request", "case": "Work",
 }
 # The labelled fields each part reads, first found wins.
 WHO = ("To", "Attendees", "Organizer", "From")
@@ -106,7 +106,7 @@ def block(msg: dict) -> dict:
     problem = card.get("problem") if isinstance(card.get("problem"), dict) else {}
     if problem.get("text"):
         who = card_text.one_line(str(problem.get("from") or ""), 80)
-        return {"action": "Not written", "who": f"From {who}" if who else "",
+        return {"action": "Not drafted", "who": f"From {who}" if who else "",
                 "what": card_text.one_line(str(problem["text"]), 300), "when": ""}
     question = card.get("question") if isinstance(card.get("question"), dict) else {}
     if question.get("text"):
@@ -119,8 +119,6 @@ def block(msg: dict) -> dict:
     _l, what = _first(fields, WHAT)
     _w, when = _first(fields, WHEN)
     action = ACTIONS.get(kind) or title or "Request"
-    if kind == "close" and len(card.get("actions") or []) > 2:
-        action = "Close items"
     return {"action": action,
             "who": f"{label} {_people(who)}".strip() if who else "",
             "what": what or (title if title != action else ""),
@@ -223,7 +221,7 @@ def lines_of(item: dict, thread: list, tags: dict) -> list[dict]:
 
 def working(msg: dict, now: float) -> bool:
     """A card whose status line says Tacitus is acting on the press (an
-    hourglass: "Writing the reply", "Sending...") within the window a turn
+    hourglass: "Drafting the reply", "Sending...") within the window a turn
     may take: the list keeps it at the top, in progress."""
     return msg.get("kind") == "status" and _ts.outcome(msg.get("text")) == "busy" \
         and now - float(msg.get("updated_at") or msg.get("posted_at") or 0) < _ts.WORKING_WINDOW_S

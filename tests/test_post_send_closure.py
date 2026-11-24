@@ -207,7 +207,7 @@ def test_helper_looks_up_by_conversation_id_and_closes():
     assert close_cmd[2:5] == ["close", "--id", "oakley-committee"], close_cmd
     assert "--skip-archive" in close_cmd
     # do-and-tell: the closure is announced in the thread
-    assert posted and "Closed obligation" in posted[0]["text"]
+    assert posted and "Off your list" in posted[0]["text"]
     assert posted[0]["thread_ts"] == "T1"
 
 
@@ -293,7 +293,7 @@ def test_after_send_falls_back_to_the_draft_id_in_notes():
     with patch("subprocess.run", side_effect=run):
         ns["_close_ledger_for_draft"]("C1", "T1", CONV, draft_id)
     assert any(c[2] == "close" and c[4] == "outbound-x" for c in calls), calls
-    assert posted and "Closed obligation" in posted[0]["text"]
+    assert posted and "Off your list" in posted[0]["text"]
 
 
 def test_a_send_in_a_thread_leaves_a_deadline_row_open():

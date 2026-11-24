@@ -12,13 +12,13 @@ name) and a ledger id go in as short hashes, `thread_ref` and
 `ledger_ref`, so two sources about one thread or one row still join.
 
 Sources:
-  owner-tap   the owner's "Mark done" / "Needs me" in the web chat: each
+  owner-tap   the owner's "Done" / "Not done" in the web chat: each
               line of `thread-state-labels.jsonl` beside the web store.
               Gold. web_thread_state writes the record at the tap, with the
               thread as the rules read it then; `collect` rebuilds a tap
               the hook missed from the store (`reconstructed`).
   card        a card's outcome as its status line records it (Sent,
-              Created, Closed, Cancelled, Sent from Outlook, Kept open...),
+              Created, Done, Cancelled, Sent from Outlook, Not done...),
               from the web store's `status` rows.
   ledger      rows that reached completed, with their provenance
               (closure_metrics) and closing signal (closure.py); reopens,
@@ -119,11 +119,15 @@ SETTLED = frozenset({"acted", "declined", "outside", "superseded", "kept_open"})
 _OUTCOME_RULES = (
     (re.compile(r"tap a reaction below|reply `|^code \*\*", re.I), "live"),
     (re.compile(r"\bno answer in \d+ days\b", re.I), "expired"),
-    (re.compile(r"\brevised\b|one by one", re.I), "superseded"),
+    (re.compile(r"\brevised\b|one by one|each draft keeps its own card", re.I), "superseded"),
     (re.compile(r"sent from|marked as sent|sent myself|already (?:handled|sent|scheduled|closed)"
-                r"|deleted in|draft was deleted|settled outside|was already handled", re.I),
+                r"|deleted in|draft was deleted|settled outside|was already handled"
+                r"|sent it yourself|has its answer|changed since the card", re.I),
      "outside"),
-    (re.compile(r"kept open|still open", re.I), "kept_open"),
+    (re.compile(r"kept open|still open|not done\. it stays", re.I), "kept_open"),
+    # A failure line says what did not happen and what to do next (the six
+    # verbs' pattern): "Not sent: <why>. Ask me to try again."
+    (re.compile(r"\btry again\b|too old", re.I), "failed"),
     (re.compile(r"cancel+ed|not published|skipped|not sent|nothing was sent", re.I), "declined"),
     (re.compile(r"expired|no longer have|could not|failed", re.I), "failed"),
 )

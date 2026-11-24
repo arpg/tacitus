@@ -331,7 +331,7 @@ def test_a_morning_post_names_each_case_once_never_as_a_reply(mountain, priv):
         assert word not in text
     assert text.count("Avery Quinn") == 1 and text.count("Tamsin Okafor") == 1
     # the queue had a destination row too: it counts the one real reply alone
-    assert "*Reply queue*: 1 reply owed" in text
+    assert "*Reply owed*: 1, for" in text
     assert "—" not in text
 
 
@@ -559,7 +559,7 @@ def test_the_case_block_offers_what_fits_its_state():
     assert spec["title"] == ":memo: *Time to write the letter for Avery Quinn*: due tomorrow, 9 places."
     ids = [a[0] for a in spec["actions"]]
     assert ids == ["letter_draft", "letter_date_pick", "letter_decline"]
-    assert spec["actions"][0][1] == ":pencil2: Change the letter"        # one destination is drafted
+    assert spec["actions"][0][1] == ":pencil2: Draft again"        # one destination is drafted
     assert spec["actions"][1][6] == {"proposed": "2026-12-01", "min": "2026-11-23", "max": "2027-11-24"}
     assert [a for a in spec["actions"] if a[5] and len(a) < 7] == [spec["actions"][0]]   # one field of words
     assert [o[1] for o in spec["select"][2]] == ["av4", "av5", "av6", "av7", "av8", "av9"]
@@ -579,7 +579,7 @@ def test_the_case_block_offers_what_fits_its_state():
 
 def test_the_ready_letter_is_one_delivery_list():
     """Once the letter is ready the block is the delivery list: each place
-    with its link and Submitted, All submitted, Change the letter."""
+    with its link and Submitted, All submitted, Draft again."""
     c = avery()
     for d in c["destinations"][3:]:
         d["state"] = "ready"
@@ -588,7 +588,7 @@ def test_the_ready_letter_is_one_delivery_list():
                              "by tomorrow.")
     assert [a[0] for a in spec["actions"]] == ["letter_submitted"] * 3 + ["letter_all", "letter_draft"]
     assert spec["actions"][0][1] == ":white_check_mark: Submitted: Northfield Graduate School"
-    assert spec["actions"][3][1] == ":white_check_mark: All submitted"
+    assert spec["actions"][3][1] == ":white_check_mark: Submitted: all"
     assert [o[1] for o in spec["select"][2]] == ["av7", "av8", "av9"]
     assert "<https://apply.northfield.example.org/rec/xyz|Open the portal for Northfield Graduate School>" in spec["lines"]
 
@@ -652,7 +652,7 @@ def test_the_folded_block_names_the_kind():
     card = {"kind": "letter", "title": ":memo: x", "fields": [{"label": "From", "value": "Avery Quinn"},
                                                              {"label": "Subject", "value": "Recommendation letter"},
                                                              {"label": "When", "value": "Next due tomorrow"}]}
-    assert ar.block({"card": card}) == {"action": "Letter to write", "who": "From Avery Quinn",
+    assert ar.block({"card": card}) == {"action": "Letter", "who": "From Avery Quinn",
                                         "what": "Recommendation letter", "when": "Next due tomorrow"}
     assert ar.block({"card": dict(card, kind="letter_ask")})["action"] == "Letter request"
 
@@ -782,7 +782,7 @@ def test_the_select_names_the_destination_alone(monkeypatch):
     ns, calls, _store = _bot(monkeypatch, [avery()])
     from preprocessor import letter_surface as PL
     monkeypatch.setattr(PL, "answer", lambda case, choice, dest="", text="", question="": calls["answers"].append(
-        (case["id"], choice, dest)) or {"ok": True, "said": "Marked as submitted."})
+        (case["id"], choice, dest)) or {"ok": True, "said": "Submitted."})
     ev = types.SimpleNamespace(action_id="letter_submitted", value="", user_id="U1", text="", selected="av8",
                                card=types.SimpleNamespace(channel="dm", id="m3", thread_key="m3"))
     ns["handle_letter"](ev)

@@ -1233,8 +1233,8 @@ def _queue_line(cands: dict[str, dict], drafts: list[dict], lists: dict, gone=()
     if not v or not (v["ready"] or v["named"]):
         return []
     days = f"{v['oldest']} day{'' if v['oldest'] == 1 else 's'}"
-    line = (f":inbox_tray: *Reply queue*: 1 reply owed, for {days}." if v["total"] == 1
-            else f":inbox_tray: *Reply queue*: {v['total']} replies owed, the oldest for {days}.")
+    line = (f":inbox_tray: *Reply owed*: 1, for {days}." if v["total"] == 1
+            else f":inbox_tray: *Replies owed*: {v['total']}, the oldest for {days}.")
     if v["ready"]:
         line += f" {v['ready']} {'has' if v['ready'] == 1 else 'have'} a draft ready for Send."
     if v["named"]:
@@ -1483,8 +1483,8 @@ def _looks_done_line(b: dict, audit: dict) -> list[str]:
         return []
     # A card with no answer for a week expires (ea-chat-bot.py), and its
     # rows stay here: the reply in this thread closes or keeps them too.
-    return ["", f":grey_question: *Looks done?* ({len(looks)}) Close or keep each one on its "
-                f"card in {_card_place()}, or tell me here: " + "; ".join(looks[:8]) + "."]
+    return ["", f":grey_question: *Looks done?* ({len(looks)}) Done or Not done on each "
+                f"one's card in {_card_place()}: " + "; ".join(looks[:8]) + "."]
 
 
 def _draft_line(c: dict, d: dict) -> str:
@@ -1676,11 +1676,11 @@ def render_morning(b: dict, cands: dict[str, dict], plan: dict, *, now: datetime
         out.append(f":link: auto-merged {m.get('count', '')} emails about "
                    f"{_clean(m.get('entity'), 60)}; say *unmerge {m.get('id', '')}* if wrong")
     if ok:
-        out += ["", f":envelope: *Drafts ready* ({len(ok)}): Send, Edit or Handled on each "
-                    f"block in {_card_place()}; one Send-all card when several are ready"]
+        out += ["", f":envelope: *Drafts ready* ({len(ok)}): Send, Draft again or No reply needed on "
+                    f"each card in {_card_place()}; one Send-all card when several are ready"]
         out += [f"- {line}" for _r, line in ok]
     if lists["needs"]:
-        out += ["", f":question: *Needs you* ({len(lists['needs'])})"]
+        out += ["", f":question: *Answer needed* ({len(lists['needs'])})"]
         out += [f"- {line}" for _r, line in lists["needs"]]
     if lists["escalated"]:
         out += ["", f":arrow_up: *Sent to Claude* ({len(lists['escalated'])}): one topic each in the EA channel"]
@@ -1753,15 +1753,15 @@ def render_afternoon(b: dict, cands: dict[str, dict], plan: dict, *, now: dateti
     if tom:
         out += ["", "*Tomorrow preview:*"] + tom[:10]
     if lists["pending"]:
-        out += ["", "*Pending your response:*"]
+        out += ["", "*Answer needed:*"]
         out += [f"- {line}" for _r, line in lists["pending"]]
     if lists.get("letters"):
         head = case_surface.heading(cands, [r for r, _l in lists["letters"]], due=True)
         out += ["", f":memo: *{head}* ({len(lists['letters'])}):"]
         out += [f"- {line}" for _r, line in lists["letters"]]
     if lists["draft"]:
-        out += ["", f":envelope: *Drafts ready* ({len(lists['draft'])}): Send, Edit or Handled on "
-                    f"each block in {_card_place()}"]
+        out += ["", f":envelope: *Drafts ready* ({len(lists['draft'])}): Send, Draft again or No reply "
+                    f"needed on each card in {_card_place()}"]
         out += [f"- {line}" for _r, line in lists["draft"]]
     out += _queue_line(cands, drafts, lists, gone)
     out += _waiting_line(b, local.date())

@@ -30,7 +30,7 @@ composes each thread into a brief, and Claude judges the briefs.
     4. Code writes: a `done`, `duplicate` or `lapsed` verdict is a close PROPOSAL
        (closure.propose_or_promote; the morning briefing's "Looks done?"
        line and the DM card carry it, one click closes; a signal the hill
-       climb promoted closes at once, with the bot's note and its Reopen
+       climb promoted closes at once, with the bot's note and its Not done
        button); a note is appended to
        last_action with the date; a thread goes onto the row's
        `conversation_id` when the row's own reply cannot close it
@@ -796,7 +796,7 @@ def summary_line(rec: dict) -> str:
     n = len(rec.get("proposed") or [])
     parts.append(f"{n} look{'s' if n == 1 else ''} done (on the morning card)")
     if rec.get("closed"):
-        parts.append(f"{len(rec['closed'])} closed at once (a note with Reopen in {_card_place()})")
+        parts.append(f"{len(rec['closed'])} closed at once (a note with Not done in {_card_place()})")
     parts.append(f"{len(rec.get('noted') or [])} notes")
     if rec.get("threaded"):
         parts.append(f"{len(rec['threaded'])} rows given their thread")
