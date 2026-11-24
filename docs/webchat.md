@@ -1066,6 +1066,26 @@ bot (`home_items.Hooks`):
   new one opens in the item's project room, as Ask's does; never for an
   item kept from hosted models below Summary, which has no Ask and whose
   case turn opens in Ask Tacitus.
+- **Edit stays in that conversation.** Edit on a Send card asks for the
+  change in the conversation that asked for the draft, as before; a draft
+  whose conversation is in Action requests, or that has none, is asked
+  about in its item's conversation (by the draft's mail conversation),
+  kept for the item when it is the first. The card's line says "The
+  revised draft shows on this card.", and the revised draft draws the
+  same Send card again in place (`_refresh_send_confirmation`, with its
+  new fingerprint): no second card, no line on the old one, and a pointer
+  only in a conversation the card's own pointer is not in.
+- **Needs you is part of Home.** The drawer has no Needs you entry and no
+  count of its own, and `#/needs` opens Home. Each conversation whose
+  state is `needs_you` (by a rule or the model; `WebStore.needs`) is an
+  item of kind `conversation`, "Answer needed": its first line, the
+  state's reason, its room as the tag; Ask opens it, Done is the thread
+  header's Done (`web_set_state`) after its Undo. A conversation about an item
+  already on Home is not listed again: one that names its row or mail
+  thread (`thread_state.link_keys`, Home's own "(item ...)" line), or one
+  that is an item's own conversation. One quiet for a week comes last. A
+  conversation that waits on someone else stays off Home, with its
+  sticker.
 - **Action requests holds what needs the lock.** Its list and its count
   leave out the card kinds Home holds (`action_requests.HOME_KINDS`,
   `listed`) and a reply turn's own thread; in practice it is the gated
@@ -1077,7 +1097,8 @@ bot (`home_items.Hooks`):
 - **Turning it back.** Settings, Home, Where you answer: In Action
   requests (`"one_list": false`). The bot reads it at once: the next ticks
   post the cards again (the replies the same day, a proposal Home held, a
-  case Home asked), and Home lists them as requests as before.
+  case Home asked), Home lists them as requests as before, and the Needs
+  you entry comes back.
 
 ### Home items
 
@@ -1122,6 +1143,7 @@ it in Action requests), which read nothing of it.
 | reply | Draft, Draft with my words, Later, No reply needed, Ask | Draft on the reply card (`_dispatch_reply_draft`; the line is the owner's instruction for this reply alone); its Send card comes to Action requests and `goto` opens the turn's line there. Ask as on an item |
 | question (a reply's) | its answers, Other answer, Later, No reply needed, Ask | the Replies card's answer buttons; Ask as on an item, a quiet button under them |
 | question (no reply) | Answer, Later, Ask | a new conversation with the owner's answer, sent; Ask as on an item |
+| conversation (one list) | Ask, Done | Ask opens the conversation; Done is the thread header's Done, after the Undo window |
 | item | Ask, Done, Later: waiting on them, Later | Ask: a new conversation in Ask Tacitus (the row's project room when it has one) that opens with Tacitus's message about the item (the deeper briefing when it is ready, else the quick briefing) and waits for the owner's words; nothing runs until he writes |
 | request | Open it in Action requests | nothing: Send and Create stay there |
 | proposal (one list) | Done, Not done, Ask | the close card's Done (after the Undo window) and Not done |
@@ -1327,7 +1349,9 @@ them hold where one list is off.
   for the change in the draft's conversation; when that conversation is in
   Action requests, or there is none (a draft from a scheduled run), the
   question opens a new conversation in Ask Tacitus and the card points
-  to it (`ChatFrontend.dm_takes_text` is false on the web chat).
+  to it (`ChatFrontend.dm_takes_text` is false on the web chat). With one
+  list, it asks in the item's own conversation and the revised draft
+  draws the same card again (Home, "One list").
 - **The list: one block per request** (`GET /api/requests`,
   `WebFrontend.requests`, `action_requests.py`). A request is a card or
   its status line in the DM, at the top or in a thread (a reply's next
@@ -1629,7 +1653,8 @@ reads every label the code can draw and fails on a word outside these.
 
 Each thread has one state, `needs_you`, `working`, `waiting`, `done` or
 `none`, which the app shows as a sticker and gathers in the Needs you
-view. Rules set it at once on every change to a thread; the local model
+view (with one list, Home lists the `needs_you` ones instead: Home, "One
+list"). Rules set it at once on every change to a thread; the local model
 (the routing table's `thread_state` task) judges what the rules leave
 open, on a tick every 5 minutes; the owner overrides it from the app.
 A conversation reads the cards it asked for in the DM (the `card_link`

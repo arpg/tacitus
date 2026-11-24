@@ -76,7 +76,7 @@ CASE = {
 # One name per item type on Home (docs/webchat.md, The six verbs): each
 # kind's label, and the kinds one list adds.
 ITEM_NAMES = {"reply": "Reply owed", "question": "Answer needed", "proposal": "Looks done",
-              "which": "Answer needed"}
+              "which": "Answer needed", "conversation": "Answer needed"}
 # The words each act may use. A Send-family label names its own act.
 ALLOWED = {
     "done": r"Done|Done \(\{\}\)|Done: .+|No reply needed|(Submitted|Returned|Delivered)(: .+)?",
@@ -332,8 +332,8 @@ def test_the_closure_labels_read_the_new_lines_as_they_read_the_old():
 
 def test_each_home_item_kind_has_its_one_name():
     """The item types Home lists, the ones one list adds among them (a
-    close proposal, a "which one was it?" question), each under its one
-    name; their choices are in HOME."""
+    close proposal, a "which one was it?" question, a conversation that
+    needs the owner), each under its one name; their choices are in HOME."""
     sys.path.insert(0, str(ROOT / "tests"))
     import home_fixtures as F
     import home_items as I
@@ -344,6 +344,8 @@ def test_each_home_item_kind_has_its_one_name():
     src.replies[1]["queued"] = {"outcome": "decision", "note": "Sign it?", "choices": ["Yes", "No"]}
     src.questions = [{"id": "q1", "kind": "part", "text": "Which one went in?", "choices": ["One", "None of these"]}]
     src.cases = []
+    src.conversations = [{"channel": "main", "thread_key": "t1", "text": "Which room?", "state": "needs_you",
+                          "state_reason": "A question waits for you.", "_ids": [], "_convs": []}]
     seen = set()
     for x in H.left(src):
         if x["kind"] in ITEM_NAMES:

@@ -165,6 +165,7 @@ def _reconfirm_helpers(tmp: Path):
         # The repost routes by mail system from the journal records.
         "_draft_events": de,
         "_GMAIL_ACCOUNT": "kit.kowalczyk1@example.com",
+        "_one_list": lambda: False,
     }
     _exec_block("# Draft-confirmation registry",
                 "def _replace_buttons_with_status", ns)

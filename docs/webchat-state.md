@@ -5,7 +5,10 @@ its card, and a **Needs you** view gathers the threads that wait on the
 owner across every channel: mail that needs a reply, a question the bot
 asked, a card with live buttons, a scheduling thread waiting for a pick.
 Rules set the state when the evidence is decisive; a model sets it when
-it is not. The owner can override with one tap.
+it is not. The owner can override with one tap. With one list (the web
+chat's default; docs/webchat.md, Home, "One list") the Needs you view and
+its count give way to Home, which lists each `needs_you` conversation
+that is not already about one of its items.
 
 The bot side is `botcore/botcore/chat/thread_state.py` (the rules, the
 model step's prompt and parser, the engine) and the store and routes in

@@ -224,9 +224,15 @@ class Sources:
     # undo window runs (home_items.Acts): left out of the payload.
     hidden: set = field(default_factory=set)
     # One list (WebFrontend.one_list): Home is the one place to act. A close
-    # proposal is an item of its own, and a request that stands for one row
-    # takes that row's item's place (and its ref).
+    # proposal is an item of its own, a request that stands for one row
+    # takes that row's item's place (and its ref), and a conversation that
+    # needs the owner (what Needs you listed) is an item too.
     one_list: bool = False
+    # One list: the conversations whose state is needs_you (WebStore.needs),
+    # each with the ledger ids and mail conversations it names (`_ids`,
+    # `_convs`: thread_state.link_keys and the items' own conversations)
+    # and its room's name (`_room`).
+    conversations: list = field(default_factory=list)
     # The reply turns Home started, by ledger id (the bot's hook,
     # Hooks.turns): {"state": "writing"} while one runs, {"state":
     # "failed", "why"} when it wrote no reply.
@@ -717,10 +723,12 @@ def left(src: Sources) -> list[dict]:
     out = _cases_left(out, src)
     if src.one_list:
         _writing(out, src)
+        _conversations(out, src)
     rank = {"overdue": 0, "soon": 1, "calm": 2}
     kinds = {"request": 0, "proposal": 1, "which": 1, "question": 1, "reply": 2, "item": 3, "letter": 3,
-             "case": 3}
-    out.sort(key=lambda x: (rank.get(x["urgency"], 2), kinds[x["kind"]], x["due"] or float("inf")))
+             "case": 3, "conversation": 4}
+    out.sort(key=lambda x: (bool(x.get("_stale")), rank.get(x["urgency"], 2), kinds[x["kind"]],
+                            x["due"] or float("inf")))
     return out[:LEFT_MAX]
 
 
@@ -776,6 +784,31 @@ def _writing(out: list[dict], src: Sources) -> None:
 
 # The line of an item whose reply is being written (one list).
 WRITING_LINE = "Drafting the reply."
+
+
+def _conversations(out: list[dict], src: Sources) -> None:
+    """One list: each conversation that needs the owner (what Needs you
+    listed: its state is needs_you, by a rule or the model) is an item of
+    kind `conversation`, "Answer needed", unless it is already about an
+    item on the list (a row or a mail thread it names, a case, an item's
+    own conversation). A stale one (quiet for a week) comes last."""
+    ids = {x.get("_lid") for x in out if x.get("_lid")} | {x.get("_case") for x in out if x.get("_case")}
+    convs = {x.get("_conv") for x in out if x.get("_conv")}
+    from urllib.parse import quote
+    for r in src.conversations or []:
+        if not isinstance(r, dict) or r.get("state") != "needs_you" or not r.get("channel"):
+            continue
+        if set(r.get("_ids") or ()) & ids or set(r.get("_convs") or ()) & convs:
+            continue
+        ch, tk = str(r["channel"]), str(r.get("thread_key") or r.get("id") or "")
+        first = str(r.get("title") or r.get("text") or "").strip().splitlines()
+        stale = bool(r.get("stale"))
+        out.append({"id": f"thread:{ch}:{tk}", "kind": "conversation", "label": "Answer needed",
+                    "title": _plain(first[0] if first else "", 120) or "A conversation",
+                    "detail": _plain(r.get("state_reason") or r.get("reason"), 160),
+                    "urgency": "calm", "due": None, "fire": False, "mins": MINUTES["question"],
+                    "href": f"#/{quote(ch, safe='')}/{quote(tk, safe='')}", "_thread": [ch, tk],
+                    "_stale": stale, **({"project": _plain(r["_room"], 60)} if r.get("_room") else {})})
 
 
 def _cases_left(out: list[dict], src: Sources) -> list[dict]:
@@ -1404,6 +1437,11 @@ class Home:
                 src.turns = dict(self.hooks.turns() or {})
             except Exception as e:
                 log.warning("home: the reply turns could not be read: %s", e)
+        if src.one_list:
+            try:
+                src.conversations = _needs(fe)
+            except Exception as e:
+                log.warning("home: the conversations that need you could not be read: %s", e)
         try:
             src.requests = fe.requests()
         except Exception as e:
@@ -1648,6 +1686,47 @@ def _valid_zone(name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _needs(fe) -> list[dict]:
+    """One list: the conversations whose state is needs_you, as Needs you
+    listed them (WebStore.needs, named), each with what it names: the
+    ledger ids and mail conversations of its cards and text
+    (thread_state.link_keys), the keys of the items whose one conversation
+    it is (item_threads), and its room's name."""
+    store = fe.store
+    rows = [r for r in store.needs() if r.get("state") == "needs_you"]
+    named = getattr(fe, "named", None)
+    if callable(named):
+        rows = named(rows)
+    try:
+        import item_threads
+    except ModuleNotFoundError:
+        from preprocessor import item_threads
+    try:
+        own = item_threads.threads()
+    except Exception:
+        own = {}
+    by_thread: dict = {}
+    for key, where in own.items():
+        by_thread.setdefault(tuple(where), []).append(key)
+    try:
+        from chat import thread_state as ts
+    except ModuleNotFoundError:  # imported as preprocessor.home_screen
+        from preprocessor.chat import thread_state as ts
+    for r in rows:
+        ch, tk = str(r.get("channel") or ""), str(r.get("thread_key") or "")
+        try:
+            ids, convs = ts.link_keys(store.thread(ch, tk, history=True))
+        except Exception:
+            ids, convs = [], []
+        keys = by_thread.get((ch, tk), [])
+        r["_ids"] = list(ids) + [k.split(":", 1)[1] for k in keys if k.startswith(("row:", "case:"))]
+        r["_convs"] = list(convs) + [k for k in keys if not k.startswith(("row:", "case:"))]
+        chan = store.channel(ch) or {}
+        if chan.get("kind") == "room":
+            r["_room"] = str(chan.get("name") or "").removeprefix("ea-")
+    return rows
 
 
 def _ledger_reads(zone: ZoneInfo, now: float) -> tuple[list, dict, list]:

@@ -654,7 +654,13 @@ the thread (`_side_drafts_note`), so a change asked for there revises the
 right draft. On the web chat, which has no modal, Edit on a Send card asks
 for the change in the conversation that the card's value names, with a
 link under the card. A draft from no conversation is asked about under
-its card. A question that a
+its card. With one list (the web chat's default), a draft whose
+conversation is in Action requests or none is asked about in its item's
+own conversation (`item_threads`, by the draft's mail conversation), and
+the revised draft draws the same Send card again in place
+(`_refresh_send_confirmation`, which sets its new fingerprint); otherwise
+a revision posts a new card and retires the old one
+(`_repost_send_confirmation`). A question that a
 run recorded with answers (`reply_queue.choices`: two or three, 48
 characters at most, from the remote call's `choices` or `note-reply
 --choice`) shows one button per answer in place of "Draft", and the

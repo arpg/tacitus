@@ -170,3 +170,60 @@ def test_settings_where_you_answer_turns_it_back(app):
     expect(page.locator("#home-note")).to_have_text("Saved.")
     assert stub.one_list is False
     assert not errors, errors
+
+
+def _with_talk(app, one=True):
+    """One list's Home with the made-up room thread ("Project notes live
+    here.") as a conversation that needs the owner."""
+    from playwright.sync_api import expect
+    state: dict = {"one_list": one}
+    holder: dict = {}
+
+    def src(tz=""):
+        got = sources(state)(tz)
+        room = next(m for m in holder["stub"].messages if m["channel"] == W.ROOM)
+        got.conversations = [{"channel": W.ROOM, "thread_key": room["thread_key"], "state": "needs_you",
+                              "text": "Which project is the new grant for?",
+                              "state_reason": "Tacitus asked which project this is for.", "stale": False,
+                              "_ids": [], "_convs": [], "_room": "example-project"}]
+        return got
+    page, stub, errors = app(home_src=lambda tz="": F.sources("normal", dm=W.DM, main=W.MAIN), one_list=one,
+                             context=CLOCK)
+    holder["stub"] = stub
+    stub.home_src = src
+    stub.real._sources = src
+    stub.set_home(stub.real_payload())
+    expect(page.locator("#live.on")).to_be_attached()
+    settled(page)
+    return page, stub, errors
+
+
+def test_needs_you_is_part_of_home_with_one_count(app):
+    from playwright.sync_api import expect
+    page, stub, errors = _with_talk(app)
+    expect(page.locator("#needs-link")).to_be_hidden()
+    block = page.locator(".h-block[data-ref^='thread:']")
+    expect(block.locator(".h-label")).to_have_text("Answer needed")
+    expect(block.locator(".h-title")).to_have_text("Which project is the new grant for?")
+    block.locator("> button").click()
+    expect(block.locator("[data-part='choices'] .btn")).to_have_text(["Ask", "Done"])
+    block.get_by_role("button", name="Ask", exact=True).click()
+    expect(page.locator("#channel-name")).to_have_text("example-project")    # its room, its thread
+    page.evaluate("location.hash = '#/needs'")
+    expect(page.locator("#channel-name")).to_have_text("Home")               # no Needs you place
+    assert not errors, errors
+
+
+def test_needs_you_comes_back_when_the_owner_answers_in_action_requests(app):
+    from playwright.sync_api import expect
+    page, stub, errors = _with_talk(app)
+    expect(page.locator("#needs-link")).to_be_hidden()
+    page.click("#open-settings")
+    page.click("#go-home")
+    page.click("#home-rows label:has-text('In Action requests')")
+    wait_for(lambda: stub.home_posts and stub.home_posts[-1] == {"answers": "requests"})
+    assert wait_for(lambda: page.evaluate("$('needs-link').hidden") is False)
+    page2, _stub2, errors2 = _with_talk(app, one=False)
+    assert page2.evaluate("$('needs-link').hidden") is False
+    assert page2.locator(".h-block[data-ref^='thread:']").count() == 0
+    assert not errors and not errors2, errors + errors2

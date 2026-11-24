@@ -239,6 +239,7 @@ def _confirm_ns(tmp: Path):
         "_post_send_confirmation": lambda *a, **k: None,
         "_chat": _chat,
         "FRONTEND": frontend,
+        "_one_list": lambda: False,
     }
     _exec_block("# Draft-confirmation registry",
                 "def _replace_buttons_with_status", ns)

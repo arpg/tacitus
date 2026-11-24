@@ -96,6 +96,15 @@ def find(conversation_id: str, *, now: float | None = None) -> dict | None:
             "messages": [str(m) for m in row.get("messages") or []]}
 
 
+def threads(*, now: float | None = None) -> dict:
+    """{key: (channel, thread)} of every thread recorded and not older than
+    KEEP_DAYS ({} when the record cannot be read): Home's one list reads it
+    to know which conversation is an item's own."""
+    now = now or time.time()
+    return {k: (str(v["channel"]), str(v["thread"])) for k, v in _load().items()
+            if v.get("channel") and v.get("thread") and now - float(v.get("at") or 0) <= KEEP_DAYS * 86400}
+
+
 def carries(conversation_id: str, message_id: str) -> bool:
     """The conversation's thread already carries this message."""
     row = find(conversation_id)

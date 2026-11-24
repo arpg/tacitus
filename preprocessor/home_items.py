@@ -831,6 +831,12 @@ def brief(f: Found, src) -> dict:
         out["what"] = "A delivery notice matches more than one of your open requests."
         out["standing"] = ["Nothing is marked done until you answer."]
         return out
+    if f.item.get("kind") == "conversation":
+        out["what"] = "A conversation waits for your answer."
+        out["standing"] = [x for x in (_sentence(f.item.get("detail")) if f.item.get("detail") else "",
+                                       "It has been quiet for a week." if f.item.get("_stale") else "") if x]
+        out["next"] = "Ask opens it. Done takes it off your list."
+        return out
     if f.item.get("kind") in CASE_ITEMS:
         cs, case = _case(f)
         if not case:
@@ -945,6 +951,9 @@ def choices(f: Found, src) -> list[dict]:
         got = cs.home_choices(case, today, f.keep or "full") if case else []
         got = [c for c in got if c.get("id") != OPEN["id"] or f.item.get("href")]
         return got + ([dict(ASK)] if got and not f.keep else [])
+    if kind == "conversation":
+        # what Needs you listed (one list): its conversation, or done with it
+        return [dict(START), dict(DONE)]
     if kind == "which":
         if __package__:
             from . import case_surface as cs
@@ -1507,6 +1516,9 @@ class Acts:
         the item has one conversation: Ask opens the one it has (where its
         reply was written), and keeps the one it opens."""
         fe = self.home.fe
+        if f.item.get("kind") == "conversation":
+            return {"ok": True, "said": "Opened its conversation. Write what you need.",
+                    "goto": str(f.item.get("href") or "")}
         one = bool(getattr(fe, "one_list", False))
         key = thread_key(f) if one else ""
         had = conversation(fe, key) if key else None
@@ -1540,6 +1552,8 @@ class Acts:
         today = _today(src)
         rec = {"ref": it["ref"], "op": choice, "lid": f.lid, "version": it["version"],
                "at": self.home.clock(), "due": self.home.clock() + UNDO_S, "kind": it.get("kind") or ""}
+        if f.item.get("_thread"):
+            rec["thread"] = list(f.item["_thread"])
         if choice == "later":
             day = later_day(arg, today)
             if day is None:
@@ -1618,12 +1632,24 @@ class Acts:
         except Exception as e:
             log.warning("home: %s on %s not written: the item could not be read: %s", op, lid, e)
             return {"op": op, "id": lid, "ok": False, "why": "unread"}
-        if f is None or not _open_row(f) or f.lid != lid:
-            log.info("home: %s on %s not written: it left Home before the write", op, lid)
+        talk = rec.get("kind") == "conversation"
+        if f is None or (not talk and (not _open_row(f) or f.lid != lid)):
+            log.info("home: %s on %s not written: it left Home before the write", op, lid or ref)
             return {"op": op, "id": lid, "ok": False, "why": "gone"}
         if version(f) != rec.get("version"):
-            log.info("home: %s on %s not written: it changed before the write", op, lid)
+            log.info("home: %s on %s not written: it changed before the write", op, lid or ref)
             return {"op": op, "id": lid, "ok": False, "why": "changed"}
+        if talk:
+            # the thread header's Done, as the header runs it (one list)
+            ch, tk = (rec.get("thread") or ["", ""])[:2]
+            try:
+                self.home.fe.web_set_state(ch, tk, "done")
+                ok = op == "done"
+            except Exception as e:
+                log.warning("home: done on a conversation failed: %s", e)
+                ok = False
+            log.info("home: done on a conversation written: %s", "ok" if ok else "refused")
+            return {"op": op, "id": ref, "ok": ok}
         today = _today(src).isoformat()
         wts = _wts()
         try:

@@ -459,7 +459,7 @@ def _edit_tap(fe, value, subject="Lab visit"):
           "_card_value": lambda ev: value,
           "_fetch_draft_body": lambda did, *acct: {"subject": subject, "body": "x"} if subject
           else {"error": "offline"},
-          "_draft_account": lambda v: ("outlook", ""),
+          "_draft_account": lambda v: ("outlook", ""), "_one_list": lambda: False,
           "log": types.SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None)}
     handle = _bot_function("handle_edit_draft", ns)
     card = types.SimpleNamespace(thread_key="t200", channel="dm", id="w200")
