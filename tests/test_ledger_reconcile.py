@@ -320,7 +320,7 @@ def test_a_verdict_the_hill_climb_promoted_closes_at_once(priv, db):
     assert [p["id"] for p in rec["closed"]] == ["response-visit"] and rec["proposed"] == []
     row = ledger_mod.get_entry("response-visit")
     assert row["status"] == "completed" and row["closed_by"]["tier"] == cp.PROMOTED
-    assert "1 closed at once (a note with Reopen in your DM)" in lr.summary_line(rec)
+    assert "1 closed at once (a note with Not done in your DM)" in lr.summary_line(rec)
 
 
 def test_a_chance_that_ended_is_a_lapsed_proposal_and_never_a_close(priv, db):

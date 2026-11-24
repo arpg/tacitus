@@ -243,7 +243,7 @@ def test_stage_checks_the_calendar_notes_the_row_and_logs(store):
     assert it["stage_notes"] == ["That time now overlaps Office hours on your calendar."], "a conflict is said, not fatal"
     assert runner.calls == [["validate-draft", "--times", '["2026-11-30T14:15:00-07:00"]', "--duration", "30"]]
     assert notes == [("sched-m-accept", "2026-11-03: the invite for Mon Nov 30, 2:15-2:45 PM MT is staged from "
-                                        "their acceptance; the Create button is in your DM.")]
+                                        "their acceptance and waits for your Create.")]
     log = sa._store_read()
     assert [r["status"] for r in log] == ["staged"] and log[0]["minutes"] == 30 and log[0]["sender"] == THEM
     assert sa.seen(_item(None)) and not sa.seen(_item(None, message_id="m-other", received="2026-11-04T10:00:00Z"))

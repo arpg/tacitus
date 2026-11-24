@@ -677,7 +677,7 @@ def test_review_interface_and_cron_drafts():
     ra = (ROOT / "run-agent.sh").read_text()
     assert ra.count('EA_RUN_ID="cron-${AGENT}-${TIMESTAMP}"') == 3
     skill = (ROOT / "skills" / "morning-briefing.md").read_text()
-    assert "Draft every reply you can write" in skill and ":question: *Needs you*" in skill
+    assert "Draft every reply you can write" in skill and ":question: *Answer needed*" in skill
     assert "ask-first by default" not in skill
 
 

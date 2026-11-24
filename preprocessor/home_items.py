@@ -21,21 +21,20 @@ type and state, never from a guess at the facts.
 
 The choices, by kind:
 
-  reply      Draft a reply, Tell Tacitus what to say, Later, No reply
-             needed, Ask
-  item       Ask, Done, Waiting on someone, Later
+  reply      Draft, Draft with my words, Later, No reply needed, Ask
+  item       Ask, Done, Later: waiting on them, Later
   question   the answers an earlier run offered (the Replies card's
              buttons), Other answer, Later, No reply needed, Ask; a
              question with no reply behind it: Answer, Later, Ask
   request    Open it in Action requests (Send and Create stay there)
-  closed     Not done yet (a row closed today)
+  closed     Not done (a row closed today)
   answered   Open it in Action requests
   kept       Open in Outlook (a kept request: Open it in Action requests)
 
 What each choice runs is the machinery that already does it:
 
-  Draft a reply, Tell Tacitus what to say, an answer
-      the Replies card's Draft it turn (the bot's _dispatch_reply_draft,
+  Draft, Draft with my words, an answer
+      the reply card's Draft turn (the bot's _dispatch_reply_draft,
       through Hooks.draft): one turn for the row, its Send card in
       Action requests, the owner's line or answer quoted to the turn as
       his instruction for this reply alone. A line that says only that no
@@ -47,14 +46,15 @@ What each choice runs is the machinery that already does it:
       missed-closure line: no signal could have seen that no reply was
       wanted
   Done
-      the web chat's Mark done (web_thread_state.run_writeback): a row
+      the web chat's thread Done (web_thread_state.run_writeback): a row
       that carries a close proposal is confirmed; any other closes on the
       owner's word ("marked done in the web chat") and is logged with
       log_missed_closure.py, since a closure the owner had to state is a
       closure the pipeline missed
   Later      ledger.py update --status snoozed --snooze-until <day>, as
              the Replies card's Later
-  Waiting    ledger.py update --status waiting --follow-up-after <day>
+  Later: waiting on them
+             ledger.py update --status waiting --follow-up-after <day>
   Ask
       a new conversation in Ask Tacitus (or the row's project room) that
       opens with Tacitus's message about the item: the deeper briefing
@@ -66,8 +66,8 @@ What each choice runs is the machinery that already does it:
       a new conversation in Ask Tacitus (or the row's project room) that
       starts with the owner's message naming the item and his answer,
       sent at once, as if he typed it (WebFrontend.web_message)
-  Not done yet
-      the web chat's Needs me on a closed row (run_writeback's reopen)
+  Not done
+      the web chat's thread Not done on a closed row (run_writeback's reopen)
 
 Done, No reply needed, Waiting and Later say what they did at once and the
 item leaves Home at once; the ledger write waits UNDO_S seconds, so Undo
@@ -111,7 +111,7 @@ log = logging.getLogger("chat.web.home.items")
 # How long Undo takes back a Done, No reply needed, Waiting or Later; the ledger
 # write waits this long.
 UNDO_S = 30
-# The longest line the owner writes on Tell Tacitus what to say or an
+# The longest line the owner writes on Draft with my words or an
 # answer (the cards' own bound, chat.cards.ACTION_TEXT_CHARS).
 TEXT_MAX = 300
 # Bounds on the briefing's words.
@@ -127,7 +127,7 @@ LATER_MAX_DAYS = 366
 # "no reply goes out", so a later row on the thread carries it.
 NOT_NEEDED_NOTE = "No reply needed: the owner's tap on Home"
 # What the briefing names a row by its type.
-TYPE_WORDS = {"response_needed": "A reply you owe", "follow_up": "A follow-up",
+TYPE_WORDS = {"response_needed": "A reply owed", "follow_up": "A follow-up",
               "scheduling": "A meeting to set up", "task": "A task", "deadline": "A deadline",
               "waiting": "Something others owe you", "reimbursement": "A reimbursement",
               "dispute": "A dispute", "draft_pending": "A document to finish"}
@@ -143,18 +143,18 @@ DEFERRED = ("done", "not_needed", "later", "waiting")
 STORE_FILE = "webchat.sqlite"
 
 # The choices, as the app draws them.
-DRAFT = {"id": "draft", "label": "Draft a reply", "style": "primary"}
-SAY = {"id": "say", "label": "Tell Tacitus what to say", "input": "text"}
+DRAFT = {"id": "draft", "label": "Draft", "style": "primary"}
+SAY = {"id": "say", "label": "Draft with my words", "input": "text"}
 NOT_NEEDED = {"id": "not_needed", "label": "No reply needed"}
 # Ask: the item's one conversation opener (a to-do's first choice; a
 # reply's and a question's last, quiet).
 ASK = {"id": "start", "label": "Ask"}
 START = dict(ASK, style="primary")
 DONE = {"id": "done", "label": "Done"}
-WAITING = {"id": "waiting", "label": "Waiting on someone"}
+WAITING = {"id": "waiting", "label": "Later: waiting on them"}
 OPEN = {"id": "open", "label": "Open it in Action requests", "style": "primary"}
 OUTLOOK = {"id": "outlook", "label": "Open in Outlook", "style": "primary"}
-REOPEN = {"id": "reopen", "label": "Not done yet"}
+REOPEN = {"id": "reopen", "label": "Not done"}
 
 GONE = "This is not on your list any more."
 CHANGED = "This changed since you opened it. Here it is as it is now."
@@ -173,7 +173,7 @@ def _hs():
 
 
 def _wts():
-    """web_thread_state: the web chat's Mark done and Needs me write-back,
+    """web_thread_state: the web chat's thread Done and Not done write-back,
     and its CLI runner (RUN), which tests replace with a fake ledger."""
     if __package__:
         from . import web_thread_state as mod
@@ -969,7 +969,7 @@ def shape(f: Found, src, *, fe=None, pending: dict | None = None) -> dict:
 # "step:<id>", and a step that names one of these choices runs it here, so
 # the undo, the ledger verbs and the closure rule stay this module's.
 
-DEEPER_FAILED = "Tacitus could not do that. Try again."
+DEEPER_FAILED = "Nothing was done. Try again in a minute."
 
 
 def _deeper_mod():
@@ -993,7 +993,7 @@ CASE_DEEPER = {"state": "unavailable", "note": "Everything Tacitus knows about i
 CASE_FAILED = "Tacitus could not read this briefing. Try again in a minute."
 # A press while the case store waits for its owner's migration step: the
 # words a press on the case's card shows (ea-chat-bot's _press_case).
-MIGRATION_SAID = "I could not do that. Ask me in Ask Tacitus."
+MIGRATION_SAID = "Nothing was done. Ask me in Ask Tacitus."
 
 
 def _case_none(it: dict) -> dict:
@@ -1283,8 +1283,8 @@ class Acts:
             done = _wts().run_writeback({"ops": [("reopen", f.lid)]})
             ok = any(d.get("ok") for d in done)
             home.changed()
-            return {"ok": ok, "said": "Opened again. It is back on your list." if ok
-                    else "Tacitus could not open it again. Try again in a minute."}, None
+            return {"ok": ok, "said": "Not done. It is back on your list." if ok
+                    else "Nothing was done. Try again in a minute."}, None
         words = one_line(arg)
         if choice.startswith(("letter:", "case:")):
             cs, case = _case(f)
@@ -1330,8 +1330,8 @@ class Acts:
                 return {"ok": False, "said": "Tacitus cannot start a draft from here."}, None
             got = hooks.draft(f.lid, words, answer) or {}
             out = {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or
-                   ("Tacitus is writing the reply. Its Send card comes to Action requests." if got.get("ok")
-                    else "Tacitus could not start the draft. Try again in a minute.")}
+                   ("Drafting the reply. Its Send card comes to Action requests." if got.get("ok")
+                    else "The draft did not start. Try again in a minute.")}
             route = _route(fe, str(got.get("channel") or ""), str(got.get("id") or "")) \
                 if got.get("ok") or got.get("channel") else ""
             if route:
@@ -1349,7 +1349,7 @@ class Acts:
                 row, after = fe.web_message(channel, text, None, None)
             except Exception as e:
                 log.warning("home: %s did not open a conversation: %s", choice, e)
-                return {"ok": False, "said": "Tacitus did not take it. Try again in a moment."}, None
+                return {"ok": False, "said": "Nothing was done. Try again in a minute."}, None
             route = f"#/{quote(str(row.get('channel') or channel), safe='')}/" \
                     f"{quote(str(row.get('thread_key') or row.get('id') or ''), safe='')}"
             log.info("home: %s opened a conversation for %s", choice, f.lid or f.item.get("id"))
@@ -1371,7 +1371,7 @@ class Acts:
             ref = fe.post(channel, ask_text(f, it["brief"]))
         except Exception as e:
             log.warning("home: Ask did not open a conversation: %s", e)
-            return {"ok": False, "said": "Tacitus did not take it. Try again in a moment."}
+            return {"ok": False, "said": "Nothing was done. Try again in a minute."}
         key = getattr(ref, "thread_key", None) or getattr(ref, "id", "")
         log.info("home: Ask opened a conversation for %s", f.lid or f.item.get("id"))
         return {"ok": True, "said": "Opened a conversation about it. Write what you need.",
@@ -1394,7 +1394,7 @@ class Acts:
             if day is None:
                 return {"ok": False, "said": "Pick a day within a year."}
             rec["day"] = day.isoformat()
-            rec["said"] = "Waiting on someone else. It is off your list."
+            rec["said"] = f"Later. It comes back {_when(day, today)}."
         elif choice == "not_needed":
             rec["said"] = "No reply needed. It is off your list."
         else:

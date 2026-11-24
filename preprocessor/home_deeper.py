@@ -125,8 +125,8 @@ STEP_KINDS = ("draft_reply", "ask_sender", "propose_times", "wait_until", "mark_
               "work_on_it", "hold_slot")
 # The steps that run as one of the item's own choices (home_items), by the
 # choice ids it may offer, first found first: a reply's words go through
-# Tell Tacitus what to say (Draft a reply with words reads as it), a date
-# through Waiting on someone, else Later; Done, else No reply needed.
+# Draft with my words (a Draft step with words reads as it), a date
+# through Later: waiting on them, else Later; Done, else No reply needed.
 CHOICE_OF = {"draft_reply": ("say", "draft"), "ask_sender": ("say", "draft"),
              "propose_times": ("say", "draft"), "wait_until": ("waiting", "later"),
              "mark_done": ("done", "not_needed")}
@@ -711,17 +711,17 @@ def render(sections: dict[str, list[str]]) -> str:
 
 def _step_label(kind: str, p: dict, choice: str = "") -> str:
     if kind == "draft_reply":
-        return _one(f"Draft a reply: {p['say']}", LABEL_MAX)
+        return _one(f"Draft: {p['say']}", LABEL_MAX)
     if kind == "ask_sender":
-        return _one(f"Ask them: {p['question']}", LABEL_MAX)
+        return _one(f"Draft a question: {p['question']}", LABEL_MAX)
     if kind == "propose_times":
-        return "Offer times to meet"
+        return "Draft: offer times to meet"
     if kind == "wait_until":
-        return f"Wait until {_short_day(_date(p['date']))}"
+        return f"Later: {_short_day(_date(p['date']))}"
     if kind == "mark_done":
-        return "No reply needed" if choice == "not_needed" else "Mark it done"
+        return "No reply needed" if choice == "not_needed" else "Done"
     if kind == "work_on_it":
-        return _one(f"Start: {p['ask']}", LABEL_MAX)
+        return _one(f"Ask: {p['ask']}", LABEL_MAX)
     if kind == "hold_slot":
         return f"Hold {p['minutes']} minutes on {_short_day(_date(p['date']))}"
     return ""
@@ -838,9 +838,9 @@ def runs(kind: str, params: dict, choice: str) -> tuple[str, Any]:
 
 def _repeats(kind: str, params: dict, choice: str, ids: set) -> bool:
     """True when the step runs a choice the item already shows with nothing
-    of its own: no words (Mark it done is Done, No reply needed is No reply
-    needed), or only a day, which that choice asks for itself (Wait until
-    a day is Later or Waiting on someone)."""
+    of its own: no words (a Done step is Done, No reply needed is No reply
+    needed), or only a day, which that choice asks for itself (a Later step
+    with a day is Later or Later: waiting on them)."""
     if choice not in ids:
         return False
     _choice, arg = runs(kind, params, choice)
@@ -1646,7 +1646,7 @@ def _level(item: dict, row: dict | None) -> str:
     return kg.stricter(found, said) if said in kg.LEVELS else found
 
 
-STEP_HEADS = {"draft_reply": "Draft a reply", "ask_sender": "Ask them", "work_on_it": "Start it"}
+STEP_HEADS = {"draft_reply": "Draft", "ask_sender": "Draft a question", "work_on_it": "Ask"}
 
 
 def _public_step(s: dict) -> dict:
@@ -1990,7 +1990,7 @@ def step(fe, ref: str, step_id: str, item: dict | None = None, *, row: dict | No
         return {"ok": False, "said": NOTE_STEP_GONE}
     except Exception as e:
         log.warning("home deeper: the step %s on %s failed: %s", step_id, ref, e)
-        return {"ok": False, "said": "Tacitus could not do that. Try again."}
+        return {"ok": False, "said": "Nothing was done. Try again in a minute."}
 
 
 def prewarm(fe, left: list[dict] | None) -> int:
@@ -2017,7 +2017,7 @@ def prewarm(fe, left: list[dict] | None) -> int:
 # ── a conversation from the briefing ─────────────────────────────────
 
 def conversation_place(fe, row: dict | None) -> str:
-    """Where the conversation opens: where Home's own Start it with Tacitus
+    """Where the conversation opens: where Home's own Ask
     opens one (home_items._room: the project room of the item's row when
     rooms are on and it has one, else Ask Tacitus). Its answer is final, so
     Continue and Start never part ways (with rooms off, never a room). Only

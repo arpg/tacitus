@@ -67,13 +67,13 @@ NAME_MAX = 60
 # The section an item came from, as the room post names it.
 SECTIONS = {
     "top": ":dart: Do today",
-    "needs": ":question: Needs you",
+    "needs": ":question: Answer needed",
     "draft": ":envelope: Draft ready (Send is in {place})",
     "escalated": ":arrow_up: Sent to Claude",
     "flex": ":leaves: Flex",
     "due": ":alarm_clock: Due",
     "since": ":new: Since this morning",
-    "pending": ":hourglass: Pending",
+    "pending": ":hourglass: Answer needed",
     "letters": ":memo: Letter",
 }
 

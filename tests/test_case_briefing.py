@@ -331,12 +331,12 @@ def test_the_letters_steps_in_its_kinds_words(env):
              {"id": "s4", "kind": "draft", "params": {}}]
     pub = {s["pub"]["id"]: s for s in CB.offered(steps, v, today=TODAY)}
     assert pub["s1"]["pub"] == {"id": "s1", "label": "Open the portal", "detail": "Harbor Tech PhD", "href": PORTAL}
-    assert pub["s2"]["pub"]["label"] == "Mark it submitted"
+    assert pub["s2"]["pub"]["label"] == "Submitted"
     assert pub["s2"]["pub"]["confirm"] == "Mark Harbor Tech PhD as submitted? Only do this once it went in."
     assert CB.choice_of(pub["s2"], v)[0] == f"letter:submitted:{pub['s2']['part']['id']}"
     assert "It waits for your Send." in pub["s3"]["pub"]["confirm"] and "statement" in pub["s3"]["pub"]["detail"]
     assert CB.choice_of(pub["s3"], v) == ("letter:yes_ask", "")
-    assert pub["s4"]["pub"]["label"] == "Change the letter"
+    assert pub["s4"]["pub"]["label"] == "Edit the letter"
     for s in pub.values():
         assert len(s["pub"]["label"]) <= CB.LABEL_MAX
         plain(s["pub"]["label"] + s["pub"].get("detail", "") + s["pub"].get("confirm", ""))
@@ -382,7 +382,7 @@ def test_a_form_case_reads_in_its_own_words_with_case_choice_ids(env):
     pub = {s["kind"]: s for s in CB.offered([{"id": "s1", "kind": "draft", "params": {}},
                                              {"id": "s2", "kind": "open_link", "params": {"part": "p1"}}],
                                             v, today=TODAY)}
-    assert pub["draft"]["pub"]["label"] == "Fill it in" and CB.choice_of(pub["draft"], v) == ("case:draft", "")
+    assert pub["draft"]["pub"]["label"] == "Draft the answers" and CB.choice_of(pub["draft"], v) == ("case:draft", "")
     assert pub["open_link"]["pub"]["label"] == "Open the link"
     prompt = CB.prepare(x, now=NOW)["prompt"]
     assert "a disclosure form he was asked for" in prompt and "the answers" in prompt and "letter" not in prompt
@@ -397,7 +397,7 @@ def test_a_review_case_marks_its_report_returned(env):
     v = CB.view(one(env, cid), today=TODAY)
     assert "mark_delivered p1" in [CB._move_key(m) for m in CB.allowed_moves(v)]
     [s] = CB.offered([{"id": "s1", "kind": "mark_delivered", "params": {"part": "p1"}}], v, today=TODAY)
-    assert s["pub"]["label"] == "Mark it returned"
+    assert s["pub"]["label"] == "Returned"
     assert CB.choice_of(s, v) == (f"case:delivered:{pid}", "")
     text = CB.card(one(env, cid), None, now=NOW, since=None)["text"]
     assert "Paper review for Pat Lee" in text and "The reports\n- Referee report: due " in text
@@ -769,7 +769,7 @@ def test_a_form_items_briefing_and_step_on_home(env):
     it = h.item(f"case:{cid}")
     assert it["kind"] == "case" and it["deeper"]["state"] == "ready"
     assert "The forms\n- Annual disclosure: due " in it["deeper"]["text"]
-    assert [s["label"] for s in it["deeper"]["steps"]] == ["Fill it in", "Open the link"]
+    assert [s["label"] for s in it["deeper"]["steps"]] == ["Draft the answers", "Open the link"]
     assert h.act(f"case:{cid}", "step:s1")[0]["ok"] and pressed[-1] == ("case", cid, "draft", "", "")
 
 

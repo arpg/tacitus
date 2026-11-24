@@ -136,7 +136,7 @@ If there's genuinely nothing new:
 
 Your previous draft was checked in code against the mailbox and the
 ledger, and was not posted. The rows the block lists as CLOSED are
-closed: drop them from "Pending your response" and name them in "Since
+closed: drop them from "Answer needed" and name them in "Since
 this morning" with the evidence in a few words. The rows it lists as
 ambiguous stay exactly as they were, with nothing added to their line.
 Change nothing else, and call no tool to re-check.
@@ -169,13 +169,13 @@ Format (use mrkdwn: `*bold*` single asterisks, `:emoji:` shortcodes):
 - [tomorrow's events, one line each]
 - [any deadlines due tomorrow]
 
-*Pending your response:*
+*Answer needed:*
 - [items from `pending_instructions` only — NOT handled_instructions]
 - [open ledger items with no recent action — cross-check ledger status]
 
 :envelope: *Drafts ready* ([N]): [one line for each draft this run made; leave the section out when it made none]
 
-:inbox_tray: *Reply queue*: [N] replies owed, the oldest for [N] days. [N] have a draft ready for Send. No draft yet: [who or subject] ([N]d).
+:inbox_tray: *Replies owed*: [N], the oldest for [N] days. [N] have a draft ready for Send. No draft yet: [who or subject] ([N]d).
 [ONE line from `reply_backlog`, as in the morning briefing; leave it out
 when no entry has a draft and none is 3 days old or more.]
 ```

@@ -121,8 +121,8 @@ class ConfirmationCard:
     question: dict = field(default_factory=dict)
     # Why a reply turn wrote no reply (the web chat's "could not" card for a
     # Replies row): {"text": the reason in plain words, "from", "since",
-    # "about"}. The block folds to "Not written" and the reason; the card
-    # offers Try again and Open in Ask Tacitus, never an answer control.
+    # "about"}. The block folds to "Not drafted" and the reason; the card
+    # offers Try again and Ask, never an answer control.
     problem: dict = field(default_factory=dict)
     # A press on this card that did nothing, in the bot's plain words (one
     # line): the card is redrawn in place with it and stays open, instead
@@ -170,6 +170,20 @@ def _pick_primary(items: list[tuple[str, str, str]], default: bool = True) -> st
 # not enough: a delete card puts danger on Delete, its primary action.
 CANCEL_WORDS = ("cancel", "keep", "skip", "later", "dismiss", "one by one")
 
+# The app's six verbs (Send, Draft, Done, Later, Not done, Ask) as words the
+# owner may type before a code, for an action whose own `word` is older:
+# each maps to the words it stands for, first found on the card wins. An
+# action's own word always works too, so nothing the owner typed before
+# stops working.
+WORD_ALIASES = {
+    "done": ("close", "close all"),
+    "not done": ("keep", "reopen"),
+    "no reply needed": ("handled",),
+    "try again": ("again", "draft"),
+    "draft": ("again",),
+    "cancel": ("keep", "one by one"),
+}
+
 
 def _pick_cancel(items: list[tuple[str, str, str]]) -> str | None:
     """The id of the item whose word is a cancel word, else the first
@@ -182,6 +196,16 @@ def _pick_cancel(items: list[tuple[str, str, str]]) -> str | None:
         if style == "danger" and aid != primary:
             return aid
     return None
+
+
+def _word_action(items: list[tuple[str, str, str]], word: str) -> str | None:
+    """The id of the action a typed word names: the action whose own word it
+    is, else the first action whose word the verb stands for
+    (WORD_ALIASES)."""
+    words = {_norm_word(w): aid for aid, _s, w in reversed(items) if w}
+    if word in words:
+        return words[word]
+    return next((words[w] for w in WORD_ALIASES.get(word, ()) if w in words), None)
 
 
 def _card_items(card: ConfirmationCard) -> list[tuple[str, str, str]]:
@@ -469,7 +493,7 @@ def resolve_code(text: str, registry: CardRegistry, user_id: str,
     items = _row_items(row)
     if word is None:
         return _event_for(row, _pick_primary(items, not row.get("no_default")), user_id, "code")
-    aid = next((a for a, _s, w in items if w and _norm_word(w) == word), None)
+    aid = _word_action(items, word)
     if said and not ((row.get("actions") or {}).get(aid) or {}).get("ask"):
         return None
     return _event_for(row, aid, user_id, "code", said)

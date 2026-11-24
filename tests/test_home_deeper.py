@@ -373,9 +373,9 @@ def test_a_step_runs_as_the_items_own_choice_or_not_at_all(env):
     D.start(fe, ITEM["ref"], ITEM, row=make_row())
     st = D.state(fe, ITEM["ref"], ITEM, row=make_row())
     assert st["state"] == "ready" and st["model"] == "Your own model"
-    # No reply needed and Wait until a day run the card's own No reply
+    # No reply needed and a Later step with a day run the card's own No reply
     # needed and Later with nothing of their own: one button each, the card's
-    assert st["steps"] == [{"id": "s1", "label": "Draft a reply: The rover can go out for the field week."},
+    assert st["steps"] == [{"id": "s1", "label": "Draft: The rover can go out for the field week."},
                            {"id": "continue", "label": "Ask"}]
     for s in st["steps"]:
         plain(s["label"])
@@ -386,7 +386,7 @@ def test_a_step_runs_as_the_items_own_choice_or_not_at_all(env):
     # where the card lacks the choice, the step is the only way to it
     later_only = dict(ITEM, choices=[{"id": "draft"}, {"id": "later"}])
     assert [s["label"] for s in D.state(fe, ITEM["ref"], later_only, row=make_row())["steps"]] == [
-        "Draft a reply: The rover can go out for the field week.", "Ask"]
+        "Draft: The rover can go out for the field week.", "Ask"]
     no_later = dict(ITEM, choices=[{"id": "draft"}, {"id": "not_needed"}, {"id": "waiting"}])
     assert D.step(fe, ITEM["ref"], "s3", no_later, row=make_row()) == {"ok": False, "said": D.NOTE_STEP_GONE}
     # an item that offers no reply words (a decision's own buttons) has no draft step
@@ -588,7 +588,7 @@ def test_continue_opens_a_conversation_named_by_the_item_with_the_briefing_first
     first, rest = text.split("\n", 1)
     assert channel == "main" and first == "*Rover loan for the field week*"
     assert "What happened\n- Robin Vale asked on November 18" in rest
-    assert "Next steps Tacitus saw: Draft a reply" in rest and "(item response-t1)" in rest
+    assert "Next steps Tacitus saw: Draft: " in rest and "(item response-t1)" in rest
     assert fe.sent == []  # the owner types; nothing is sent for him
     plain(got["said"])
 
@@ -603,7 +603,7 @@ def test_a_long_title_names_the_conversation_in_sixty_characters_cut_at_a_word(e
 
 
 def test_continue_goes_to_the_items_project_room_when_it_has_one(env):
-    """The room Home's own Start it with Tacitus picks (home_items._room)."""
+    """The room Home's own Ask picks (home_items._room)."""
     fe = env["fe"]
     import home_items
     picked = []
@@ -653,9 +653,9 @@ def test_every_line_the_owner_reads_is_plain():
 
 def test_a_step_names_the_items_own_choice_for_home_items_to_run(env):
     """home_items runs {"choice", "arg"} as that tap (its Undo, its ledger
-    verb); a step with words prefers Tell Tacitus what to say, a date
-    prefers Waiting on someone, which takes the day. A to-do's card already
-    has Done, Waiting on someone, Later and its own Ask: its deeper steps
+    verb); a step with words prefers Draft with my words, a date
+    prefers Later: waiting on them, which takes the day. A to-do's card already
+    has Done, Later: waiting on them, Later and its own Ask: its deeper steps
     repeat none of them and add no second Ask."""
     fe = env["fe"]
     todo = dict(ITEM, ref="item:task-t3", kind="item",
@@ -675,7 +675,7 @@ def test_a_step_names_the_items_own_choice_for_home_items_to_run(env):
     assert D.runs("mark_done", {}, "done") == ("done", None)
     assert [s["kind"] for s in D.offered([{"id": "s1", "kind": "wait_until", "params": {"date": "2026-11-27"}}],
                                          dict(bare, choices=[{"id": "start"}]))] == []
-    # an item that offers Draft a reply alone still takes the words
+    # an item that offers Draft alone still takes the words
     draft_only = dict(ITEM, choices=[{"id": "draft"}])
     env["replies"]["local"] = answer()
     D.start(fe, draft_only["ref"], draft_only, row=make_row())
@@ -954,7 +954,7 @@ def test_a_step_whose_words_do_not_fit_its_label_says_them_once():
     cut = {"id": "s1", "kind": "draft_reply", "label": D._step_label("draft_reply", {"say": words}),
            "params": {"say": words}}
     assert words not in cut["label"]
-    assert D._public_step(cut) == {"id": "s1", "label": "Draft a reply", "detail": words}
+    assert D._public_step(cut) == {"id": "s1", "label": "Draft", "detail": words}
     short = {"id": "s2", "kind": "ask_sender", "label": D._step_label("ask_sender", {"question": "Which day?"}),
              "params": {"question": "Which day?"}}
-    assert D._public_step(short) == {"id": "s2", "label": "Ask them: Which day?"}
+    assert D._public_step(short) == {"id": "s2", "label": "Draft a question: Which day?"}

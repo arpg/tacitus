@@ -36,7 +36,7 @@ CLOCK = {"timezone_id": F.ZONE_NAME}
 PHONE = {"viewport": {"width": 390, "height": 844},
          "context": {"has_touch": True, "is_mobile": True, "device_scale_factor": 3, **CLOCK}}
 BUSY = "Reading the messages..."
-WRITING = "Tacitus is writing the reply. Its Send card comes to Action requests."
+WRITING = "Drafting the reply. Its Send card comes to Action requests."
 
 
 def sources(state="normal", decision=False):
@@ -109,11 +109,11 @@ def test_a_stored_briefing_opens_complete_above_the_choices_with_each_action_onc
     more.click()
     expect(deeper.locator(".text")).not_to_have_class(re.compile(r"\bh-fold\b"))
     expect(deeper.get_by_role("button", name="Show less")).to_have_attribute("aria-expanded", "true")
-    # Mark it done and Wait until a day would run the card's Done and Waiting
-    # on someone with nothing of their own, and Ask is the card's own: no step
+    # A Done step and a Later step with a day would run the card's Done and
+    # Later: waiting on them with nothing of their own, and Ask is the card's own: no step
     assert stub.real.item(ref)["deeper"]["steps"] == []
     expect(deeper.locator("[role='group'] button")).to_have_count(0)
-    expect(todo.locator(".h-choices button")).to_have_text(["Ask", "Done", "Waiting on someone", "Later"])
+    expect(todo.locator(".h-choices button")).to_have_text(["Ask", "Done", "Later: waiting on them", "Later"])
     expect(todo.locator(".h-links button")).to_have_count(0)  # no second Ask
     assert todo.locator(".req-busy").count() == 0
     expect(deeper).not_to_contain_text("Your own model")  # agent and model details are off
@@ -143,7 +143,7 @@ def test_a_tap_shows_the_quick_briefing_and_the_choices_at_once_and_a_missing_br
                                              "This needs a form filled in, not just a reply. Ask Tacitus to start it."])
     expect(brief.locator("li")).to_have_text(["It has waited 4 days for your reply.", "You last wrote on it 5 days ago."])
     choices = block.locator(".h-choices button")
-    expect(choices).to_have_text(["Draft a reply", "Tell Tacitus what to say", "Later", "No reply needed", "Ask"])
+    expect(choices).to_have_text(["Draft", "Draft with my words", "Later", "No reply needed", "Ask"])
     expect(block.locator(".h-choices [role='group']")).to_have_attribute("aria-label", "Next step")
     expect(block.locator(".h-links button")).to_have_count(0)  # its Ask is the last choice, the card's one
     expect(block.locator(".h-deeper .req-busy")).to_have_text(BUSY)
@@ -156,12 +156,13 @@ def test_a_tap_shows_the_quick_briefing_and_the_choices_at_once_and_a_missing_br
     expect(deeper.locator(".text")).to_contain_text("The thread has three messages.")
     expect(deeper.locator(".text li")).to_have_count(4)
     steps = deeper.locator("[role='group'] button")
-    # No reply needed and Wait until a day are the card's own No reply
+    # No reply needed and a Later step with a day are the card's own No reply
     # needed and Later; the card has its Ask: one step, with its words
     expect(steps).to_have_count(1)
-    # Words too long for the label show once, under the action's name.
-    expect(steps.first).to_have_text("Draft a reply Thursday at 2:00 works for me. The room is held.")
-    expect(steps.first.locator(".h-detail")).to_have_text("Thursday at 2:00 works for me. The room is held.")
+    # Words that fit the label are said once, after the verb (longer ones show
+    # under it: test_home_deeper's _public_step).
+    expect(steps.first).to_have_text("Draft: Thursday at 2:00 works for me. The room is held.")
+    expect(steps.first.locator(".h-detail")).to_have_count(0)
     assert order(block) == ["brief", "choices", "deeper"]  # it came after the card opened: below everything
     settled(page)
     # nothing a thumb was about to tap has moved: the deeper briefing comes in below it
@@ -198,7 +199,7 @@ def test_a_to_do_and_a_request_lead_to_their_places(app):
     stub.deeper_stored, stub.deeper_delay = False, None  # no briefing yet: Ask opens on the quick one
     owners = len([m for m in stub.messages if m["author"] == "owner"])
     todo = opened(page, "item:deadline-w1")
-    expect(todo.locator(".h-choices button")).to_have_text(["Ask", "Done", "Waiting on someone", "Later"])
+    expect(todo.locator(".h-choices button")).to_have_text(["Ask", "Done", "Later: waiting on them", "Later"])
     expect(todo.locator(".h-brief p")).to_have_text(["A deadline, from Jo Rivera.", "Send your review of the four workshop papers.",
                                                      "Due tomorrow.", "Nothing on its own. Start it when you are ready."])
     todo.get_by_role("button", name="Ask", exact=True).click()
@@ -232,7 +233,7 @@ def test_a_decision_is_answered_with_the_decision_control_of_action_requests(app
     card.get_by_role("button", name="Later").click()
     expect(q.locator(".h-in button").first).to_have_text("Tomorrow")
     field.fill("Yes, from January.")
-    expect(go).to_have_text("Draft the reply")
+    expect(go).to_have_text("Draft")
     picks.first.click()  # one tap answers, and takes the place of a typed line
     expect(q.locator(".h-note")).to_contain_text(WRITING)  # Home stays, with the way to the draft's line
     expect(q.locator(".h-note a")).to_have_text("Open it in Action requests")
@@ -313,7 +314,7 @@ def test_later_offers_its_days_and_a_date(app):
     wait_for(lambda: stub.acts == [act(stub, ref, "later", when)])
     expect(reply.locator(".h-said")).to_have_text(re.compile(r"^Later\. It comes back .+\.$"))
     todo = opened(page, "item:deadline-w1")
-    todo.get_by_role("button", name="Later").click()
+    todo.get_by_role("button", name="Later", exact=True).click()
     todo.get_by_role("button", name="Tomorrow", exact=True).click()
     wait_for(lambda: len(stub.acts) == 2)
     assert stub.acts[1] == act(stub, "item:deadline-w1", "later", "tomorrow")
@@ -326,14 +327,14 @@ def test_tell_tacitus_what_to_say_takes_one_line_and_drafts_from_it(app):
     page, stub, errors = home_app(app)
     ref = "reply:response-r2"
     reply = opened(page, ref)
-    reply.get_by_role("button", name="Tell Tacitus what to say").click()
-    field = reply.get_by_role("textbox", name="Tell Tacitus what to say")
+    reply.get_by_role("button", name="Draft with my words").click()
+    field = reply.get_by_role("textbox", name="Draft with my words")
     expect(field).to_be_focused()
     field.press("Enter")
     page.wait_for_timeout(200)
     assert stub.acts == []  # no words, nothing sent
     field.fill("Yes, the form is signed. It goes out Friday.")
-    expect(reply.get_by_role("button", name="Draft it")).to_be_visible()
+    expect(reply.locator(".card-actions:has(.card-ask) .btn.primary")).to_have_text("Draft")  # the line's own
     assert page.locator(".h-page").get_by_role("button", name="Send", exact=True).count() == 0
     field.press("Enter")
     note = reply.locator(".h-note")
@@ -343,25 +344,25 @@ def test_tell_tacitus_what_to_say_takes_one_line_and_drafts_from_it(app):
     assert stub.acts == [act(stub, ref, "say", "Yes, the form is signed. It goes out Friday.")]
     note.get_by_role("link", name="Open it in Action requests").click()  # where the draft comes, with its Send
     expect(page.locator("#channel-name")).to_have_text("Action requests")
-    expect(page.locator(".req.open")).to_contain_text("Writing the reply: Yes, the form is signed. It goes out Friday.")
+    expect(page.locator(".req.open")).to_contain_text("Drafting the reply: Yes, the form is signed. It goes out Friday.")
     assert not errors, errors
 
 
 def test_a_line_that_says_no_reply_is_needed_is_no_reply_needed_with_its_undo(app):
-    """Words typed in Tell Tacitus what to say that say only that no reply is
+    """Words typed in Draft with my words that say only that no reply is
     needed do what No reply needed does: its line and its Undo, no draft."""
     from playwright.sync_api import expect
     page, stub, errors = home_app(app)
     ref = "reply:response-r2"
     reply = opened(page, ref)
-    reply.get_by_role("button", name="Tell Tacitus what to say").click()
-    field = reply.get_by_role("textbox", name="Tell Tacitus what to say")
+    reply.get_by_role("button", name="Draft with my words").click()
+    field = reply.get_by_role("textbox", name="Draft with my words")
     field.fill("No email necessary")
     field.press("Enter")
     expect(reply.locator(".h-said")).to_have_text("No reply needed. It is off your list.")
     expect(reply.get_by_role("button", name="Undo")).to_be_visible()
     assert stub.acts == [act(stub, ref, "say", "No email necessary")]
-    assert not [m for m in stub.messages if "Writing the reply" in (m.get("text") or "")]  # no draft
+    assert not [m for m in stub.messages if "Drafting the reply" in (m.get("text") or "")]  # no draft
     assert not errors, errors
 
 
@@ -376,8 +377,8 @@ def test_a_home_read_and_the_deeper_briefing_arriving_keep_the_open_card_and_the
     ref = "reply:response-r1"
     reply = opened(page, ref)
     reply.scroll_into_view_if_needed()
-    reply.get_by_role("button", name="Tell Tacitus what to say").click()
-    field = reply.get_by_role("textbox", name="Tell Tacitus what to say")
+    reply.get_by_role("button", name="Draft with my words").click()
+    field = reply.get_by_role("textbox", name="Draft with my words")
     page.evaluate("document.activeElement.dataset.mine = '1'")
     settled(page)
     top = page.evaluate("$('thread-list').scrollTop")
@@ -466,7 +467,7 @@ def test_a_step_runs_as_its_choice_and_ask_opens_the_conversation_with_the_brief
     reply = opened(page, ref)
     step = reply.locator(".h-deeper [role='group'] button")
     expect(step).to_have_count(1)
-    step.click()  # home_deeper's step, run as the item's Tell Tacitus what to say with its words
+    step.click()  # home_deeper's step, run as the item's Draft with my words with its words
     wait_for(lambda: stub.acts == [act(stub, ref, "step:s1")])
     expect(reply.locator(".h-note")).to_contain_text(WRITING)
     reply.get_by_role("button", name="Ask", exact=True).click()  # the briefing is ready: it opens the conversation
@@ -549,7 +550,7 @@ def test_an_open_card_fits_a_phone_and_the_desktop_keeps_two_columns(app, width)
                                   context={"has_touch": True, "is_mobile": True, **CLOCK} if phone else CLOCK)
     reply = opened(page, "reply:response-r2")
     expect(reply.locator(".h-deeper .text")).to_be_visible()
-    reply.get_by_role("button", name="Tell Tacitus what to say").click()
+    reply.get_by_role("button", name="Draft with my words").click()
     expect(reply.get_by_role("textbox")).to_be_focused()
     settled(page)
     assert page.evaluate(SIDEWAYS)[0] == 0
@@ -571,9 +572,9 @@ def test_a_row_of_so_far_today_opens_in_place_and_not_done_yet_reopens_it(app):
     row = opened(page, ref)
     expect(row.locator(".h-row")).to_contain_text("Newsletter sign-up")
     expect(row.locator(".h-brief p")).to_have_text(["Tacitus closed it at 12:02."])
-    row.get_by_role("button", name="Not done yet").click()
+    row.get_by_role("button", name="Not done").click()
     wait_for(lambda: stub.acts == [act(stub, ref, "reopen")])
-    expect(row.locator(".h-note")).to_have_text("Opened again. It is back on your list.")
+    expect(row.locator(".h-note")).to_have_text("Not done. It is back on your list.")
     assert stub.ledger_runs[0][:2] == ("ledger.py", "update")  # the web chat's reopen, recorded and never run
     # a draft that waits for Send is left for you, never also under So far today
     assert page.locator(".h-block[data-ref='drafted:w41']").count() == 0
@@ -601,7 +602,7 @@ def test_a_stale_briefing_shows_while_a_newer_one_is_written_below_everything(ap
     assert order(reply) == ["brief", "choices", "deeper"]
     finish(stub, ref)
     expect(deeper.locator(".req-busy")).to_have_count(0)
-    expect(deeper.get_by_role("button", name=re.compile(r"^Draft a reply"))).to_be_visible()
+    expect(deeper.get_by_role("button", name=re.compile(r"^Draft"))).to_be_visible()
     assert order(reply) == ["brief", "choices", "deeper"]
     opened(page, "reply:response-r2")
     reply = opened(page, ref)

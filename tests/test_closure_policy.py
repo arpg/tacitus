@@ -528,7 +528,7 @@ def test_the_bot_cards_settled_proposals_once_and_acts_on_the_clicks():
     ns["handle_close_all_proposed"](ev)
     assert [a for a in cli if a[0] == "confirm"] == [("confirm", "--id", "ae28"),
                                                     ("confirm", "--id", "t2")]
-    assert calls["status"][-1].startswith(":white_check_mark: Closed 2")
+    assert calls["status"][-1] == ":white_check_mark: Done. 2 are off your list."
     ev1 = types.SimpleNamespace(value="ae28", card=types.SimpleNamespace(channel="dm", id="2"))
     ns["handle_keep_open_proposed"](ev1)
     assert cli[-1] == ("reject", "--id", "ae28")
@@ -789,7 +789,7 @@ def test_a_card_whose_rows_closed_another_way_comes_down_at_once():
     assert ns["_expire_close_cards"](force=True) == 0
     ns["_ledger_cli"] = lambda *a: {"count": 0, "entries": []} if a[0] == "proposals" else {}
     assert ns["_expire_close_cards"](force=True) == 1
-    assert calls["status"] == [":information_source: Already closed or changed."]
+    assert calls["status"] == [":information_source: It changed since the card. Nothing was done."]
     assert ns["_load_close_batches"]() == {}
     import closure_labels as cl
     assert cl.outcome_class(calls["status"][0]) == "outside"
@@ -810,7 +810,7 @@ def test_a_promoted_close_gets_a_note_with_reopen_and_its_mail_archived_after():
     first, second = calls["cards"]
     assert calls["threads"] == [None, "m1"]                   # one thread a tick
     assert first.undo and first.no_default and first.kind == "closed"
-    assert "Send the form" in first.title and "Tap Reopen" in first.title
+    assert "Send the form" in first.title and "Tap Not done" in first.title
     assert [a.id for a in first.actions] == ["reopen_closed"]
     assert first.actions[0].value == {"ledger_id": "t1"}
     assert cli[-1] == ("promoted", "--noted", "t1", "t2")
@@ -819,7 +819,7 @@ def test_a_promoted_close_gets_a_note_with_reopen_and_its_mail_archived_after():
     ns["handle_reopen_closed"](types.SimpleNamespace(
         value={"ledger_id": "t1"}, card=types.SimpleNamespace(channel="dm", id="m1")))
     assert cli[-1][:5] == ("update", "--id", "t1", "--status", "open")
-    assert calls["status"][-1].startswith(":leftwards_arrow_with_hook: Reopened.")
+    assert calls["status"][-1].startswith(":leftwards_arrow_with_hook: Not done.")
     import chat.thread_state as ts
     note = {"kind": "card", "card": {"actions": [{"id": "reopen_closed"}], "undo": True},
             "posted_at": __import__("time").time()}

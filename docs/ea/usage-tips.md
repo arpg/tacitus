@@ -19,7 +19,7 @@ catalogue with each tip's state.
 **How the EA knows what is used.** Each tip has a detector that reads
 what the bot keeps already, read-only: the web chat's store (the
 owner's messages, the conversations they started, cards acted on,
-rooms, uploads, notification subscriptions, Mark done overrides), the
+rooms, uploads, notification subscriptions, Done overrides), the
 relay's paired phones, the draft journal, the ledger and the snooze
 file, the preferences store, the uploads folder, the room registry and
 the routing table. A store this process cannot read counts as "not

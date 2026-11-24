@@ -166,7 +166,7 @@ def _decision(stub, picks=True, at=None, **question):
               "value": dict(value, choice="No, I cannot make the deadline"), "word": "two", "ask": ""},
              {"id": "reply_draft", "label": ":pencil2: Other answer", "value": value, "style": "", "word": "other",
               "ask": "your answer"}] if picks else
-            [{"id": "reply_draft", "label": ":pencil2: Draft the reply", "value": value, "style": "primary",
+            [{"id": "reply_draft", "label": ":pencil2: Draft", "value": value, "style": "primary",
               "word": "draft", "ask": "your answer"}])
     acts += reply_quiet(value)
     q = {"text": "Will you review the workshop paper by December 1?", "from": "Pat",
@@ -182,7 +182,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
     """A row that waits on the owner's decision folds to Answer needed and
     its question. Opened, the question is the headline, with who wrote and
     how long it has waited, then one Your answer control: the quick
-    answers, a line, and Draft the reply, pressable only with an answer.
+    answers, a line, and Draft, pressable only with an answer.
     Enter sends the line through the card's own action; the block shows the
     reply being written in place, then the draft's Send request opens in its
     place in the same list."""
@@ -212,7 +212,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
     assert stub.clicks == []  # no answer, no press
     field.fill("Yes, if the deadline can move to December 8.")
     expect(go).to_be_visible()
-    expect(go).to_have_text("Draft the reply")
+    expect(go).to_have_text("Draft")
     expect(go).to_be_enabled()
     field.fill("")
     expect(go).to_be_hidden()
@@ -238,7 +238,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
                             "value": {"row": "response-r1", "batch": "b1"},
                             "text": "Yes, if the deadline can move to December 8."}]
     expect(page.locator(f'.req.u-working[data-id="{m["id"]}"] .req-busy')).to_have_text(
-        "Writing the reply: Yes, if the deadline can move to December 8.")
+        "Drafting the reply: Yes, if the deadline can move to December 8.")
     stub.reply_hold.set()
     send = page.locator(".req.open:has(.card button:has-text('Send'))")
     expect(send).to_be_visible(timeout=8000)  # the draft's Send request, opened in its place

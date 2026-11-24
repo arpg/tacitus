@@ -50,18 +50,18 @@ web chat's store. This module gives it what only the EA has:
       label store (closure_labels.py, docs/ea/closure-signals.md). A tap
       also closes the loop on the ledger where it is safe:
 
-      - "Mark done" on a "This looks done" card whose buttons still act
+      - Done (the thread header) on a "This looks done" card whose buttons still act
         is the card's Close: `ledger.py confirm` for each row the card
         names that still carries its proposal, and the card's buttons
         give way to a status line (CARD_STATUS, the bot's), so one tap
         settles the card, the row and the conversation.
-      - "Mark done" on any other conversation: a linked open row that
+      - Done on any other conversation: a linked open row that
         carries a close proposal is confirmed the same way; any other
         linked open row closes on the owner's word (`ledger.py close
         --user-said "marked done in the web chat"`), which archives its
         mail as any close does, and is logged with log_missed_closure.py,
         since a closure the owner had to state is a detector defect.
-      - "Needs me" on a conversation whose row carries a close proposal
+      - Not done on a conversation whose row carries a close proposal
         rejects it (`ledger.py reject`; on a live "This looks done" card
         that is its Still open, and the card gives way to a status line);
         on one whose row a signal closed in the last REOPEN_DAYS days (not
@@ -313,8 +313,8 @@ def proposal_card(messages: list[dict], now: float) -> tuple[dict, list[str]] | 
 
 
 def _card_plan(ctx: dict, state: str, now: float, entries: list[dict] | None) -> dict | None:
-    """A tap on a live proposal card's own thread: Mark done is its Close
-    (confirm), Needs me its Still open (reject), for the rows the card
+    """A tap on a live proposal card's own thread: the header's Done is the
+    card's Done (confirm), Not done its Not done (reject), for the rows the card
     names that still carry a proposal. None when the thread holds no
     such card."""
     got = proposal_card(ctx.get("messages") or [], now)
@@ -406,9 +406,9 @@ RUN = _cli
 # leaves the card as it is.
 CARD_STATUS = None
 # The status line a proposal card takes when a tap on its thread answered it.
-CARD_DONE = {"confirm": ":white_check_mark: Closed. You marked it done.",
-             "reject": ":pushpin: Kept open. You marked it as needing you.",
-             "none": ":information_source: Already closed or changed."}
+CARD_DONE = {"confirm": ":white_check_mark: Done. It is off your list.",
+             "reject": ":pushpin: Not done. It stays on your list.",
+             "none": ":information_source: It changed since the card. Nothing was done."}
 
 
 def run_writeback(plan: dict) -> list[dict]:

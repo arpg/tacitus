@@ -14,8 +14,8 @@ against them.
 
 | source | where it comes from | label | gold? |
 |---|---|---|---|
-| `owner-tap` | the owner's "Mark done" or "Needs me" in the web chat (`thread-state-labels.jsonl` beside the web store) | the state the owner set | yes |
-| `card` | a card's status line in the web store: Sent, Created, Closed, Cancelled, Sent from Outlook, Revised, Kept open, a failure | `done` when settled, `open` when it failed | no (the bot records it) |
+| `owner-tap` | the owner's "Done" or "Not done" in the web chat (`thread-state-labels.jsonl` beside the web store) | the state the owner set | yes |
+| `card` | a card's status line in the web store: Sent, Created, Done, Cancelled, Sent from Outlook, Revised, Not done, a failure | `done` when settled, `open` when it failed | no (the bot records it) |
 | `ledger` | rows that reached `completed`, with the provenance `closure_metrics.py` gives and the closing signal `closure.py` recorded; reopens, rejected and confirmed close proposals (`ledger_events`); `item_feedback.py` dispositions | `done`, `open` or `waiting` | the owner's reopens, rejections, confirmations, dispositions and own-word closes |
 | `owner-said` | `missed-closures.log`: a closure the owner had to state, with the log's autopsy (the signals present, fired and not evaluated) | `done` | yes: the detector missed it |
 | `model` | the thread-state model's answers: its state, confidence and which model answered (`model_via`: `local` or `hosted`) at the time (the engine's observer), or its state alone from the store's event log for the days before the observer ran | the model's state | no: scored against later gold |
@@ -86,18 +86,18 @@ message by the closure analysis's patterns.
 A closure the owner has to state is a detector defect, so a tap closes
 the loop where that is safe:
 
-- **Mark done** on a live "This looks done" card's own thread: the
+- **Done** on a live "This looks done" card's own thread: the
   card's Close. `ledger.py confirm` for each row its buttons name
   (`ledger_id`, `ledger_ids`) that still carries its proposal, then the
   card gives way to its status line. One tap settles the card, the rows
   and the thread; no missed closure is logged, since a signal fired.
-- **Mark done** on any other conversation whose linked rows are open: a
+- **Done** on any other conversation whose linked rows are open: a
   row that carries a close proposal is confirmed the same way; any other
   row closes with `ledger.py close --user-said "marked done in the web
   chat"`, which archives its mail as any close does, then
   `log_missed_closure.py` with the same words and source `web-chat`.
-- **Needs me** on a conversation whose row carries a close proposal:
-  `ledger.py reject` (on a live card, its Still open, and the card gives
+- **Not done** on a conversation whose row carries a close proposal:
+  `ledger.py reject` (on a live card, its Not done, and the card gives
   way to its status line). On a row a signal closed in the last 7 days
   (not the owner's own word, and not a duplicate fold): `ledger.py update
   --status open`, which records the reopen and vetoes the signal. A row
@@ -121,7 +121,7 @@ reopens a closed row (`renew`) is a new ask, not a false close.
 
 | move | when | what changes |
 |---|---|---|
-| promoted | 15 or more decisions on the rows where the signal proposes, precision 0.92 or more over the last 30, none kept open in the last 10 | its proposals close at once (tier `promoted`); the bot archives the mail and posts one note in the DM with a Reopen button |
+| promoted | 15 or more decisions on the rows where the signal proposes, precision 0.92 or more over the last 30, none kept open in the last 10 | its proposals close at once (tier `promoted`); the bot archives the mail and posts one note in the DM with a Not done button |
 | demoted | a close made at once reopened in the last 5, or precision under 0.85 | a promoted signal proposes again; a decisive one proposes until its proposals earn it back by the promotion test |
 
 A reopen of a close made at once moves its signal at once; the nightly
@@ -137,7 +137,7 @@ the numbers behind it, the last changes) and, in debug mode, posts each
 change as one line to the health channel. `ledger.py closure-report` shows each
 signal's `policy` (promoted, demoted, base, or never). The switch is
 `closure.hill_climb` in `ea-config.json` (on; false turns every move
-off), and an install with no chat buttons gets no promotion (no Reopen).
+off), and an install with no chat buttons gets no promotion (no Not done button).
 
 ```
 python3 /opt/ea-system/preprocessor/closure_policy.py show [--json]

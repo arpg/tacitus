@@ -2,7 +2,7 @@
   "blocks": [
     {
       "text": {
-        "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or work through the blocks above one by one.",
+        "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or use the card of each one.",
         "type": "mrkdwn"
       },
       "type": "section"
@@ -25,7 +25,7 @@
           "action_id": "dismiss_bulk_send",
           "text": {
             "emoji": true,
-            "text": "One by one",
+            "text": "Cancel",
             "type": "plain_text"
           },
           "type": "button",
@@ -41,7 +41,7 @@
         "blocks": [
           {
             "text": {
-              "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or work through the blocks above one by one.",
+              "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or use the card of each one.",
               "type": "mrkdwn"
             },
             "type": "section"
@@ -64,7 +64,7 @@
                 "action_id": "dismiss_bulk_send",
                 "text": {
                   "emoji": true,
-                  "text": "One by one",
+                  "text": "Cancel",
                   "type": "plain_text"
                 },
                 "type": "button",
@@ -75,7 +75,7 @@
           }
         ],
         "channel": "D_OWNER",
-        "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or work through the blocks above one by one."
+        "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or use the card of each one."
       },
       "method": "chat_postMessage"
     }
@@ -112,7 +112,7 @@
     "blocks": [
       {
         "text": {
-          "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or work through the blocks above one by one.",
+          "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or use the card of each one.",
           "type": "mrkdwn"
         },
         "type": "section"
@@ -135,7 +135,7 @@
             "action_id": "dismiss_bulk_send",
             "text": {
               "emoji": true,
-              "text": "One by one",
+              "text": "Cancel",
               "type": "plain_text"
             },
             "type": "button",
@@ -146,7 +146,7 @@
       }
     ],
     "channel": "D_OWNER",
-    "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or work through the blocks above one by one."
+    "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or use the card of each one."
   },
-  "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or work through the blocks above one by one."
+  "text": ":outbox_tray: *3 drafts are ready.* Send all of them at once, or use the card of each one."
 }

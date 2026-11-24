@@ -208,14 +208,6 @@ Answer with the JSON object only: the conversation_id, or "" when none fits."""
 def _now(tz: ZoneInfo) -> datetime:
     return datetime.now(tz)
 
-def _card_place() -> str:
-    """Where the cards wait, as the chat front end names it
-    (chat_notify.card_place): "your DM" on Slack, "Action requests" on the
-    web chat."""
-    import chat_notify
-    return chat_notify.card_place()
-
-
 
 def _iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1036,7 +1028,7 @@ def _user_line(rec: dict, intent: dict, pick: dict, ids: list[str], options: lis
         facts.append(f"No slot fit everyone on the thread; {', '.join(rec['dropped'])} were left out of the search"
                      f" and the reply goes to {who} only.")
     notes = " ".join(s for s in facts + [intent.get("note_to_user"), pick.get("note_to_user")] if s)
-    head = (f":email: I made a reply draft to {who}. The Send button is in {_card_place()}." if rec.get("live")
+    head = (f":email: I made a reply draft to {who}." if rec.get("live")
             else f"Reply to {who} (shadow, not written):")
     return "\n".join(p for p in (head, lines, notes) if p)
 
@@ -1269,7 +1261,7 @@ def _run_invite(rec: dict, intent: dict, request: str, messages: list, *, run_id
             rec["status"] = "write-failed"
             rec["error"] = str(obs.get("message") or obs.get("status") or "")[:200]
             return _finish(rec, t0, record)
-        head = f":calendar: I staged {kind}: {event['subject']}, {line}. The Create button is in {_card_place()}."
+        head = f":calendar: I staged {kind}: {event['subject']}, {line}."
     else:
         head = f"Would stage {kind}: {event['subject']}, {line} (shadow, not written)."
     notes = []

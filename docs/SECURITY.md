@@ -60,7 +60,7 @@ injection. The LLM has no mechanism to click Slack buttons.
 | Action | Tier | Why safe |
 |--------|------|----------|
 | Create/edit/delete drafts | ungated | No external effect (drafts are disposable) |
-| "Sent myself" (close obligation) | ungated | User confirms they already sent from Outlook; closes ledger item only |
+| "Done: I sent it" (close obligation) | ungated | User confirms they already sent from Outlook; closes ledger item only |
 | Archive email | do-and-tell | Moves to archive (reversible, not deletion) |
 | Read/search email and calendar | ungated | Read-only |
 | Read Google Docs and Drive files | ungated | Read-only: `drive_client.py read`, `search` and `download`, SAFE verbs the mediator runs with a token that holds only the `drive.readonly` scope; no Drive write verb exists. A download lands in the resident's own space through the mediator's output staging, and the owner side never parses a file's bytes |

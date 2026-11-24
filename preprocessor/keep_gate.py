@@ -7,7 +7,7 @@ A hosted model (Claude, Codex, any frontier model) works an item on its
 own, with no owner asking in that turn, only at `summary` or `full`: a
 hand-off to the EA channel, a scheduled lane's reply draft. Below that
 (`local`, `facts`) the item stays on the owner's own model: the
-remote briefing lists it under Needs you, and nothing hands it on. The
+remote briefing lists it under Answer needed, and nothing hands it on. The
 local writer may still draft a `facts` reply in a scheduled run; no
 scheduled run drafts on a `local` thread. A channel that hosted turns
 read names a kept item in code's fixed words only (kept_line).
@@ -58,7 +58,7 @@ _ADDRESS_KEYS = ("from", "from_email", "sender")
 _LIST_KEYS = ("to", "cc")
 
 # The note the reply queue records for an item kept from hosted models
-# that needs more than a reply (the remote briefing's Needs you pick).
+# that needs more than a reply (the remote briefing's Answer needed pick).
 KEPT_DECISION = ("Kept on your own model, so no hosted model works on it. It needs you: "
                  "open it in Outlook.")
 # Why a scheduled lane may not draft on a kept thread (draft_gate).

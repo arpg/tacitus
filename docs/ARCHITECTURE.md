@@ -135,16 +135,16 @@ own (`check-attendees`), for the length the draft states; a calendar
 invite's Create card carries the same invitee check. It has five
 buttons: Send (mints the token and sends), Edit (opens the body in
 a modal; Save runs `update-draft` and redraws the block so the reviewed
-text is the sent text), Handled (deletes the draft, archives the source
+text is the sent text), No reply needed (deletes the draft, archives the source
 thread and closes the ledger row: the owner dealt with it or no reply is
 owed; when the delete fails or a send holds the draft's lock, it archives
-and closes nothing and says so), Sent myself (closes and archives, the mail went out from Outlook)
+and closes nothing and says so), Done: I sent it (closes and archives, the mail went out from Outlook)
 and Cancel (keeps the draft, asks what to do instead). When two or more
 blocks are posted within about a minute, one Send-all card follows; its
 button repeats the single-Send gate for each draft that is still live.
 
 Which ledger rows a send closes (`_close_ledger_for_draft`, shared by
-Send, Sent myself, Handled and a send found in Outlook; the closure policy
+Send, Done: I sent it, No reply needed and a send found in Outlook; the closure policy
 above): the rows the draft names, whatever their type, and then the reply
 row on its conversation; every other open row on the thread gets a
 proposal. A draft names a row with `--ledger-id` on `create-draft`,
@@ -183,7 +183,7 @@ a click reaches the bot through the app's own API, which serves only
 the owner (docs/webchat.md, Identity and auth). A card that withholds
 its approval (more than one card shows) has no primary action, so no
 button is the default (`ConfirmationCard.no_default`). A draft
-outcome (Send, Sent myself, Handled, a send or delete found in Outlook)
+outcome (Send, Done: I sent it, No reply needed, a send or delete found in Outlook)
 names the ledger rows it closed on its one status line, never in a post
 per row. See the Chat front-end layer section.
 
@@ -632,8 +632,8 @@ most ten live at once, and never a second card for a row whose card is
 still live (that card is drawn again in place, with no push, when what it
 shows changed: `_reply_sig`). The new cards push once, with how many
 replies wait (`ChatFrontend.one_push`).
-"Draft it" starts a turn there that writes the reply for that one row; for
-a draft that exists it posts a new Send card instead. "Draft it" takes one
+"Draft" starts a turn there that writes the reply for that one row; for
+a draft that exists it posts a new Send card instead. "Draft" takes one
 line of the owner's words (`CardAction.ask`): the turn writes the reply
 that says it, a decline too, and on a question that line is the answer.
 Each row's turn runs in a side session of the thread
@@ -650,7 +650,7 @@ link under the card. A draft from no conversation is asked about under
 its card. A question that a
 run recorded with answers (`reply_queue.choices`: two or three, 48
 characters at most, from the remote call's `choices` or `note-reply
---choice`) shows one button per answer in place of "Draft it", and the
+--choice`) shows one button per answer in place of "Draft", and the
 card has no default action. A tap starts the same turn with that answer as
 the owner's decision; "Other answer" starts the turn that asks. The click
 is refused when the row no longer offers that answer. Every row card ends
@@ -1326,7 +1326,7 @@ owner-private (`admissions-filter.json`, `admissions-filter.jsonl`). The
 weekly `admissions-digest` agent (Monday 08:00) reads the folder's last
 seven days grouped by sender and posts one ranked summary; it moves,
 drafts and ledgers nothing, and an empty week exits before Claude.
-After a reply goes out on an applicant thread (Send, "Sent myself", or
+After a reply goes out on an applicant thread (Send, "Done: I sent it", or
 an Outlook send the bot detects) the bot runs `file-conversation`, which
 moves that conversation's inbound mail into the folder. The bot's
 `_reconcile_vanished_drafts` tick (every five minutes) retires any live
@@ -1902,7 +1902,7 @@ difference, and the payload keeps the read's fingerprint. At the click
 missing fingerprint or a different one, the executor mints no token,
 replaces the card with a status line and posts a new card
 (`_recard_event_change`). A card that cannot show all of it in one
-message has only Cancel or Keep (`_withhold_event_approval`).
+message has only Cancel (`_withhold_event_approval`).
 
 ### Deferred Send Flow (`:lock:` Schedule)
 
@@ -2733,7 +2733,7 @@ Files that participate in prompt construction and action execution:
 | `botcore/botcore/chat/web_push.py` | Web Push for the web chat: a VAPID key pair made on first use, each payload encrypted to the subscription (RFC 8291, `aes128gcm`, the `cryptography` package) and padded, sent only to the browser vendors' push hosts with no redirect; a card shows only its title, a DM message its first line; one push per thread in two minutes |
 | `botcore/botcore/chat/action_requests.py` | Action requests as blocks in the web chat (docs/webchat.md, Action requests): a request's folded words from its card's kind and labelled fields (the action, who, what, when; its title for a card with none), and its urgency (overdue, soon by two working days, calm) from its linked deadline, its event's start, its buttons' last day and its wait; a request Tacitus is acting on (`working`), the request a status line links to (`next`) and the bot's lines that belong to it, by tag (`lines_of`) |
 | `preprocessor/web_requests.py` | The EA's view of each request in Action requests, read-only: the project and deadline from the ledger rows and the mail conversation its buttons name (project_store's `project_ledger` and `project_messages`), and an event card's start from its staged payload |
-| `botcore/botcore/chat/web_push_policy.py` | Which bot posts in the web chat push (docs/webchat.md, Notifications): a notifier's thread in the DM (a direct message, the relay's notice) and an answer to the owner there, never the bot's own lines in Action requests (a card pushes itself; an auto-close note with Reopen does not), the opening of a morning briefing or an afternoon update, the bot's answer in a conversation the owner wrote in; never a digest, a nudge, a progress line or a notice the owner never wrote in; the `notify_push` switches; the text fingerprint that lets one text push once; no answer push within two minutes of a card the conversation asked for in the DM; the alerts whose text a conversation carries, which the owner's reply there clears |
+| `botcore/botcore/chat/web_push_policy.py` | Which bot posts in the web chat push (docs/webchat.md, Notifications): a notifier's thread in the DM (a direct message, the relay's notice) and an answer to the owner there, never the bot's own lines in Action requests (a card pushes itself; an auto-close note with Not done does not), the opening of a morning briefing or an afternoon update, the bot's answer in a conversation the owner wrote in; never a digest, a nudge, a progress line or a notice the owner never wrote in; the `notify_push` switches; the text fingerprint that lets one text push once; no answer push within two minutes of a card the conversation asked for in the DM; the alerts whose text a conversation carries, which the owner's reply there clears |
 | `preprocessor/briefing_review.py` | The pre-send review of the remote briefings and the weekly audit (docs/llm-lanes.md, "The pre-send review"): the packet built in code with keep levels held, code's own checks, one tool-less hosted call by ref, the verdicts applied to the post, the rooms and the staged replies, the run record and the state the status light reads |
 | `preprocessor/status_light.py` | The web chat's status light (docs/webchat.md, Status light): the conditions now from the state the system keeps (the sentinel's results, the breakers, the boundary audit, the plugins, the notices, the plan reading, the local model, the relay, the updater, Drive, the briefing's pre-send review), the worst level, the memory of since and cleared in the store, one push for what turns red, and each condition's bounded, masked log lines |
 | `preprocessor/home_screen.py` | The web chat's Home (docs/webchat.md, Home): what is left for the owner, as the post lists it (waiting requests, the post's sections after its pre-send review as the remote run kept them, else the briefing's ranking with the upstream rules, replies owed a day or more), what got done today and by whom, every item kept from hosted models in keep_gate's fixed words (`mark_keep`, failing closed), the calendar's next gap, travel and vacation from the calendar, travel mode and the device's zone, what changed since the last visit, the greeting (templates, or one line from the owner's own model from the numbers alone, checked), the vote on it (a calibration line, scope `home`), the `home` event and its Settings page; all built in code, read-only |
@@ -2873,7 +2873,7 @@ or put in front of the user. Every closer names a signal and calls
 
 | Evidence | Closes on its own | Otherwise |
 |---|---|---|
-| The user's word (`close --user-said`), a click (Handled, Sent myself, the dashboard, item feedback, a confirmed proposal), a standing rule (`--user-rule`) | every row | |
+| The user's word (`close --user-said`), a click (No reply needed, Done: I sent it, the dashboard, item feedback, a confirmed proposal), a standing rule (`--user-rule`) | every row | |
 | A sent draft, scheduled send or event that names the row (`--ledger-id`) | every row but a wait | proposal |
 | The user's reply to the correspondent (`user_replied_*`, the Send button's reply row) | a reply row: detector, `response_needed`, `follow_up`, `draft_pending`, or `closes_on: reply` | proposal |
 | The user's archive of the row's own mail (`ledger_sync`) | a detector row | proposal |
@@ -2883,9 +2883,9 @@ or put in front of the user. Every closer names a signal and calls
 
 A proposal leaves the row open with `close_proposal` in its metadata. The
 bot's router puts new proposals on one card in the owner's DM (Close all,
-or one by one with Close / Still open); the briefing JSON carries them as
+or one by one with Close / Not done); the briefing JSON carries them as
 `close_proposals`, keeps them out of `today_top`, and the post lists them on
-a "Looks done?" line. "Still open" and a reopen are the user's judgment of
+a "Looks done?" line. "Not done" and a reopen are the user's judgment of
 the whole row at that moment (`close_vetoes["*"]`): no evidence from
 before it closes or proposes the row again, under any signal name. One
 Outlook send reaches the bot as `reply_in_thread`, the scrubber as
@@ -2903,7 +2903,7 @@ The table is where each signal starts. The closure hill climb
 record with them, read nightly from `ledger_events`: a signal whose
 proposals he confirmed (15 decisions or more, precision 0.92 or more, none
 kept open in the last 10) is promoted and closes at once, do-and-tell (the
-bot archives the mail and posts a note with a Reopen button that waits on
+bot archives the mail and posts a note with a Not done button that waits on
 nobody); a signal whose at-once closes he reopened (one in the last 5, or
 precision under 0.85) is demoted and proposes. The owner's word and
 clicks, a duplicate, a standing rule and a send that names the row stay
@@ -2926,7 +2926,7 @@ web-links`, by conversation, since a folder move changes a message's
 id); a Gmail thread's link is built from its thread id. A card with no
 answer for 7 days gives way to an
 expiry line, and its rows stay on the briefing's "Looks done?" line. Each
-button names its rows, so the web chat's Mark done on the card's thread
+button names its rows, so the web chat's Done on the card's thread
 is its Close (`web_thread_state.py`). A send's close archives the mail it
 settles.
 
@@ -3063,7 +3063,7 @@ close or meeting that a human already overruled never closes the row again
 (the structural veto store only knows closes the scrubber itself made).
 **A wait is delivered by the other side:** a `waiting` row
 (`ledger.is_waiting`) is never closed by the user's own send, neither by
-`user_replied_*` nor by the Send / Sent-myself / Handled buttons. **Siblings sweep only
+`user_replied_*` nor by the Send / Done: I sent it / No reply needed buttons. **Siblings sweep only
 duplicates:** the detector rows (`ledger.DETECTOR_PREFIXES`) are several
 rows for one ask, so `ledger.py close`, `ledger_sync` and `closed_sibling`
 sweep each other; a task or a wait the EA logged from the same thread is its

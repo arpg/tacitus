@@ -184,7 +184,7 @@ def test_the_reasons_the_owner_reads():
 ORDER_CASES = [
     ("the owner's override beats a live card",
      [m(1, kind="card", card=live_card())],
-     {"prev": {"state": "done", "by": "owner", "reason": "You marked this done.", "judged_seq": 1}},
+     {"prev": {"state": "done", "by": "owner", "reason": "You tapped Done.", "judged_seq": 1}},
      ("done", "owner")),
     ("a card posted after the owner's message beats the hourglass",
      [m(1, "owner", "Draft it.", reactions=["eyes"], at=NOW - 2 * MIN),
@@ -588,7 +588,7 @@ def test_a_new_device_notice_follows_the_relay(store):
 def test_the_store_never_lets_a_stale_write_or_a_rule_undo_the_owner(store):
     key = chat_thread(store)
     seq = store.newest_seq("main", key)
-    store.set_thread_state("main", key, "done", "owner", "You marked this done.", judged_seq=seq)
+    store.set_thread_state("main", key, "done", "owner", "You tapped Done.", judged_seq=seq)
     # the model's answer on the same messages arrives after the override
     store.set_thread_state("main", key, "needs_you", "model", "Late.", judged_seq=seq)
     assert store.thread_state("main", key)["by"] == "owner"
@@ -733,7 +733,7 @@ def test_the_link_rule_sits_after_the_live_card_rule_and_before_the_owner_s_last
     here = ASK + [m(4, kind="card", card=live_card(":lock: *Confirm invite*"))]
     assert decide(here, linked=sent)[2] == 'The card "Confirm invite" still has its buttons.'
     # the owner's override still holds
-    prev = {"state": "done", "by": "owner", "reason": "You marked this done.", "judged_seq": 3}
+    prev = {"state": "done", "by": "owner", "reason": "You tapped Done.", "judged_seq": 3}
     assert decide(ASK, linked=[dm_card()], prev=prev)[:2] == ("done", "owner")
     # the owner's message after the card, unanswered past the window, is a
     # stuck turn with the card or without it (rule 1a, then rule 3)
@@ -794,7 +794,7 @@ def test_once_the_bot_answers_the_change_the_card_rule_decides_again():
         ("needs_you", "rule", CARD_HERE)
     assert decide(CARD_ASK + [{**change(3), "history": True}]) == ("needs_you", "rule", CARD_HERE)
     # the owner's override still wins
-    prev = {"state": "done", "by": "owner", "reason": "You marked this done.", "judged_seq": 3}
+    prev = {"state": "done", "by": "owner", "reason": "You tapped Done.", "judged_seq": 3}
     assert decide(asked, prev=prev)[:2] == ("done", "owner")
 
 

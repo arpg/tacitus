@@ -72,7 +72,7 @@
           "action_id": "draft_handled",
           "text": {
             "emoji": true,
-            "text": ":white_check_mark: Handled",
+            "text": ":white_check_mark: No reply needed",
             "type": "plain_text"
           },
           "type": "button",
@@ -82,7 +82,7 @@
           "action_id": "sent_myself",
           "text": {
             "emoji": true,
-            "text": ":incoming_envelope: Sent myself",
+            "text": ":incoming_envelope: Done: I sent it",
             "type": "plain_text"
           },
           "type": "button",

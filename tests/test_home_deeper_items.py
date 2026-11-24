@@ -83,10 +83,10 @@ def test_the_item_reads_the_stored_briefing_and_a_step_runs_as_its_own_choice(re
     it = h.item(ref)
     block = it["deeper"]
     assert block["state"] == "ready" and block["by"] == "local" and "stale" not in block
-    # Mark it done and Wait until a day repeat the card's Done and Waiting on
-    # someone, and the card has its own Ask: no step of the briefing's shows
+    # A Done step and a Later step with a day repeat the card's Done and Later:
+    # waiting on them, and the card has its own Ask: no step of the briefing's shows
     assert block["steps"] == [] and [c["label"] for c in it["choices"]] == \
-        ["Ask", "Done", "Waiting on someone", "Later"]
+        ["Ask", "Done", "Later: waiting on them", "Later"]
     assert h.deeper(ref) == {"ok": True, "state": "ready"} and len(real) == 1  # a repeat costs nothing
     # the stored briefing's version is the item's own
     rec = D.Store().get("deadline-w1")

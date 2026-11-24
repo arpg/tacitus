@@ -672,7 +672,7 @@ def test_live_turn_that_wrote_something_gets_a_code_reply(store, monkeypatch):
         {"create-reply": {"status": "reply_draft_created", "id": "d1"}}),
         writer=FakeWriter(), validate=False)
     assert turn["fallback"] == "code reply"
-    assert turn["reply"].startswith("I drafted the reply; the Send button is in your DM.")
+    assert turn["reply"].startswith("I drafted the reply. ") and "your DM" not in turn["reply"]
 
 
 def test_live_history_feeds_the_next_turn_in_the_thread(store, monkeypatch):

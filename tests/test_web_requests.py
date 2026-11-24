@@ -45,7 +45,9 @@ def test_a_block_reads_the_card_s_labelled_fields_and_falls_back_to_its_title():
     # an old card, or one of a plugin's, with no fields: its title
     assert ar.block(msg(card=card("plugin", ":lock: *Upload the letter?*"))) == \
         {"action": "Upload the letter?", "who": "", "what": "", "when": ""}
-    assert ar.block(msg(card=card("close", ":lock: Looks done?", actions=[{}, {}, {}])))["action"] == "Close items"
+    # one name per item type: a close proposal is "Looks done", one row or several
+    assert ar.block(msg(card=card("close", ":lock: Looks done?", actions=[{}, {}, {}])))["action"] == "Looks done"
+    assert ar.block(msg(card=card("close", ":lock: Looks done?", actions=[{}, {}])))["action"] == "Looks done"
     # a thread that opens with a plain message
     assert ar.block(msg("message", text="Your flight leaves at nine."))["action"] == "Notice"
     assert ar.block(msg("message", text="A quick ask", author="owner"))["action"] == "Your message"
@@ -61,7 +63,7 @@ def test_a_folded_letter_card_removes_internal_markers_but_keeps_real_control_wa
                                  [("From", card_text.inert("Avery Quinn")),
                                   ("Subject", card_text.inert(subject)),
                                   ("When", card_text.inert("Next due Dec 1"))])))
-    assert got == {"action": "Letter to write", "who": "From Avery Quinn", "what": subject,
+    assert got == {"action": "Letter", "who": "From Avery Quinn", "what": subject,
                    "when": "Next due Dec 1"}
     # The same fallback for a card without fields: its renderer's
     # delimiters never become visible warnings.
@@ -189,10 +191,10 @@ def test_a_question_folds_to_answer_needed_and_a_status_links_on():
     q["question"] = {"text": "Will you review the paper by December 1?", "from": "Pat", "since": "", "about": "x"}
     assert ar.block(msg(card=q)) == {"action": "Answer needed", "who": "From Pat",
                                      "what": "Will you review the paper by December 1?", "when": ""}
-    writing = msg("status", text=":hourglass_flowing_sand: Writing the reply: Yes.", updated_at=NOW - 60)
+    writing = msg("status", text=":hourglass_flowing_sand: Drafting the reply: Yes.", updated_at=NOW - 60)
     assert ar.working(writing, NOW) and not ar.working({**writing, "updated_at": NOW - 3600}, NOW)
     assert not ar.working(msg("status", text=":white_check_mark: Sent."), NOW)
-    done = msg("status", text=":white_check_mark: The reply is drafted. Its Send request: "
+    done = msg("status", text=":white_check_mark: Draft ready. Its Send card: "
                               "[open it](https://h.example.test/chat/#/dm/t9/w9)")
     assert ar.next_request(done, "dm") == "w9" and ar.next_request(done, "main") == ""
     core = msg("status", text=":speech_balloon: One more answer is needed: <https://h.example.test/chat/#/dm/t8/w8|open it>")
@@ -226,5 +228,5 @@ def test_a_reply_that_was_not_written_folds_to_its_reason():
     c = card("replies", ":inbox_tray: *Review request*")
     c["problem"] = {"text": "The thread has no address to answer.", "from": "Pat", "since": "", "about": "x"}
     c["question"] = {}
-    assert ar.block(msg(card=c)) == {"action": "Not written", "who": "From Pat",
+    assert ar.block(msg(card=c)) == {"action": "Not drafted", "who": "From Pat",
                                      "what": "The thread has no address to answer.", "when": ""}

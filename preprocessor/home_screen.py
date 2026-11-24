@@ -590,7 +590,7 @@ def left(src: Sources) -> list[dict]:
     for v in kept_views:
         for g in v.get("gone") or []:
             if g.get("kind") == "held":
-                continue  # a held reply is under the post's Needs you as its question
+                continue  # a held reply is under the post's Answer needed as its question
             if g.get("ledger_id"):
                 gone_ids.add(g["ledger_id"])
             if g.get("conversation_id"):

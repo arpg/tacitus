@@ -11,7 +11,7 @@ one click. This module learns from those clicks which signals may move:
             PROMOTE_PRECISION over the last WINDOW, and none kept open in
             the last PROMOTE_CLEAN. Its proposals close at once instead
             (closure tier `promoted`), do-and-tell: the bot archives the
-            mail and posts one line in the DM with a Reopen button.
+            mail and posts one line in the DM with a Not done button.
   demoted   a signal that closes at once whose closes the owner reopened:
             precision under DEMOTE_PRECISION over the last WINDOW, or a
             reopen in the last DEMOTE_REOPEN. A promoted signal goes back
@@ -25,7 +25,7 @@ read from `ledger_events`:
   confirm   a proposal the owner confirmed (the card, the web chat's Mark
             done, or the owner's word while the proposal stood); every
             signal on the proposal is credited.
-  reject    a proposal the owner kept open (Still open, Needs me).
+  reject    a proposal the owner kept open (Not done on the card or the thread).
   close     a close at once: right once it stood SETTLE_DAYS, wrong when
             the owner reopened it. A new message on the row's thread after
             the close (a renewal, closure.note_renew) is a new ask, and the
@@ -51,7 +51,7 @@ state, the numbers that justified it and the last changes. The nightly
 `closure_labels.py collect --report` runs update() after the closure eval,
 and each change posts one plain line to the health channel. closure.settle
 reads state(): a missing file, `closure.hill_climb` false in
-ea-config.json, or an install without chat buttons (no Reopen) reads as no
+ea-config.json, or an install without chat buttons (no Not done) reads as no
 promotion; `freeze` keeps every state as it is.
 
     closure_policy.py show [--json]
@@ -398,7 +398,7 @@ def enabled() -> bool:
 
 def _buttons() -> bool:
     """Whether the install has chat buttons, so a promoted close's note
-    carries its Reopen."""
+    carries its Not done."""
     try:
         try:
             import ea_config
@@ -496,7 +496,7 @@ def demote_now(signal: str, how: str, *, entry_id: str = "") -> bool:
 def _health_line(ch: dict) -> str:
     sig, to = ch.get("signal"), ch.get("to") or ""
     if to == PROMOTED:
-        head = f"Closure policy: {sig} now closes at once. You get a note with a Reopen button."
+        head = f"Closure policy: {sig} now closes at once. You get a note with a Not done button."
     elif to == DEMOTED:
         head = f"Closure policy: {sig} now proposes. You confirm each one on a card."
     elif ch.get("from") == PROMOTED:
@@ -692,7 +692,7 @@ def renewal_backtest(conn: sqlite3.Connection, *, since: str) -> dict:
     """What closing renewed rows at once would do: the proposals since
     `since` on a row a new message reopened (and the user never kept
     open), whose signal closes the same row at once without the renewal.
-    A confirm would be a click saved, a "Still open" a wrong close. The
+    A confirm would be a click saved, a "Not done" a wrong close. The
     numbers are why a renewed row proposes (closure.tier); the hill climb
     can still promote a signal the user confirms there."""
     conn.row_factory = sqlite3.Row

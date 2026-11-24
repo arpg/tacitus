@@ -181,8 +181,8 @@ python3 /home/ea-bot/ea-system/preprocessor/ledger.py propose \
 The row stays open; when a chat channel is configured the bot puts it
 on the user's confirm card, and one click closes it (CLAUDE.md rule 8).
 Then take the item out of the queue and every other surface, and list it
-on one "Looks done?" line near the end (with a chat channel: "confirm on
-the card"; without one: "say so and it closes"), each with its evidence
+on one "Looks done?" line near the end (with a chat channel: "Done or Not
+done on each card"; without one: "say so and it closes"), each with its evidence
 in a few words, merged with the briefing's `close_proposals`. If the user told you in chat the
 item is done, close it instead with `close --user-said "<their words>"`.
 A row that repeats another open row closes with `close --duplicate-of
@@ -300,7 +300,7 @@ project store: the sender asked something answerable, a form or link is
 requested, a meeting is being arranged, an intro or a yes is owed. This
 is the routine the user otherwise does by hand every morning. Creating
 the draft IS the ask under the ask-first tier: when a chat channel is
-configured the bot posts the Send block with Edit and Handled buttons,
+configured the bot posts the Send card with Edit and No reply needed buttons,
 and one Send-all card when several are ready; without one the draft
 waits in the Drafts folder and the user sends it from Outlook. Never ask
 in the briefing whether you should draft.
@@ -327,7 +327,7 @@ asked again. On <day> you said no reply. Still no reply?". `create-reply` holds 
 when it answers `needs_owner`, record its `reason` as the decision; never
 retry it. A row with `kept_level` "Kept on your machine" or "Facts only"
 stays on the user's own model: never read or draft it, and never put its
-notes, ask or gist in the post. List it under Needs you in these words
+notes, ask or gist in the post. List it under Answer needed in these words
 only: "A kept message from <day> needs you. Open it in Outlook." (with
 "Facts only", the sender and the subject may follow "from").
 
@@ -350,7 +350,7 @@ user's machine). Take the 8 oldest of the rest. For each one:
   `scheduling_engine.py propose-meeting`. Then record it:
   `ledger.py note-reply --id <id> --outcome drafted --draft-id <draft id>`.
 - When a rail applies or only the user knows the answer, write ONE line
-  under "Needs you": the decision, then the age as `(12d)`. Record it:
+  under "Answer needed": the decision, then the age as `(12d)`. Record it:
   `ledger.py note-reply --id <id> --outcome decision --note "<the line>"`.
   When the decision has two or three short answers, add each one as
   `--choice "<the answer, whole, 48 characters at most>"` ("Yes, I will
@@ -424,7 +424,7 @@ marks both as "its [date] date passed; ..." with no OVERDUE; follow it.
 destinations; `work_cases` one entry per other piece of work someone
 asked of the user (a review, a form, a report), with all its parts.
 Each entry's `line` is the whole line; print it as it is, never one line
-per portal mail, and never under Drafts ready, Needs you or the reply
+per portal mail, and never under Drafts ready, Answer needed or the reply
 queue: a case is work with dates, not a reply. An entry whose next date
 is within 3 days, or past (`overdue`), goes in the date banner (DUE SOON
 or OVERDUE); the rest go on one list after the flexes, nearest date
@@ -540,17 +540,17 @@ handled_by_reply recap, step-6a closures count, drafts staged]
 *unmerge <id>* if wrong". Merges must be visible; a silent bad merge
 is the failure mode the user accepted this feature against.]
 
-:envelope: *Drafts ready* ([N]) — [with a chat channel: "Send, Edit or Handled on each block in your DM; one Send-all card when several are ready"; without one: "in your Outlook Drafts folder"]
+:envelope: *Drafts ready* ([N]): [with a chat channel: "Send, Edit or No reply needed on each card in your DM; one Send-all card when several are ready"; without one: "in your Outlook Drafts folder"]
 - [recipient/subject] — [what the reply says, in one line]
 - [recipient/subject] — [what the reply says]
 [Every draft created during this run, one line each. With a chat channel
 the Send blocks are posted by the bot and this list is the index; without
 one this list is the only notice.]
 
-:question: *Needs you* ([N])
+:question: *Answer needed* ([N])
 - [item] — [the decision in one line, and what you will do once it is made]
 
-:inbox_tray: *Reply queue*: [N] replies owed, the oldest for [N] days. [N] have a draft ready for Send. No draft yet: [who or subject] ([N]d); [who or subject] ([N]d, kept mail).
+:inbox_tray: *Replies owed*: [N], the oldest for [N] days. [N] have a draft ready for Send. No draft yet: [who or subject] ([N]d); [who or subject] ([N]d, kept mail).
 [ONE line from `reply_backlog`; leave it out when no entry has a draft
 and none is named. The first N is `total`. Name at most 5 entries that
 are 3 days old or more (`rung` is `name` or `ask`), have no draft and

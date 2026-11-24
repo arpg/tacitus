@@ -58,7 +58,7 @@ def test_the_welcome_shows_once_and_again_from_the_drawer(app, size):
     page.keyboard.press("ArrowRight")
     expect(card.locator("h2")).to_have_text("Needs you")
     expect(card).to_contain_text("The Needs you list at the top gathers the conversations waiting on your answer. "
-                                 "Buttons to tap wait in Action requests. Tap Mark done when a conversation is handled.")
+                                 "Buttons to tap wait in Action requests. Tap Done when a conversation is finished.")
     expect(page.locator("#welcome-next")).to_have_text("Done")
     expect(page.locator("#welcome-skip")).to_be_hidden()
     page.click("#welcome-next")

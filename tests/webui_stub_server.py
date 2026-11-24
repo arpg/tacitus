@@ -804,10 +804,10 @@ class Stub:
         """The Replies card's draft turn, as the bot starts it: a line in
         Action requests that says the reply is being written."""
         said = (words or answer).strip().rstrip(".")
-        m = self.add(DM, ":hourglass_flowing_sand: Writing the reply" + (f": {said}." if said else "."),
+        m = self.add(DM, ":hourglass_flowing_sand: Drafting the reply" + (f": {said}." if said else "."),
                      kind="status", event="status")
         return {"ok": True, "channel": DM, "id": m["id"],
-                "said": "Tacitus is writing the reply. Its Send card comes to Action requests."}
+                "said": "Drafting the reply. Its Send card comes to Action requests."}
 
     def home_act(self, body: dict):
         """POST /api/home/act: (the answer, a call to run once it is sent)."""
@@ -1182,7 +1182,7 @@ class Stub:
         Send request is posted and the row's card links to it."""
         said = (body.get("text") or (body.get("value") or {}).get("choice") or "").strip().rstrip(".")
         self.change(m, "status", kind="status",
-                    text=":hourglass_flowing_sand: Writing the reply" + (f": {said}." if said else "."))
+                    text=":hourglass_flowing_sand: Drafting the reply" + (f": {said}." if said else "."))
 
         def drafted():
             self.reply_hold.wait(10)
@@ -1197,7 +1197,7 @@ class Stub:
                             {"id": "cancel_send", "label": "Cancel", "value": {"d": 2}, "style": "danger", "word": "cancel"}],
                 "select": None, "block_id": "", "footer": "", "fallback_text": "Send this reply?", "thread_ts": "",
                 "ea_channel": DM, "content_fingerprint": "", "no_default": False})
-            self.change(m, "status", kind="status", text=":white_check_mark: The reply is drafted. Its Send request: "
+            self.change(m, "status", kind="status", text=":white_check_mark: Draft ready. Its Send card: "
                         f"[open it](/chat/#/{DM.replace(':', '%3A')}/{card['thread_key']}/{card['id']})")
         threading.Timer(self.reply_delay, drafted).start()
 

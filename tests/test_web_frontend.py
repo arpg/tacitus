@@ -1775,7 +1775,7 @@ def test_the_owner_sets_a_thread_s_state_and_the_stream_says_so(fe):
         assert status == 200 and (row["id"], row["thread_key"], row["reply_count"]) == \
             (a.id, a.thread_key, 1)
         assert (row["state"], row["state_by"], row["state_reason"]) == \
-            ("done", "owner", "You marked this done.")
+            ("done", "owner", "You tapped Done.")
         assert row["channel"] == "main" and row["channel_name"] == "ea"
         listed = {r["thread_key"]: r for r in
                   json.loads(owner(fe, "GET", "/api/channels/main/threads")[2])}[a.thread_key]
@@ -1784,7 +1784,7 @@ def test_the_owner_sets_a_thread_s_state_and_the_stream_says_so(fe):
         assert ev["event"] == "thread_state" and int(ev["id"]) > 0
         assert json.loads(ev["data"]) == {"channel": "main", "thread_key": a.thread_key,
                                           "state": "done", "by": "owner",
-                                          "reason": "You marked this done.",
+                                          "reason": "You tapped Done.",
                                           "at": row["state_at"], "stale": False, "tap": False}
     finally:
         s.close()
@@ -2830,7 +2830,8 @@ def test_each_front_end_names_the_place_where_cards_wait():
 def test_the_posters_take_the_place_name_from_the_configured_front_end(tmp_path, monkeypatch):
     """chat_notify.card_place reads the configured front end's name for the
     place: "your DM" on Slack (and with no chat block), "Action requests" on
-    the web chat; the posters' lines carry it."""
+    the web chat. A scheduling turn's own line names no place: the bot's
+    pointer under it says where the button is, once."""
     sys.path.insert(0, str(ROOT / "preprocessor"))
     import chat_notify
     import sched_agent
@@ -2846,7 +2847,7 @@ def test_the_posters_take_the_place_name_from_the_configured_front_end(tmp_path,
         monkeypatch.setattr(chat_pkg.ea_config, "get_chat", lambda *a, f=frontend, **k: {"frontend": f, "web": {}})
         seen[frontend] = chat_notify.card_place()
         line = sched_agent.fallback_reply({"writes": [{"tool": "create-reply", "executed": True}]})
-        assert f"the Send button is in {want}." in line, line
+        assert line.startswith("I drafted the reply.") and want not in line, line
     assert seen == {"slack": "your DM", "web": "Action requests"}
 
 
@@ -2925,13 +2926,13 @@ def test_a_request_being_acted_on_stays_on_top_and_its_answer_links_on(fe):
     assert (first["id"], first["action"], first["what"], first["who"]) == \
         (row.id, "Answer needed", "Will you review it?", "From Pat")
     assert first["card"]["question"]["text"] == "Will you review it?"
-    fe.replace_card_with_status(row, ":hourglass_flowing_sand: Writing the reply: Yes.")
+    fe.replace_card_with_status(row, ":hourglass_flowing_sand: Drafting the reply: Yes.")
     out = json.loads(owner(fe, "GET", "/api/requests")[2])
     assert [(j["id"], j["working"], j["waiting"]) for j in out["waiting"]] == [(row.id, True, False)]
     rows = {r["id"]: r for r in json.loads(owner(fe, "GET", "/api/channels")[2])}
     assert rows["dm"]["waiting"] == 0  # at work is not waiting for a tap
     send = fe.post_card("dm", card())
-    fe.replace_card_with_status(row, ":white_check_mark: The reply is drafted. Its Send request: "
+    fe.replace_card_with_status(row, ":white_check_mark: Draft ready. Its Send card: "
                                      f"<{fe.permalink('dm', send.id)}|open it>")
     out = json.loads(owner(fe, "GET", "/api/requests")[2])
     assert [j["id"] for j in out["waiting"]] == [send.id]
