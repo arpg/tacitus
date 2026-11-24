@@ -2429,7 +2429,7 @@ def home_choices(case: dict, today: date, lv: str = "full") -> list[dict]:
     (the CARD_BUTTONS nearest), All delivered, Change. Then Open it in
     Action requests. A choice `<prefix>:<answer>[:<part id>]` runs
     answer() as a press on the card does; a date choice posts the picked
-    day as its `arg`. No Done, Not needed or Later: a case closes only on
+    day as its `arg`. No Done, No reply needed or Later: a case closes only on
     its deliveries, and its date keeps it off the list until its time."""
     w = words_of(case)
     f = facts(case, today)

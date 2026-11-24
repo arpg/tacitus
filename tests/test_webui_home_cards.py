@@ -140,7 +140,7 @@ def test_a_tap_shows_the_quick_briefing_and_the_choices_at_once_and_a_missing_br
                                              "This needs a form filled in, not just a reply. Ask Tacitus to start it."])
     expect(brief.locator("li")).to_have_text(["It has waited 4 days for your reply.", "You last wrote on it 5 days ago."])
     choices = block.locator(".h-choices button")
-    expect(choices).to_have_text(["Draft a reply", "Tell Tacitus what to say", "Not needed", "Later"])
+    expect(choices).to_have_text(["Draft a reply", "Tell Tacitus what to say", "Later", "No reply needed"])
     expect(block.locator(".h-choices [role='group']")).to_have_attribute("aria-label", "Next step")
     expect(block.locator(".h-links button")).to_have_text(["Ask about this"])
     expect(block.locator(".h-deeper .req-busy")).to_have_text(BUSY)
@@ -218,7 +218,7 @@ def test_a_decision_is_answered_with_the_decision_control_of_action_requests(app
     picks, field, go = card.locator(".answer-pick"), card.locator(".answer-ctl input"), card.locator(".answer-ctl .btn.primary")
     expect(picks).to_have_text(["Yes, I can sign it", "No, ask the lab manager"])
     expect(go).to_be_hidden()  # with quick answers, the one filled button is for typed words
-    expect(card.locator(".answer-more .btn")).to_have_text(["Not needed", "Later"])
+    expect(card.locator(".answer-more .btn")).to_have_text(["Later", "No reply needed"])  # as in Action requests
     expect(card.locator(".answer-q")).to_have_count(0)  # the quick briefing above says what it is
     card.get_by_role("button", name="Later").click()
     expect(q.locator(".h-in button").first).to_have_text("Tomorrow")
@@ -261,9 +261,9 @@ def test_done_says_what_it_did_counts_undo_down_and_the_item_leaves_after_it(app
     expect(todo.locator(".h-choices button")).to_have_count(4)
     expect(page.locator(".h-tally")).to_contain_text("6 things left")
     assert stub.ledger_runs == []  # nothing was written in the window
-    # Not needed on a reply, and this time the window runs out (the bot's clock 26 seconds into it)
+    # No reply needed on a reply, and this time the window runs out (the bot's clock 26 seconds into it)
     reply = opened(page, "reply:response-r2")
-    not_needed = reply.locator(".h-choices").get_by_role("button", name="Not needed")
+    not_needed = reply.locator(".h-choices").get_by_role("button", name="No reply needed")
     not_needed.scroll_into_view_if_needed()  # in view: no scroll of the browser's own before the tap
     settled(page)
     top = page.evaluate("$('thread-list').scrollTop")
@@ -271,7 +271,7 @@ def test_done_says_what_it_did_counts_undo_down_and_the_item_leaves_after_it(app
     stub.clock_offset = -26
     not_needed.click()
     assert page.evaluate("$('thread-list').scrollTop") == top
-    expect(reply.locator(".h-said")).to_have_text("Not needed. No reply goes out.")
+    expect(reply.locator(".h-said")).to_have_text("No reply needed. It is off your list.")
     expect(reply.locator(".h-undo .h-quiet")).to_have_text(re.compile(r"^[1-4] seconds to undo$"))
     expect(reply).to_have_count(0, timeout=8000)
     expect(page.locator(".h-main .h-items > li")).to_have_count(5)
@@ -335,6 +335,24 @@ def test_tell_tacitus_what_to_say_takes_one_line_and_drafts_from_it(app):
     note.get_by_role("link", name="Open it in Action requests").click()  # where the draft comes, with its Send
     expect(page.locator("#channel-name")).to_have_text("Action requests")
     expect(page.locator(".req.open")).to_contain_text("Writing the reply: Yes, the form is signed. It goes out Friday.")
+    assert not errors, errors
+
+
+def test_a_line_that_says_no_reply_is_needed_is_no_reply_needed_with_its_undo(app):
+    """Words typed in Tell Tacitus what to say that say only that no reply is
+    needed do what No reply needed does: its line and its Undo, no draft."""
+    from playwright.sync_api import expect
+    page, stub, errors = home_app(app)
+    ref = "reply:response-r2"
+    reply = opened(page, ref)
+    reply.get_by_role("button", name="Tell Tacitus what to say").click()
+    field = reply.get_by_role("textbox", name="Tell Tacitus what to say")
+    field.fill("No email necessary")
+    field.press("Enter")
+    expect(reply.locator(".h-said")).to_have_text("No reply needed. It is off your list.")
+    expect(reply.get_by_role("button", name="Undo")).to_be_visible()
+    assert stub.acts == [act(stub, ref, "say", "No email necessary")]
+    assert not [m for m in stub.messages if "Writing the reply" in (m.get("text") or "")]  # no draft
     assert not errors, errors
 
 

@@ -103,7 +103,7 @@ PART_CHOICES = 6
 # The ledger metadata key that names a case, by kind.
 LETTER_KEY, WORK_KEY = "letter", "work_case"
 
-# The Replies card's "Not needed" means "no email reply", and Handled on a
+# The Replies card's "No reply needed" means "no email reply", and Handled on a
 # draft's card means the draft is dealt with; neither says the work is
 # delivered. A case row is not on the Replies card, and a close with either
 # note is refused too.

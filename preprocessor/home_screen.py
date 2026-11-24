@@ -42,7 +42,7 @@ they post as before.
 An item opened in place: each item Home lists carries its `ref`, and
 home_items.py builds the quick briefing and the choices for it and runs a
 choice (GET /api/home/item, POST /api/home/act, POST /api/home/undo; Home's
-item, act and undo). A Done, Not needed, Waiting or Later takes the item
+item, act and undo). A Done, No reply needed, Waiting or Later takes the item
 off Home at once and is written when its undo window ends (`hidden`, the
 tick).
 """
@@ -1292,7 +1292,7 @@ class Home:
         self.settings = home_settings(getattr(fe, "cfg", {}))
         items = _items()
         # What only the bot runs for a choice on an item (the Replies card's
-        # draft turn and Not needed, an Outlook link): ea-chat-bot.py sets them.
+        # draft turn and No reply needed, an Outlook link): ea-chat-bot.py sets them.
         self.hooks = items.Hooks()
         self.acts = items.Acts(self)
 

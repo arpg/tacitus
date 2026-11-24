@@ -9,8 +9,8 @@ sweep. Whatever a model picked, code holds these rules there:
      his words, or by his click (ledger.owner_decisions). When his words
      say no reply goes out, a follow-up gets no draft and one quiet
      question under the item's title: "They asked again. On Nov 14 you
-     said no reply. Still no reply?". The Replies card's Not needed is
-     that answer.
+     said no reply. Still no reply?". The Replies card's No reply needed
+     is that answer.
   2. The ask is his own choice: yes or no, join or not, one option or
      another (the thread record's `decide` state, or the ask's words). It
      becomes a decision with answer buttons; the draft comes after his

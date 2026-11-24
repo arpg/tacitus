@@ -6,9 +6,12 @@ Pinned here:
      question for the owner, a meeting to place, no draft.
   2. the tick: once a local day, from the card hour, outside quiet hours;
      the day before's cards give way; no card when nothing needs one.
-  3. the clicks: One by one, Draft it (a turn, or a new Send card), Skip
-     (a snooze), Not needed (the draft goes, the row and the thread's
-     other reply rows close, and the card says where the mail is).
+  3. the clicks: One by one, Draft it (a turn, or a new Send card), Later
+     (a snooze to the day picked), No reply needed (the draft goes, the
+     row and the thread's other reply rows close, and the card says where
+     the mail is), the same two quiet choices on every row card; a line
+     typed on the card that says only that no reply is needed runs No
+     reply needed and starts no turn.
   4. the card names its rows as `row` and `rows`, so the web chat's Mark
      done on its thread closes nothing.
   5. a question with recorded answers shows one button per answer and no
@@ -20,6 +23,10 @@ Pinned here:
      with files of its own, so the drafts are written at the same time;
      the question first stays on the thread's session, which reads the
      owner's answer.
+  8. on the web chat each reply that waits is its own block, with no card
+     to press first: a row with a live block never gets a second one (the
+     block is drawn again in place), at most ten wait at once, and a
+     Replies card from before gives way.
 """
 from __future__ import annotations
 
@@ -148,6 +155,8 @@ def _bot(queue: list | None, *, confirms: dict | None = None, journal: list | No
               f"/state/reply-body-{ts}{'.' + step if step else ''}.txt",
           "_active_threads": set(), "_active_lock": _threading.Lock(),
           "_item_context": lambda rid: f"Ledger item {rid}: made up"}
+    pv = BOT_SRC.index("def _press_value(")
+    exec(compile(BOT_SRC[pv:BOT_SRC.index("def _case_card_failed(")], "bot[press]", "exec"), ns)
     exec(compile(BOT_SRC[start:end], "bot[replies]", "exec"), ns)
     ns["_load_reply_cards"] = lambda: store.get("d", {})
     ns["_reply_clock"] = lambda: clock
@@ -355,7 +364,7 @@ def test_draft_it_takes_a_line_of_the_owners_words():
     _tick(ns)
     draft = calls["cards"][0].actions[0]
     assert (draft.label, draft.ask) == (":pencil2: Draft it", "what the reply must say")
-    assert [a.ask for a in calls["cards"][0].actions[1:]] == ["", ""]
+    assert [a.ask for a in calls["cards"][0].actions[1:]] == ["The day it comes back", ""]
     ns["handle_reply_draft"](_ev(draft.value, "m1", "t1",
                                  text="  Say yes,\nbut not before the 20th.  " + "x" * 400))
     prompt = calls["turns"][0][3]
@@ -474,10 +483,10 @@ def test_a_question_with_answers_shows_a_button_for_each():
     card = calls["cards"][0]
     assert "I need your answer before I write it: Renew for one year or for three?" in _text(card)
     assert _labels(card) == [":one: Renew for one year", ":two: Renew for three years",
-                             ":pencil2: Other answer", ":fast_forward: Skip 3 days", "Not needed"]
+                             ":pencil2: Other answer", "Later", "No reply needed"]
     assert [a.id for a in card.actions] == ["reply_choice_one", "reply_choice_two", "reply_draft",
                                             "reply_skip", "reply_not_needed"]
-    assert [a.word for a in card.actions] == ["one", "two", "other", "skip", "not needed"]
+    assert [a.word for a in card.actions] == ["one", "two", "other", "later", "no reply needed"]
     assert card.actions[0].value == {"row": "response-lee", "batch": card.actions[0].value["batch"],
                                      "choice": "Renew for one year"}
     # No default: a thumbs up, or the bare code, picks no answer for the owner.
@@ -546,7 +555,7 @@ def test_other_answer_with_a_line_writes_the_reply():
     ns, calls = _bot([_q("lee", 8, queued=ASKED)])
     _tick(ns)
     card = calls["cards"][0]
-    assert [a.ask for a in card.actions] == ["", "", "your answer", "", ""]
+    assert [a.ask for a in card.actions] == ["", "", "your answer", "The day it comes back", ""]
     ns["handle_reply_draft"](_ev(card.actions[2].value, text="Two years, then we look again."))
     prompt = calls["turns"][0][3]
     assert "Renew for one year or for three?" in prompt
@@ -601,14 +610,61 @@ def test_a_draft_that_is_gone_is_written_again():
     assert not calls["send_cards"] and len(calls["turns"]) == 1
 
 
-def test_skip_snoozes_the_row_for_three_days():
+def test_later_snoozes_the_row_to_the_day_picked_or_three_days_on():
+    """Later is Home's Later: a day from tomorrow to a year on. A press with
+    no day (a thumbs down) is three days on; a day not after today changes
+    nothing."""
     ns, calls = _bot([_q("pat", 4)])
     _tick(ns)
-    ns["handle_reply_skip"](_ev(calls["cards"][0].actions[1].value))
+    later = calls["cards"][0].actions[1]
+    assert (later.id, later.label, later.style, later.ask) == (
+        "reply_skip", "Later", "", "The day it comes back")
+    assert later.date == {"min": "2026-10-13", "max": "2027-10-13"}  # Slack: its name shows until a pick
+    ns["handle_reply_skip"](_ev(later.value))
     assert calls["cli"][-1] == ("update", "--id", "response-pat", "--status", "snoozed",
                                 "--snooze-until", "2026-10-15", "--last-action",
-                                "2026-10-12: skipped for 3 days on the Replies card")
-    assert calls["status"][-1] == ("m1", ":fast_forward: Skipped. It comes back in 3 days.")
+                                "2026-10-12: snoozed until 2026-10-15 on the Replies card")
+    assert calls["status"][-1] == ("m1", ":fast_forward: Later. It comes back on Thursday.")
+    ns["handle_reply_skip"](_ev(later.value, "m2", text="2026-10-13"))
+    assert calls["cli"][-1][6] == "2026-10-13"
+    assert calls["status"][-1] == ("m2", ":fast_forward: Later. It comes back tomorrow.")
+    ns["handle_reply_skip"](_ev(later.value, "m3", text="2026-11-30"))
+    assert calls["status"][-1] == ("m3", ":fast_forward: Later. It comes back on November 30.")
+    n = len(calls["cli"])
+    ns["handle_reply_skip"](_ev(later.value, "m4", text="2026-10-12"))
+    assert len(calls["cli"]) == n + 1 and calls["cli"][-1][0] == "reply-queue"   # no update
+    assert calls["status"][-1] == ("m4", ":warning: Pick a day after today. It stays on the list.")
+
+
+def test_later_on_slack_is_a_date_picker_whose_row_comes_from_the_card_registry():
+    """Slack's picker sends its day and no value: the row is the card's, as
+    the registry keeps its actions."""
+    ns, calls = _bot([_q("pat", 4)])
+    _tick(ns)
+    later = calls["cards"][0].actions[1]
+    from botcore.chat import slack_frontend
+    picker = slack_frontend._element(later)
+    assert picker["type"] == "datepicker" and picker["placeholder"]["text"] == "Later"
+    assert "initial_date" not in picker                    # its name shows until a day is picked
+    ns["_CARDS"] = types.SimpleNamespace(by_ref=lambda ch, mid: {
+        "status": "live", "actions": {"reply_skip": {"value": later.value}}})
+    picked = _ev("", text="2026-10-20")
+    picked.action_id = "reply_skip"
+    ns["handle_reply_skip"](picked)
+    assert calls["cli"][-1][:7] == ("update", "--id", "response-pat", "--status", "snoozed",
+                                    "--snooze-until", "2026-10-20")
+
+
+def test_the_web_chats_later_starts_three_days_on_and_thumbs_down_is_later():
+    ns, calls, fe, turns, *_ = _setup(_q("pat", 4))
+    card = ns["_reply_row_card"]("b1", _q("pat", 4), "none")
+    later = next(a for a in card.actions if a.id == "reply_skip")
+    assert later.date == {"min": "2026-10-13", "max": "2027-10-13", "proposed": "2026-10-15"}
+    from botcore.chat import cards
+    assert cards.cancel_action(card).id == "reply_skip"
+    assert ns["_reply_quiet"]({"row": "x"})[0].label == ns["REPLY_LATER"] == "Later"
+    from preprocessor import home_items
+    assert ns["REPLY_NO_REPLY"] == home_items.NOT_NEEDED["label"] == "No reply needed"
 
 
 def test_not_needed_deletes_the_draft_and_closes_the_row():
@@ -623,7 +679,7 @@ def test_not_needed_deletes_the_draft_and_closes_the_row():
                                 "--note", "No reply needed: the owner's click on the Replies card")
     assert [text for _ts, text in calls["status"][-3:]] == [
         ":hourglass_flowing_sand: Closing it...",
-        ":white_check_mark: Not needed. Draft deleted.",
+        ":white_check_mark: No reply needed. Draft deleted.",
         ":white_check_mark: Closed. No reply goes out. Draft deleted."]
 
 
@@ -728,6 +784,53 @@ def test_a_click_on_a_thread_that_no_longer_waits_does_nothing():
         assert calls["status"][-1][1].startswith(":information_source: This thread changed")
     assert {a[0] for a in calls["cli"]} == {"reply-queue"}
     assert not calls["turns"] and not calls["deleted"]
+
+
+NO_REPLY_LINES = ("No email necessary", "no reply needed", "No reply needed.", "  NO REPLY NEEDED!! ",
+                  "No reply is needed", "no response required", "No need to reply", "no need to respond.",
+                  "No need for a reply", "Don\u2019t reply", "don't respond", "Do not reply", "No reply",
+                  "No response", "No reply needed, thanks", "No reply needed. Thank you!",
+                  '"No reply needed"', "no reply please")
+NEAR_MISSES = ("No reply needed until Friday, then say yes", "no reply needed until friday",
+               "No reply needed?", "Is no reply needed", "no", "No", "not needed", "Not needed.",
+               "Tell them no reply is needed", "No, reply that we need more time", "don't reply yet",
+               "Don't reply to Pat, reply to Lee", "No email", "no reply needed from them",
+               "Yes, no reply needed on the form", "reply needed", "No thanks", "Decline it", "", "   ",
+               "no reply needed\nbut say thanks")
+
+
+def test_a_line_that_only_says_no_reply_is_needed_is_read_as_that_and_nothing_else():
+    """ledger.no_reply_line: the whole line, in a fixed form, with case,
+    curly quotes, spaces and end marks set aside; never part of a longer
+    line, a bare no, "not needed" or a question."""
+    for line in NO_REPLY_LINES:
+        assert ledger_mod.no_reply_line(line), line
+    for line in NEAR_MISSES:
+        assert not ledger_mod.no_reply_line(line), line
+    assert not ledger_mod.no_reply_line(None)
+
+
+def test_a_line_that_says_no_reply_is_needed_is_no_reply_needed_and_starts_no_turn():
+    """The owner types "No email necessary" where the reply's words go: the
+    row closes as No reply needed does, and no turn writes a draft. A
+    longer line that only starts so is the reply's words."""
+    for text in ("No email necessary", "no reply needed.", "Don't reply"):
+        row = _q("pat", 6, queued={"outcome": "decision", "note": "Answer them?"},
+                 conversation_id="conv-1")
+        ns, calls = _bot([row])
+        _tick(ns)
+        ns["handle_reply_draft"](_ev(calls["cards"][0].actions[0].value, text=text))
+        assert not calls["turns"] and not calls["posts"], text
+        assert ("close", "--id", "response-pat", "--signal", "user_handled",
+                "--note", CLOSE_NOTE) in calls["cli"]
+        assert [t for _ts, t in calls["status"]][-2:] == [
+            ":hourglass_flowing_sand: Closing it...", ":white_check_mark: Closed. No reply goes out."]
+    ns, calls = _bot([_q("pat", 6)])
+    _tick(ns)
+    ns["handle_reply_draft"](_ev(calls["cards"][0].actions[0].value,
+                                 text="No reply needed until Friday, then say yes."))
+    assert len(calls["turns"]) == 1 and not [a for a in calls["cli"] if a[0] == "close"]
+    assert 'The owner wrote this line on the card: "No reply needed until Friday' in calls["turns"][0][3]
 
 
 # ── what the web chat reads from the card ─────────────────────────────
@@ -973,7 +1076,8 @@ def test_web_only_a_question_is_a_question_and_unmarked_text_is_could_not():
     b = calls["cards"][-1]
     assert b.question == {} and b.problem["text"] == "The thread has no address to answer."
     assert [(a.id, a.ask) for a in b.actions] == [("reply_draft", ""), ("reply_discuss", ""),
-                                                  ("reply_skip", ""), ("reply_not_needed", "")]
+                                                  ("reply_skip", "The day it comes back"),
+                                                  ("reply_not_needed", "")]
     assert b.actions[0].value["again"] == "Three years."            # Try again repeats the answer
     assert b.actions[1].value["why"] == "The thread has no address to answer."
     assert "I could not write it: " in _text(b)
@@ -991,7 +1095,7 @@ def test_web_only_a_question_is_a_question_and_unmarked_text_is_could_not():
     u = calls["cards"][-1]
     # text that reads like a question, with no record: its own words as the reason, never a question
     assert u.question == {} and u.problem["text"] == "I looked, and the thread asks something unclear?"
-    assert not any(a.ask for a in u.actions)
+    assert not any(a.ask and not a.date for a in u.actions)        # no line of words, only Later's day
 
 
 def test_web_a_turn_cut_short_says_so_in_plain_words():
@@ -1094,6 +1198,167 @@ def test_on_the_web_a_draft_that_did_not_start_offers_try_again_with_the_answer_
     assert "The draft did not start. Try again." in _text(card) and calls["status"] == []
     assert not any("Ask me here" in t for _ts, t in calls["status"])
     assert ns["_reply_claim"]("response-lee")             # the row is free again
+
+
+def test_web_a_line_that_says_no_reply_is_needed_closes_the_row_with_no_turn():
+    ns, calls, fe, turns, *_ = _setup()
+    ns["handle_reply_draft"](_ev(VALUE, text="No email necessary."))
+    assert turns == {} and not calls["turns"] and not calls["posts"]
+    assert ("close", "--id", "response-lee", "--signal", "user_handled", "--note", CLOSE_NOTE) \
+        in calls["cli"]
+    assert calls["status"][-1] == ("m1", ":white_check_mark: Closed. No reply goes out.")
+
+
+# ── the web chat: each reply that waits is its own block ─────────────────
+
+def _next_day(ns, queue, day="2026-10-13"):
+    ns["_reply_clock"] = lambda: (day, 9, False)
+    for r in queue:
+        r["age_days"] += 1
+
+
+def _rows(cards) -> list[str]:
+    return [c.actions[0].value["row"] for c in cards]
+
+
+def _card_of(calls, rid) -> tuple[str, object]:
+    """(its id, the card) of the last card posted for row `rid`."""
+    i = max(i for i, c in enumerate(calls["cards"]) if c.actions[0].value.get("row") == rid)
+    return f"m{i + 1}", calls["cards"][i]
+
+
+def test_web_each_reply_that_waits_is_its_own_block_with_no_card_to_press_first():
+    """The day's tick posts each thread that waits as its own block at the
+    top of Action requests, tagged with its row: no summary card, no One by
+    one. The youngest posts first, so the oldest is the newest post, which
+    the list shows on top. A thread whose Send card is up gets none."""
+    queue = [_q("pat", 12, queued={"outcome": "drafted", "draft_id": "d-old"}),
+             _q("lee", 8, queued=dict(ASKED)), _q("sam", 5, scheduling="request"), _q("kim", 3),
+             _q("ready", 4, queued={"outcome": "drafted", "draft_id": "d-live"})]
+    ns, calls, fe, _turns = _web(queue, confirms={"d-live": {"status": "live"}})
+    assert _tick(ns) == 4
+    assert calls["threads"] == [None] * 4                 # each at the top, its own thread
+    assert _rows(calls["cards"]) == ["response-kim", "response-sam", "response-lee", "response-pat"]
+    from botcore.chat import action_requests
+    shown = action_requests.order([{"id": f"m{i + 1}", "posted_at": float(i)} for i in range(4)])
+    assert shown[0]["id"] == "m4" and _card_of(calls, "response-pat")[0] == "m4"   # the oldest on top
+    assert [t[2] for t in fe.tags if t[0] == "card"] == [
+        "reply:response-kim", "reply:response-sam", "reply:response-lee", "reply:response-pat"]
+    assert not [a for c in calls["cards"] for a in c.actions if a.id == "review_replies"]
+    for c in calls["cards"]:
+        assert [(a.id, a.label) for a in c.actions[-2:]] == [
+            ("reply_skip", "Later"), ("reply_not_needed", "No reply needed")]
+    assert _card_of(calls, "response-lee")[1].question["text"] == "Renew for one year or for three?"
+    assert calls["status"] == [] and _tick(ns) == 0       # once a day
+    # A press on a block works as on a One by one card.
+    mid, kim = _card_of(calls, "response-kim")
+    ns["handle_reply_skip"](_ev(kim.actions[1].value, mid, text="2026-10-20"))
+    assert calls["cli"][-1][:7] == ("update", "--id", "response-kim", "--status", "snoozed",
+                                    "--snooze-until", "2026-10-20")
+
+
+def test_web_a_row_with_a_live_block_never_gets_a_second_one():
+    """The next day's tick posts no block for a row whose block is still
+    live, and retires none: the block is drawn again in place, with no
+    push, for its new age or a new question. A row answered since gets a
+    block again only when it waits again; a new row gets its own."""
+    queue = [_q("pat", 6), _q("lee", 4)]
+    ns, calls, fe, _turns = _web(queue)
+    assert _tick(ns) == 2
+    pat_id, lee_id = _card_of(calls, "response-pat")[0], _card_of(calls, "response-lee")[0]
+    _next_day(ns, queue)
+    assert _tick(ns) == 0 and len(calls["cards"]) == 2 and calls["status"] == []
+    assert [(ref, c.actions[0].value["row"]) for ref, c in fe.updates] == [
+        (pat_id, "response-pat"), (lee_id, "response-lee")]
+    assert "From Pat, 7 days ago." in _text(fe.updates[0][1])
+    # The same day and age again: nothing is drawn.
+    ns["_reply_clock"] = lambda: ("2026-10-14", 9, False)
+    assert _tick(ns) == 0 and len(fe.updates) == 2
+    # A briefing run asks Lee's question: Lee's block shows it, in place.
+    queue[1]["queued"] = dict(ASKED)
+    ns["_reply_clock"] = lambda: ("2026-10-15", 9, False)
+    assert _tick(ns) == 0 and len(calls["cards"]) == 2
+    ref, card = fe.updates[-1]
+    assert ref == lee_id and [a.id for a in card.actions][:2] == ["reply_choice_one", "reply_choice_two"]
+    # Pat is answered (No reply needed closes the block); Pat waits again,
+    # and Kim is new: each gets one block.
+    ns["handle_reply_not_needed"](_ev(_card_of(calls, "response-pat")[1].actions[2].value, pat_id))
+    queue.append(_q("kim", 3))
+    _next_day(ns, queue, "2026-10-16")
+    assert _tick(ns) == 2
+    assert _rows(calls["cards"][2:]) == ["response-kim", "response-pat"]
+    assert sorted(c["card"] for c in ns["_load_reply_cards"]()["cards"].values()) == sorted(
+        [lee_id, "m3", "m4"])
+
+
+def test_web_at_most_ten_blocks_wait_at_once_oldest_first():
+    queue = [_q(f"p{n}", 30 - n) for n in range(13)]
+    ns, calls, fe, _turns = _web(queue)
+    assert _tick(ns) == 10
+    assert sorted(_rows(calls["cards"])) == sorted(f"response-p{n}" for n in range(10))
+    _next_day(ns, queue)
+    assert _tick(ns) == 0                                 # ten still wait for a tap
+    for n in range(3):                                    # three are answered
+        mid, card = _card_of(calls, f"response-p{n}")
+        ns["handle_reply_not_needed"](_ev(card.actions[2].value, mid))
+    del queue[:3]
+    _next_day(ns, queue, "2026-10-14")
+    assert _tick(ns) == 3
+    assert _rows(calls["cards"][10:]) == ["response-p12", "response-p11", "response-p10"]
+
+
+def test_web_a_could_not_card_keeps_its_reason_until_its_row_changes():
+    """The card a turn left (here: why it wrote no reply) is the row's live
+    block: no second block comes; the next day draws it again with its
+    reason; once the row changes, it is the row's card as it is now."""
+    ns, calls, fe, turns, *_ = _setup(_q("lee", 8, queued=dict(ASKED)))
+    queue = ns["_test_queue"]
+    _turn(ns, calls, record={"outcome": "blocked", "note": "The thread has no address.", "inbound": "x"})
+    ns["handle_reply_draft"](_ev(VALUE, card_id="m7", text="Three years."))
+    assert len(calls["cards"]) == 1 and calls["cards"][0].problem
+    _next_day(ns, queue)
+    assert _tick(ns) == 0 and len(calls["cards"]) == 1
+    ref, card = fe.updates[-1]
+    assert ref == "m1" and card.problem["text"] == "The thread has no address."
+    assert card.actions[0].value["again"] == "Three years."
+    queue[0]["queued"] = dict(ASKED, note="Renew at the new rate?")
+    _next_day(ns, queue, "2026-10-14")
+    assert _tick(ns) == 0 and len(calls["cards"]) == 1
+    ref, card = fe.updates[-1]
+    assert ref == "m1" and card.problem == {} and card.question["text"] == "Renew at the new rate?"
+
+
+def test_web_a_row_whose_reply_is_being_written_gets_no_block():
+    ns, calls, fe, turns, *_ = _setup(_q("lee", 8, queued=dict(ASKED)))
+    turns["p9"] = {"row": {"id": "response-lee"}, "card": "m0", "channel": "dm", "started": 1.0}
+    assert _tick(ns) == 0 and calls["cards"] == []
+
+
+def test_web_a_replies_card_from_before_gives_way_and_its_press_posts_the_blocks():
+    """A Replies card posted before each reply was its own block: the day's
+    tick settles it, and a press on one posts the blocks of its rows that
+    still wait, at the top, and settles it. A row with a live block (a One
+    by one card from that day) gets no second one."""
+    queue = [_q("pat", 6), _q("lee", 4), _q("sam", 3)]
+    ns, calls, fe, _turns = _web(queue)
+    old = ns["_post_card"]("dm", ns["_replies_card"]("b0", [(r, "none") for r in queue], 0))
+    one = ns["_post_card"]("dm", ns["_reply_row_card"]("b0-pat", queue[0], "none"), thread_ts=old.id)
+    ns["_save_reply_cards"]({"day": "2026-10-11", "cards": {
+        "b0": {"rows": [r["id"] for r in queue], "channel": "dm", "card": old.id},
+        "b0-pat": {"rows": ["response-pat"], "channel": "dm", "card": one.id}}})
+    press = ns["_replies_card"]("b0", [(r, "none") for r in queue], 0).actions[0]
+    ns["handle_review_replies"](_ev(press.value, old.id))
+    assert calls["status"] == [(old.id, ":information_source: Each reply that waits is its own request now.")]
+    assert _rows(calls["cards"][2:]) == ["response-sam", "response-lee"]
+    assert calls["threads"][2:] == [None, None]
+    assert [ref for ref, _c in fe.updates] == ["m2"]      # Pat's card from that day, drawn again
+    ns2, calls2, fe2, _t = _web([_q("pat", 6), _q("lee", 4)])
+    old2 = ns2["_post_card"]("dm", ns2["_replies_card"]("b0", [(_q("pat", 6), "none"), (_q("lee", 4), "none")], 0))
+    ns2["_save_reply_cards"]({"day": "2026-10-11", "cards": {
+        "b0": {"rows": ["response-pat", "response-lee"], "channel": "dm", "card": old2.id}}})
+    assert _tick(ns2) == 2
+    assert calls2["status"][0] == (old2.id, ":information_source: Each reply that waits is its own request now.")
+    assert sorted(c["card"] for c in ns2["_load_reply_cards"]()["cards"].values()) == ["m2", "m3"]
 
 
 # ── end to end on the real web front end, with a stand-in turn ──────────

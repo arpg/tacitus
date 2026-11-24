@@ -10,7 +10,9 @@ from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
-from webui_browser import PHONE, SIDEWAYS, SMALL_TARGETS, app, browser, stub_factory, wait_for  # noqa: E402,F401  (the fixtures)
+from webui_browser import (  # noqa: E402,F401  (the fixtures)
+    PHONE, SIDEWAYS, SMALL_TARGETS, app, browser, reply_quiet, stub_factory, wait_for,
+)
 
 VALUE = {"row": "response-r1", "batch": "b1"}
 
@@ -18,15 +20,12 @@ VALUE = {"row": "response-r1", "batch": "b1"}
 def _not_written(stub, why="The thread has no address to answer."):
     """The card the bot posts when a reply turn could not write the reply:
     its reason, Try again (the answer it repeats), Open in Ask Tacitus,
-    Skip and Not needed; no answer control."""
+    Later and No reply needed; no answer control."""
     import webui_stub_server as W
     acts = [{"id": "reply_draft", "label": ":repeat: Try again", "value": dict(VALUE, again="Yes, three years."),
              "style": "primary", "word": "again", "ask": ""},
             {"id": "reply_discuss", "label": ":speech_balloon: Open in Ask Tacitus", "value": dict(VALUE, why=why),
-             "style": "", "word": "ask", "ask": ""},
-            {"id": "reply_skip", "label": ":fast_forward: Skip 3 days", "value": VALUE, "style": "", "word": "skip", "ask": ""},
-            {"id": "reply_not_needed", "label": "Not needed", "value": VALUE, "style": "danger", "word": "not needed",
-             "ask": ""}]
+             "style": "", "word": "ask", "ask": ""}] + reply_quiet(VALUE)
     return stub.add(W.DM, "", kind="card", event="card", card={
         "kind": "replies", "title": f":inbox_tray: *Review request*\nFrom Pat, 2 days ago.\nI could not write it: {why}",
         "fields": [], "lines": [], "body": "", "quoted": "", "actions": acts, "select": None, "block_id": "",
@@ -51,7 +50,7 @@ def test_a_reply_that_was_not_written_says_why_and_offers_try_again_not_an_answe
     block.locator(".req-head").click()
     card = block.locator(".req-body .card")
     expect(card).to_contain_text("I could not write it: The thread has no address to answer.")
-    expect(card.locator(".answer-ctl, input")).to_have_count(0)
+    expect(card.locator(".answer-ctl, input:not([type='date'])")).to_have_count(0)  # Later's day only
     buttons = card.locator(".card-actions button")
     expect(buttons.first).to_have_text("🔁 Try again")
     assert [buttons.nth(i).get_attribute("data-action") for i in range(4)] == \

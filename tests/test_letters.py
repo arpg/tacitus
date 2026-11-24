@@ -7,7 +7,7 @@ Pinned here:
      letter (the request row of a person's own ask, and a nomination row
      the hill climb promoted a reply on).
   2. The Replies card, the reply queue and the inbox scan leave letter rows
-     out, and the card's "Not needed" cannot close one.
+     out, and the card's "No reply needed" cannot close one.
   3. One person, many destinations: the person's own mail and each
      portal's request join one case; a portal's confirmation submits its
      destination; the case closes itself when all are submitted.

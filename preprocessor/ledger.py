@@ -2489,13 +2489,13 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
 # old, whenever it was made.
 
 # The close signals that carry the owner's own word: what he said in chat,
-# his click (Handled, Not needed), a standing rule he wrote.
+# his click (Handled, No reply needed), a standing rule he wrote.
 OWNER_SIGNALS = ("user_stated", "user_handled", "user_rule")
 OWNER_SAID_MAX = 3
 OWNER_SAID_CHARS = 160
 # His words that mean no reply goes out: "no response", "don't reply",
-# "not joining", "decline", "not needed". The Replies card's Not needed
-# note matches too.
+# "not joining", "decline", "not needed". The Replies card's No reply
+# needed note matches too.
 NO_REPLY_RE = re.compile(
     r"\bno (?:reply|replies|response|answer|email|mail)\b|"
     r"\b(?:don'?t|do not|never|won'?t|will not|not) (?:reply|respond|answer|send|write)\b|"
@@ -2510,6 +2510,36 @@ NO_REPLY_RE = re.compile(
 def says_no_reply(text: str) -> bool:
     """Whether the owner's words say no reply goes out on the thread."""
     return bool(NO_REPLY_RE.search(str(text or "")))
+
+
+# A line typed where a reply's words go (a reply card's answer line, Home's
+# Tell Tacitus what to say) that says only "no reply is needed": the whole
+# line, in one of these fixed forms, so it runs No reply needed and starts
+# no draft. Never part of a longer line ("no reply needed until Friday,
+# then say yes"), never a bare "no" or "not needed" (an answer to the
+# mail's own question), never a question ("No reply needed?").
+_NO_REPLY_NOUNS = ("reply", "response", "email", "answer")
+_NO_REPLY_VERBS = ("reply", "respond", "answer", "email")
+NO_REPLY_LINES = frozenset(
+    [f"no {n} {w}" for n in _NO_REPLY_NOUNS
+     for w in ("needed", "necessary", "required", "is needed", "is necessary", "is required")]
+    + ["no reply", "no response", "no reply please", "no response please"]
+    + [f"no need to {v}" for v in _NO_REPLY_VERBS]
+    + [f"no need for a {n}" for n in ("reply", "response")]
+    + [f"{d} {v}" for d in ("don't", "dont", "do not") for v in ("reply", "respond", "answer")])
+# Thanks may close the line after the phrase.
+_NO_REPLY_TAIL = re.compile(r"[\s,.;:!-]+(?:thanks|thank you)$")
+_NO_REPLY_ENDS = " .,;:!-\"'"
+
+
+def no_reply_line(text: str) -> bool:
+    """Whether a typed line says only that no reply is needed
+    (NO_REPLY_LINES), with case, curly quotes, spaces and the marks at its
+    ends set aside."""
+    t = " ".join(str(text or "").lower().replace("’", "'").split()).strip(_NO_REPLY_ENDS)
+    if not t or "?" in t:
+        return False
+    return _NO_REPLY_TAIL.sub("", t).strip(_NO_REPLY_ENDS) in NO_REPLY_LINES
 
 
 def owner_decisions(conversation_ids, db_path: Path | None = None) -> dict[str, list[dict]]:

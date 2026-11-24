@@ -619,7 +619,12 @@ resident): from 08:00 local and outside quiet hours it reads `ledger.py
 reply-queue --min-age 3` and posts one Replies card in the DM for the
 threads with no live Send card, each with where its reply stands (a draft
 whose Send card closed, a question for the owner, a meeting to place, no
-draft). "One by one" posts a card per thread in that card's thread.
+draft). "One by one" posts a card per thread in that card's thread. The
+web chat has no card to press first: the tick posts each thread as its own
+card at the top of Action requests (`_reply_blocks_up`), oldest first, at
+most ten live at once, and never a second card for a row whose card is
+still live (that card is drawn again in place, with no push, when what it
+shows changed: `_reply_sig`).
 "Draft it" starts a turn there that writes the reply for that one row; for
 a draft that exists it posts a new Send card instead. "Draft it" takes one
 line of the owner's words (`CardAction.ask`): the turn writes the reply
@@ -641,13 +646,18 @@ characters at most, from the remote call's `choices` or `note-reply
 --choice`) shows one button per answer in place of "Draft it", and the
 card has no default action. A tap starts the same turn with that answer as
 the owner's decision; "Other answer" starts the turn that asks. The click
-is refused when the row no longer offers that answer. "Skip" snoozes the
-row for 3 days. "Not needed" deletes the row's draft and closes the row
-as the owner's word, which archives its mail. When another open row holds
+is refused when the row no longer offers that answer. Every row card ends
+with the two quiet choices of a reply on Home: "Later" snoozes the row to
+a day the owner picks (a date action from tomorrow to a year on, three
+days on to start; a press with no day is three days on), and "No reply
+needed" deletes the row's draft and closes the row as the owner's word,
+which archives its mail. A line typed on the card that says only that no
+reply is needed (`ledger.no_reply_line`: the whole line, in a fixed form)
+runs "No reply needed" and starts no turn. When another open row holds
 the thread in the inbox, it closes each one that a reply would finish
 (`ledger.closes_on_reply`) the same way; a row that no reply finishes
 stays open, and the status line names it and says the thread stays in the
-inbox. The next day's card retires the cards of the day
+inbox. On Slack the next day's card retires the cards of the day
 before, so one Replies card is live at a time
 (`reply-queue-cards.json` in the owner-private dir). The card's buttons name
 their rows as `row` and `rows`, never `ledger_id`, so the web chat's Mark

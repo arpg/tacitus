@@ -7,8 +7,8 @@ today") and it opens where it is, like a block in Action requests:
   GET  /api/home/item?ref=<ref>   item(src, ref): the item as the app
                                   draws it, built in code at once
   POST /api/home/act              Acts.act: one choice
-  POST /api/home/undo             Acts.undo: take a Done, Not needed,
-                                  Waiting or Later back
+  POST /api/home/undo             Acts.undo: take a Done, No reply
+                                  needed, Waiting or Later back
 
 The quick briefing is built here, in code alone, from the ledger row, its
 thread's record (the brief the local model keeps, never the mail), the
@@ -21,11 +21,12 @@ type and state, never from a guess at the facts.
 
 The choices, by kind:
 
-  reply      Draft a reply, Tell Tacitus what to say, Not needed, Later
+  reply      Draft a reply, Tell Tacitus what to say, Later, No reply
+             needed
   item       Start it with Tacitus, Done, Waiting on someone, Later
   question   the answers an earlier run offered (the Replies card's
-             buttons), Other answer, Not needed, Later; a question with
-             no reply behind it: Answer, Later
+             buttons), Other answer, Later, No reply needed; a question
+             with no reply behind it: Answer, Later
   request    Open it in Action requests (Send and Create stay there)
   closed     Not done yet (a row closed today)
   drafted, answered
@@ -38,9 +39,10 @@ What each choice runs is the machinery that already does it:
       the Replies card's Draft it turn (the bot's _dispatch_reply_draft,
       through Hooks.draft): one turn for the row, its Send card in
       Action requests, the owner's line or answer quoted to the turn as
-      his instruction for this reply alone
-  Not needed
-      the Replies card's Not needed (Hooks.not_needed): the row and the
+      his instruction for this reply alone. A line that says only that no
+      reply is needed (ledger.no_reply_line) is No reply needed instead
+  No reply needed
+      the Replies card's No reply needed (Hooks.not_needed): the row and the
       thread's other reply rows close on the owner's click (signal
       `user_handled`), its draft is deleted, its mail archived. No
       missed-closure line: no signal could have seen that no reply was
@@ -52,7 +54,7 @@ What each choice runs is the machinery that already does it:
       log_missed_closure.py, since a closure the owner had to state is a
       closure the pipeline missed
   Later      ledger.py update --status snoozed --snooze-until <day>, as
-             the Replies card's Skip
+             the Replies card's Later
   Waiting    ledger.py update --status waiting --follow-up-after <day>
   Start it with Tacitus, an answer to a question with no reply behind it
       a new conversation in Ask Tacitus (or the row's project room) that
@@ -61,7 +63,7 @@ What each choice runs is the machinery that already does it:
   Not done yet
       the web chat's Needs me on a closed row (run_writeback's reopen)
 
-Done, Not needed, Waiting and Later say what they did at once and the
+Done, No reply needed, Waiting and Later say what they did at once and the
 item leaves Home at once; the ledger write waits UNDO_S seconds, so Undo
 in that time takes it back exactly (nothing was written yet, no mail was
 moved, no draft deleted). After it Undo is refused in plain words. The
@@ -100,7 +102,7 @@ from urllib.parse import quote
 
 log = logging.getLogger("chat.web.home.items")
 
-# How long Undo takes back a Done, Not needed, Waiting or Later; the ledger
+# How long Undo takes back a Done, No reply needed, Waiting or Later; the ledger
 # write waits this long.
 UNDO_S = 30
 # The longest line the owner writes on Tell Tacitus what to say or an
@@ -115,7 +117,7 @@ SAID_MAX = 140
 WRITE_STALE_S = 600
 # Later: the furthest day a snooze may name.
 LATER_MAX_DAYS = 366
-# The closing note of Not needed on Home; ledger.NO_REPLY_RE reads it as
+# The closing note of No reply needed on Home; ledger.NO_REPLY_RE reads it as
 # "no reply goes out", so a later row on the thread carries it.
 NOT_NEEDED_NOTE = "No reply needed: the owner's tap on Home"
 # What the briefing names a row by its type.
@@ -137,7 +139,7 @@ STORE_FILE = "webchat.sqlite"
 # The choices, as the app draws them.
 DRAFT = {"id": "draft", "label": "Draft a reply", "style": "primary"}
 SAY = {"id": "say", "label": "Tell Tacitus what to say", "input": "text"}
-NOT_NEEDED = {"id": "not_needed", "label": "Not needed"}
+NOT_NEEDED = {"id": "not_needed", "label": "No reply needed"}
 START = {"id": "start", "label": "Start it with Tacitus", "style": "primary"}
 DONE = {"id": "done", "label": "Done"}
 WAITING = {"id": "waiting", "label": "Waiting on someone"}
@@ -201,7 +203,7 @@ class Hooks:
         line, `answer` one of the answers the row's question offers.
         `channel` and `id` name the line that opens the turn's thread.
     not_needed(row id, note) -> {"ok", "said"}
-        the Replies card's Not needed, with `note` as the closing note.
+        the Replies card's No reply needed, with `note` as the closing note.
     outlook(conversation id) -> link or ""
         the Outlook link of the thread's newest message.
     letter(case id, answer, destination id, words) -> {"ok", "said", "channel"?, "id"?}
@@ -721,7 +723,7 @@ def _work(f: Found) -> str:
 
 
 def pending_rows() -> dict[str, str]:
-    """{ledger id: choice} for the Done, Not needed, Waiting and Later on
+    """{ledger id: choice} for the Done, No reply needed, Waiting and Later on
     Home that wait for their undo window, read from Home's store by another
     owner process (the briefing's pre-send review), so it treats them as
     done: the choice is the owner's, and it is written within seconds. {}
@@ -887,14 +889,14 @@ def choices(f: Found, src) -> list[dict]:
         return ([dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []) + \
             ([dict(DONE), later_choice(today)] if acts else [])
     if kind == "reply":
-        return [dict(DRAFT), dict(SAY)] + ([dict(NOT_NEEDED), later_choice(today)] if acts else [])
+        return [dict(DRAFT), dict(SAY)] + ([later_choice(today), dict(NOT_NEEDED)] if acts else [])
     if kind == "question":
         if _decision(f):
             picks = _picks(f)
             out = [{"id": f"answer:{i + 1}", "label": text} for i, text in enumerate(picks)]
             out.append({"id": "answer", "label": "Other answer" if picks else "Answer", "input": "text",
                         **({} if picks else {"style": "primary"})})
-            return out + ([dict(NOT_NEEDED), later_choice(today)] if acts else [])
+            return out + ([later_choice(today), dict(NOT_NEEDED)] if acts else [])
         return [{"id": "answer", "label": "Answer", "input": "text", "style": "primary"}] + \
             ([later_choice(today)] if acts else [])
     out = [dict(START)]
@@ -1174,7 +1176,7 @@ def start_text(f: Found, b: dict, words: str = "") -> str:
 class Acts:
     """The choices made on Home's items: the immediate ones (a draft, a
     conversation, a link) and the ones that wait UNDO_S seconds for an
-    Undo (Done, Not needed, Waiting, Later), kept in Home's store as
+    Undo (Done, No reply needed, Waiting, Later), kept in Home's store as
     `acts` until written."""
 
     STORE = "acts"
@@ -1212,8 +1214,8 @@ class Acts:
         now_item = shape(f, src, fe=home.fe)
         if seen and seen != now_item["version"]:
             return {"ok": False, "said": CHANGED, "item": now_item}, None
-        move = False
-        if choice.startswith("step:"):
+        move, stepped = False, choice.startswith("step:")
+        if stepped:
             steps = {str(x.get("id") or "") for x in now_item["deeper"].get("steps") or [] if isinstance(x, dict)}
             if not choice[5:] or choice[5:] not in steps:
                 return {"ok": False, "said": NO_CHOICE, "item": now_item}, None
@@ -1232,6 +1234,10 @@ class Acts:
         offered = {c["id"] for c in now_item["choices"]}
         if choice not in offered and not (choice == "say" and "draft" in offered) and not move:
             return {"ok": False, "said": NO_CHOICE, "item": now_item}, None
+        if choice in ("say", "answer") and not stepped and "not_needed" in offered \
+                and _ledger().no_reply_line(arg):
+            # his line says only that no reply is needed: No reply needed, never a draft
+            choice, arg = "not_needed", ""
         if choice in DEFERRED:
             return self._defer(f, src, now_item, choice, arg), None
         return self._now(f, src, now_item, choice, arg)
@@ -1345,7 +1351,7 @@ class Acts:
             rec["day"] = day.isoformat()
             rec["said"] = "Waiting on someone else. It is off your list."
         elif choice == "not_needed":
-            rec["said"] = "Not needed. No reply goes out."
+            rec["said"] = "No reply needed. It is off your list."
         else:
             rec["proposal"] = isinstance((f.row or {}).get("close_proposal"), dict)
             rec["said"] = "Done. It is off your list."
@@ -1425,7 +1431,7 @@ class Acts:
             elif op == "not_needed":
                 hooks = getattr(self.home, "hooks", None) or Hooks()
                 if hooks.not_needed is None:
-                    log.warning("home: not needed on %s not written: no bot to run it", lid)
+                    log.warning("home: no reply needed on %s not written: no bot to run it", lid)
                     return {"op": op, "id": lid, "ok": False, "why": "no hook"}
                 got = hooks.not_needed(lid, NOT_NEEDED_NOTE) or {}
                 ok = bool(got.get("ok"))

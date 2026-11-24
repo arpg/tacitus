@@ -670,7 +670,7 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 | Part | Source |
 |---|---|
 | Left for you | what the post lists, never more: the Action requests that wait for a tap (`WebFrontend.requests`, never one at work; a decision the draft gate or the review made is one, with its answer buttons); the post's own sections after its pre-send review where the run kept them for Home (`remote_briefing.home_view`: Get done today as To do, the date banner as Due, Needs you as Answer needed with the question as its title, Flexes as Can wait, the afternoon's New today and Waiting on you); with no such list (the Claude lane, the review off), the briefing's ranked `today_top` still open, less what the post leaves out upstream (`ledger.waiting_off_list`, a row merged into another, a thread the owner said gets no reply, `owner_said`); and the replies owed a day or more (`ledger.reply_backlog` on the live rows with `ledger.with_owner_decisions`, from the Replies ladder's first rung, `REPLY_DRAFT_DAYS`: mail that came today does not count yet), less any thread the review dropped, one an earlier run found needs no reply, and one the owner said gets none; one an earlier run made a decision is that question. An item kept from hosted models is its fixed words alone (Kept mail, below). A row or thread is listed once. Most urgent first (overdue, soon, calm; then a tap, a question, a reply, a task) |
-| Letters and other work | one item per work case, kind `letter` for a letter and kind `case` (`case:<id>`, choices `case:*`, `Hooks.case`) for a review, a form or a report, with the same rules in their kind's words (`case_surface.home_left`, the one hook in `left`). For a letter: a new case ("Letter request", its decision card in Action requests as its `href`), a case with no date (its date), and a case whose time came (its lead time before its one date, or overdue); its destinations' rows, threads and cards are not listed on their own. A dated case before its lead time is quiet: not on Home. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's answers with the date in its yes ("Yes, by Tue Dec 1", "Yes, by another date" with `input: "date"`), a case with no date "By Tue Dec 1" and "Another date", a case whose time came Draft the letter (a line of words) and Change the date (`input: "date"`), a ready letter Submitted per destination (the three nearest) and All submitted; then Open it in Action requests; no Done, Not needed or Later. Its deeper briefing is the briefing on a case (below), for a `case` item as for a letter. A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
+| Letters and other work | one item per work case, kind `letter` for a letter and kind `case` (`case:<id>`, choices `case:*`, `Hooks.case`) for a review, a form or a report, with the same rules in their kind's words (`case_surface.home_left`, the one hook in `left`). For a letter: a new case ("Letter request", its decision card in Action requests as its `href`), a case with no date (its date), and a case whose time came (its lead time before its one date, or overdue); its destinations' rows, threads and cards are not listed on their own. A dated case before its lead time is quiet: not on Home. A kept case is named in fixed words. Opened (`home_items`, kind `letter`), its quick briefing and choices come from `letter_surface.home_brief` and `home_choices`: the new case's answers with the date in its yes ("Yes, by Tue Dec 1", "Yes, by another date" with `input: "date"`), a case with no date "By Tue Dec 1" and "Another date", a case whose time came Draft the letter (a line of words) and Change the date (`input: "date"`), a ready letter Submitted per destination (the three nearest) and All submitted; then Open it in Action requests; no Done, No reply needed or Later. Its deeper briefing is the briefing on a case (below), for a `case` item as for a letter. A choice runs the bot's `Hooks.letter` (`_home_letter`), as a press on its card does |
 | So far today | the ledger rows closed today, one per mail conversation, each by "You" (the owner's word, a confirm, a send, an archive) or "Tacitus" (a lapse, a sibling, a rule); the requests answered today; the drafts Tacitus made that wait for Send |
 | The ring | `done` against `left`: the two numbers above |
 | The next gap | today's timed events (the briefing's events, each placed by its own start, a declined or free one left out): the minutes before the next one, or, while the owner is in a meeting, after the busy stretch (meetings less than 10 minutes apart are one: "You are busy until 1:30. Then you have 50 minutes before your 2:20."), and how many of the list's first items fit (a tap 2 minutes, a reply 10, a task 20): "You have 50 minutes before your 2:00. That is enough for the 2 replies." With one button that opens the first item |
@@ -809,7 +809,7 @@ Tacitus does not know, and two or three next steps.
 - *A step at the tap.* A step that is one of the item's own choices runs as
   that choice (`home_items`), with its Undo: Tell Tacitus what to say with
   the words, Waiting on someone with the date (else Later), and Done (else
-  Not needed). A step the item does not offer is not shown. Start, Hold and
+  No reply needed). A step the item does not offer is not shown. Start, Hold and
   Continue in a conversation open a conversation in the item's place (its
   project room, else Ask Tacitus). Its first message is Tacitus's: the
   item's name on the first line (in plain words, at most 60 characters, cut
@@ -1018,7 +1018,7 @@ a `ref` (its `id`), which these routes take:
 |---|---|
 | `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, row_version, brief, choices, deeper, goto?, ask?, pending?}`; 404 `{ok: false, said}` when Home does not list it now |
 | `POST /api/home/act` `{ref, choice, arg?, version?}` | one choice: `{ok, said, undo?, undo_until?, goto?, item?}` |
-| `POST /api/home/undo` `{token}` | takes a Done, Not needed, Waiting or Later back while its window runs |
+| `POST /api/home/undo` `{token}` | takes a Done, No reply needed, Waiting or Later back while its window runs |
 | `POST /api/home/deeper` `{ref}` | starts the deeper briefing (`home_deeper.start`) |
 
 **The quick briefing** is code alone, never a model, from the row, its
@@ -1047,8 +1047,8 @@ it in Action requests), which read nothing of it.
 
 | Kind | Choices | Runs |
 |---|---|---|
-| reply | Draft a reply, Tell Tacitus what to say, Not needed, Later | Draft it on the Replies card (`_dispatch_reply_draft`; the line is the owner's instruction for this reply alone); its Send card comes to Action requests and `goto` opens the turn's line there |
-| question (a reply's) | its answers, Other answer, Not needed, Later | the Replies card's answer buttons |
+| reply | Draft a reply, Tell Tacitus what to say, Later, No reply needed | Draft it on the Replies card (`_dispatch_reply_draft`; the line is the owner's instruction for this reply alone); its Send card comes to Action requests and `goto` opens the turn's line there |
+| question (a reply's) | its answers, Other answer, Later, No reply needed | the Replies card's answer buttons |
 | question (no reply) | Answer, Later | a new conversation with the owner's answer, sent |
 | item | Start it with Tacitus, Done, Waiting on someone, Later | a new conversation in Ask Tacitus (the row's project room when it has one) that opens with the owner's message naming the item, sent |
 | request | Open it in Action requests | nothing: Send and Create stay there |
@@ -1057,7 +1057,7 @@ it in Action requests), which read nothing of it.
 Done is the web chat's Mark done: a row Tacitus proposed is confirmed;
 any other closes on the owner's word ("marked done in the web chat") and
 gets a line in the missed-closure log, since a closure the owner states is
-one the signals missed. Not needed is the Replies card's (`user_handled`,
+one the signals missed. No reply needed is the Replies card's (`user_handled`,
 the draft deleted, the thread's other reply rows closed, no missed-closure
 line: no signal could have known that no reply was wanted). Later snoozes
 the row to tomorrow, Monday or a day the owner picks (`ledger.py update
@@ -1122,7 +1122,7 @@ choices. A draft (Draft a reply, Tell Tacitus what to say, an answer, a
 step that drafts) keeps the owner on Home: the card shows the bot's line
 with a link to the line in Action requests where the Send card comes; a
 choice that opens a conversation goes there with the bot's line as a
-toast. Done, Not needed, Waiting and Later show the bot's line and Undo
+toast. Done, No reply needed, Waiting and Later show the bot's line and Undo
 with the seconds left of the bot's window (`undo_until`), and the item
 keeps its place until then, though Home read again no longer lists it.
 An error is the bot's plain words in the card. A device that may not
@@ -1252,8 +1252,8 @@ and what the place does changed.
   to it (`ChatFrontend.dm_takes_text` is false on the web chat).
 - **The list: one block per request** (`GET /api/requests`,
   `WebFrontend.requests`, `action_requests.py`). A request is a card or
-  its status line in the DM, at the top or in a thread (the Replies
-  card's rows), or a thread there that opens with a plain message (a
+  its status line in the DM, at the top or in a thread (a reply's next
+  card, or a Replies card's rows from before), or a thread there that opens with a plain message (a
   notice, a device to approve, words the owner typed before). One line
   says what the place is for; the requests that wait for a tap come
   first; the rest sit under one "Earlier" part, shut at first, with its
@@ -1294,9 +1294,37 @@ and what the place does changed.
   the button shows only once the line has words; with none it is there,
   pressable once a line is typed. Enter in the line presses it; the line
   scrolls above a phone's keyboard. Each press is one
-  of the card's own actions on its own route with its own value; Skip and
-  Not needed stay below as quiet buttons. Slack keeps its path and words:
-  the thread takes typed answers there.
+  of the card's own actions on its own route with its own value; Later
+  and No reply needed stay below as quiet buttons. Slack keeps its path
+  and words: the thread takes typed answers there.
+- **Each reply that waits is its own request.** The day's tick
+  (`_post_reply_queue`, from 08:00 local and outside quiet hours) posts
+  each thread that waits for the owner's reply as its own card at the top
+  of Action requests (`_reply_blocks_up`), tagged with its row, oldest
+  first: no card to press first. A row whose card is still live (its
+  block, or the question or could-not card a turn left) never gets a
+  second one: that card is drawn again in place, with no push, when what
+  it shows changed (`_reply_sig`: where the reply stands, the question and
+  its answers, the owner's earlier word) or its age did, and a could-not
+  card keeps its reason until its row changes. At most ten wait at once
+  (`REPLY_CARD_MAX`); the rest come on a later day. A row whose reply is
+  being written gets none. A Replies card from before ("4 replies wait
+  for you", One by one) gives way at the next tick, and a press on one
+  posts its rows' cards the same way. Slack keeps its daily Replies card
+  and One by one.
+- **The same two quiet choices on every reply.** Each reply card ends
+  with Later and No reply needed, the words and the order of a reply on
+  Home. Later takes a day (`CardAction.date`, tomorrow to a year on, as
+  Home's Later): the day control starts three days on, and its button
+  says the day; Slack shows a date picker named Later; a thumbs down with
+  no day is three days on. No reply needed deletes the row's draft and
+  closes the row and the thread's other reply rows (`user_handled`). A
+  line typed on the card that says only that no reply is needed ("No
+  email necessary", "no reply needed", "don't reply": `ledger.no_reply_line`,
+  the whole line in a fixed form, never part of a longer line or a
+  question) is No reply needed, never a draft turn. On Home the same line
+  in Tell Tacitus what to say or an answer is Home's No reply needed, with
+  its Undo.
 - **A letter case.** A new letter request is one card, kind `letter_ask`
   ("Letter request" folded): Will you write it? Yes, Yes and ask for
   materials, No; with the destinations, their dates and what the request
