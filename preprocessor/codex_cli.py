@@ -134,7 +134,9 @@ def parse_events(stdout: str, *, elapsed: dict | None = None, summarize=None) ->
     """What the JSONL event stream says: the agent's messages in order,
     the commands it ran, the files it changed, the usage, and any error
     items that are not the enterprise-config notices codex prints on
-    every run.
+    every run. `failed` is why the turn ended without completing (a
+    `turn.failed` or a stream `error` event: a usage limit, a dropped
+    connection), empty when it did not say.
 
     A command keeps the end of its output. `elapsed` maps an item id to
     the seconds its command ran (the streaming read measures it; the
@@ -145,6 +147,7 @@ def parse_events(stdout: str, *, elapsed: dict | None = None, summarize=None) ->
     usage: dict = {}
     turns = 0
     thread_id = ""
+    failed = ""
     for line in (stdout or "").splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -160,6 +163,10 @@ def parse_events(stdout: str, *, elapsed: dict | None = None, summarize=None) ->
         if t == "turn.completed":
             turns += 1
             usage = ev.get("usage") or usage
+            continue
+        if t in ("turn.failed", "error"):
+            err = ev.get("error") if isinstance(ev.get("error"), dict) else ev
+            failed = str(err.get("message") or failed or "the turn failed")
             continue
         if t != "item.completed":
             continue
@@ -190,7 +197,7 @@ def parse_events(stdout: str, *, elapsed: dict | None = None, summarize=None) ->
             if "requirements layers" not in msg:
                 errors.append(msg)
     return {"messages": messages, "tool_calls": tool_calls, "files": files,
-            "usage": usage, "turns": turns, "errors": errors, "thread_id": thread_id}
+            "usage": usage, "turns": turns, "errors": errors, "thread_id": thread_id, "failed": failed}
 
 
 class _Done:
@@ -354,8 +361,13 @@ def run(prompt: str, *, cwd, model: str = "", sandbox: str = "read-only", add_di
     # An error item ends the run only when no final message came out of
     # it: codex also reports advisories as error items (unknown model
     # metadata, a fallback), and a run that still answered was measured.
+    # A turn that failed, or a run that exited non-zero with no turn
+    # completed, did not answer either: the last message it left is a
+    # note on work it never finished, not its reply.
     harness_error = ""
-    if not output:
+    if parsed["failed"] or (output and r.returncode != 0 and not parsed["turns"]):
+        harness_error = ("codex turn failed: " + (parsed["failed"] or f"exit {r.returncode}"))[:300]
+    elif not output:
         if parsed["errors"]:
             harness_error = "codex error: " + "; ".join(parsed["errors"])[:300]
         elif r.returncode != 0:

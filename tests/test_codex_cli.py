@@ -207,6 +207,23 @@ def test_an_advisory_error_item_does_not_fail_a_run_that_answered(tmp_path, monk
     assert res["harness_error"].startswith("codex error")
 
 
+def test_a_turn_cut_short_is_no_answer_though_it_left_a_progress_note(tmp_path, monkeypatch):
+    note = json.dumps({"type": "item.completed", "item": {"id": "m", "type": "agent_message",
+                       "text": "I will make the draft next."}})
+    failed = json.dumps({"type": "turn.failed", "error": {"message": "usage limit reached"}})
+    out = 'for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done\ncat > /dev/null\n'
+    # The turn says it failed.
+    fake = _fake_codex(tmp_path, out + f"printf '%s\\n' '{note}' '{failed}'\n"
+                       'printf "I will make the draft next." > "$out"\nexit 1\n')
+    monkeypatch.setattr(X, "CODEX_BIN", str(fake))
+    res = X.run("hello", cwd=tmp_path)
+    assert res["harness_error"] == "codex turn failed: usage limit reached" and res["output"] == ""
+    # The run ends non-zero before any turn completes, and says nothing more.
+    _fake_codex(tmp_path, out + f"printf '%s\\n' '{note}'\nexit 1\n")
+    res = X.run("hello", cwd=tmp_path)
+    assert res["harness_error"] == "codex turn failed: exit 1" and res["output"] == ""
+
+
 def test_run_reports_a_missing_binary_and_a_silent_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(X, "CODEX_BIN", str(tmp_path / "nope"))
     res = X.run("hello", cwd=tmp_path)
