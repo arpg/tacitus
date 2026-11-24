@@ -207,22 +207,21 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
     picks, field = card.locator(".answer-pick"), card.locator(".answer-ctl input")
     expect(picks).to_have_text(["Yes, I will review it", "No, I cannot make the deadline"])
     go = card.locator(".answer-ctl .btn.primary")
-    expect(go).to_have_text("Draft the reply")
-    expect(go).to_be_disabled()
+    expect(go).to_be_hidden()  # with quick answers, the one filled button is for typed words
     field.press("Enter")
     page.wait_for_timeout(200)
     assert stub.clicks == []  # no answer, no press
-    picks.first.click()
-    expect(picks.first).to_have_attribute("aria-pressed", "true")
-    expect(go).to_be_enabled()
     field.fill("Yes, if the deadline can move to December 8.")
-    expect(picks.first).to_have_attribute("aria-pressed", "false")  # a typed line takes the place of a quick answer
+    expect(go).to_be_visible()
+    expect(go).to_have_text("Draft the reply")
+    expect(go).to_be_enabled()
     field.fill("")
-    expect(go).to_be_disabled()
+    expect(go).to_be_hidden()
     expect(card.locator(".answer-more .btn")).to_have_text(["Skip 3 days", "Not needed"])  # quiet, below
     expect(card).not_to_contain_text("in this thread")
     if size == "phone":
         assert page.evaluate(SMALL_TARGETS) == []
+        page.evaluate("document.activeElement.blur()")
         page.set_viewport_size({"width": 390, "height": 420})  # the keyboard takes the lower half
         field.focus()
         # The field scrolls into what the keyboard leaves 250 ms after the focus (app.js), later on a busy machine.
@@ -250,7 +249,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
     assert not errors, errors
 
 
-def test_a_quick_answer_goes_through_its_own_button_and_skip_stays_quiet(app):
+def test_a_quick_answer_is_one_tap_on_its_own_button_and_skip_stays_quiet(app):
     from playwright.sync_api import expect
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
@@ -258,8 +257,7 @@ def test_a_quick_answer_goes_through_its_own_button_and_skip_stays_quiet(app):
     page.evaluate("location.hash = '#/stream%3A7'")
     page.locator(f'.req[data-id="{m["id"]}"] .req-head').click()
     card = page.locator(".req.open .card.answer")
-    card.locator(".answer-pick").nth(1).click()
-    card.locator(".answer-ctl .btn.primary").click()
+    card.locator(".answer-pick").nth(1).click()  # one tap answers: no second button to press
     wait_for(lambda: stub.clicks)
     assert stub.clicks == [{"channel": m["channel"], "id": m["id"], "action_id": "reply_choice_two",
                             "value": {"row": "response-r1", "batch": "b1", "choice": "No, I cannot make the deadline"}}]
@@ -276,8 +274,8 @@ def test_a_quick_answer_goes_through_its_own_button_and_skip_stays_quiet(app):
 
 def test_a_redraw_keeps_the_open_decision_its_answer_and_the_words_typed(app):
     """Action requests is drawn again on a card's arrival and on a read: the
-    open block whose request has not changed stays as it is, with the quick
-    answer chosen, the words typed in its field and the focus there."""
+    open block whose request has not changed stays as it is, with the words
+    typed in its field and the focus there."""
     from playwright.sync_api import expect
     page, stub, errors = app()
     page.wait_for_selector(".thread-item")
@@ -286,7 +284,6 @@ def test_a_redraw_keeps_the_open_decision_its_answer_and_the_words_typed(app):
     block = page.locator(f'.req[data-id="{m["id"]}"]')
     block.locator(".req-head").click()
     card = block.locator(".card.answer")
-    card.locator(".answer-pick").first.click()
     field = card.locator(".answer-ctl input")
     field.focus()
     page.keyboard.type("Yes, if")

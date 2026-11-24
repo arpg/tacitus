@@ -217,16 +217,14 @@ def test_a_decision_is_answered_with_the_decision_control_of_action_requests(app
     expect(card.locator("legend")).to_have_text("Your answer")
     picks, field, go = card.locator(".answer-pick"), card.locator(".answer-ctl input"), card.locator(".answer-ctl .btn.primary")
     expect(picks).to_have_text(["Yes, I can sign it", "No, ask the lab manager"])
-    expect(go).to_have_text("Draft the reply")
-    expect(go).to_be_disabled()
+    expect(go).to_be_hidden()  # with quick answers, the one filled button is for typed words
     expect(card.locator(".answer-more .btn")).to_have_text(["Not needed", "Later"])
     expect(card.locator(".answer-q")).to_have_count(0)  # the quick briefing above says what it is
     card.get_by_role("button", name="Later").click()
     expect(q.locator(".h-in button").first).to_have_text("Tomorrow")
     field.fill("Yes, from January.")
-    picks.first.click()
-    expect(field).to_have_value("")  # a quick answer takes the place of a typed line
-    go.click()
+    expect(go).to_have_text("Draft the reply")
+    picks.first.click()  # one tap answers, and takes the place of a typed line
     expect(q.locator(".h-note")).to_contain_text(WRITING)  # Home stays, with the way to the draft's line
     expect(q.locator(".h-note a")).to_have_text("Open it in Action requests")
     expect(page.locator("#channel-name")).to_have_text("Home")
@@ -370,15 +368,15 @@ def test_a_home_read_and_the_deeper_briefing_arriving_keep_the_open_card_and_the
     assert page.evaluate("[document.activeElement.dataset.mine, document.activeElement.selectionStart]") == ["1", 27]
     expect(reply.locator(".h-item")).to_have_attribute("aria-expanded", "true")
     assert page.evaluate("$('thread-list').scrollTop") == top
-    # a quick answer chosen in a decision stays chosen through a redraw
+    # words typed in a decision stay through a redraw
     q = opened(page, "reply:response-r2")
-    q.locator(".answer-pick").first.click()
+    q.locator(".answer-ctl input").fill("Yes, from January.")
     reads = len(stub.home_gets)
     stub.set_home(stub.real_payload())
     wait_for(lambda: len(stub.home_gets) > reads)
     finish(stub, "reply:response-r2")
     expect(q.locator(".h-deeper .text")).to_be_visible()
-    expect(q.locator(".answer-pick").first).to_have_attribute("aria-pressed", "true")
+    expect(q.locator(".answer-ctl input")).to_have_value("Yes, from January.")
     expect(q.locator(".answer-ctl .btn.primary")).to_be_enabled()
     assert not errors, errors
 

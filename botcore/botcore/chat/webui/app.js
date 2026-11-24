@@ -1176,9 +1176,9 @@ function caseBrief(r) {
 }
 
 // A question for the owner (a Replies row that waits on a decision, or Tacitus's one more question about it): the
-// question is the headline, with who wrote and how long it has waited, then one "Your answer" control, the quick
-// answers the card offers and a line to type, and one primary button, pressable once there is an answer, that drafts
-// the reply. Each press is one of the card's own actions on the card's own route; Skip and Not needed stay quiet below.
+// question is the headline, with who wrote and how long it has waited, then one "Your answer" control: the quick
+// answers the card offers, each one tap that answers, and a line to type, whose one primary button shows once there
+// are words to send. Each press is one of the card's own actions on the card's own route; Skip and Not needed stay quiet below.
 // A Home item that waits on an answer draws its choices here too, each press sent its own way (`send`).
 function answerCard(msg, send = (body, box) => act(msg, body, box)) {
   const c = msg.card, q = c.question, acts = (c.actions || []).filter(named), words = labelWords;
@@ -1191,17 +1191,17 @@ function answerCard(msg, send = (body, box) => act(msg, body, box)) {
     else b.addEventListener('click', () => send({ action_id: a.id, value: a.value ?? '' }, box));
     return b;
   });
-  let chosen = picks.find((a) => words(a) === q.answer) || null;
+  let chosen = picks.find((a) => words(a) === q.answer) || null; // a press that failed keeps its answer for Try again
   const field = ask ? h('input', { class: 'card-ask', maxlength: 300, autocomplete: 'off', enterkeyhint: 'send',
     'aria-label': 'Your answer', placeholder: picks.length ? 'Or type your answer' : 'Type your answer' }) : null;
   if (field && !chosen && q.answer) field.value = q.answer;
   const go = h('button', { type: 'button', class: 'btn primary', 'data-action': 'answer' }, q.failed ? 'Try again' : q.go || 'Draft the reply');
   const chips = picks.map((a) => h('button', { type: 'button', class: 'btn answer-pick', 'data-action': a.id,
-    onclick: () => { chosen = chosen === a ? null : a; if (chosen && field) field.value = ''; sync(); } }, words(a)));
+    onclick: () => { if (field) field.value = ''; chosen = null; send({ action_id: a.id, value: a.value ?? '' }, box).then(sync); } }, words(a)));
   const locked = Boolean(S.me && S.me.card_actions === false);
   const sync = () => {
     chips.forEach((b, i) => b.setAttribute('aria-pressed', String(picks[i] === chosen)));
-    go.disabled = locked || !(chosen || (field && field.value.trim()));
+    go.disabled = locked || !(chosen || (field && field.value.trim())); go.hidden = Boolean(picks.length) && go.disabled; // with quick answers, for typed words only
   };
   const press = () => !go.disabled && send(chosen ? { action_id: chosen.id, value: chosen.value ?? '' }
     : { action_id: ask.id, value: ask.value ?? '', text: field.value.trim() }, box).then(sync);
