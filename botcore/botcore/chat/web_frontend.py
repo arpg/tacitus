@@ -4596,6 +4596,11 @@ class WebFrontend(ChatFrontend):
                     raise _HttpError(400, f"No such choice for {label}.")
                 values[bid] = {aid: {"type": "static_select",
                                      "selected_option": {"value": v} if v else None}}
+            elif el.get("type") == "datepicker":
+                # the app's day field (dayPick): an ISO day, as Slack's datepicker gives it
+                if v and not re.fullmatch(r"\d{4}-\d\d-\d\d", v):
+                    raise _HttpError(400, f"Pick a day for {label}.")
+                values[bid] = {aid: {"type": "datepicker", "selected_date": v or None}}
             else:
                 if len(v) > MODAL_TEXT_MAX:
                     raise _HttpError(400, f"{label} is at most {MODAL_TEXT_MAX} characters.")

@@ -1,0 +1,1 @@
++3    the lock on a card's title only where its press passes the bot's confirmation gate (send, bulk, schedule, the meeting cards, plugin, publish, browser); any other card keeps its own leading emoji

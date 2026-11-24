@@ -299,9 +299,10 @@ def test_later_offers_its_days_and_a_date(app):
     expect(day).to_be_focused()
     expect(day).to_have_attribute("min", days[-1]["min"])
     expect(day).to_have_attribute("max", days[-1]["max"])
-    when = (date.fromisoformat(days[-1]["min"]) + timedelta(days=9)).isoformat()
+    picked = date.fromisoformat(days[-1]["min"]) + timedelta(days=9)
+    when = picked.isoformat()
     day.fill(when)
-    reply.get_by_role("button", name="Use this date").click()
+    reply.get_by_role("button", name=f"Use {picked:%a} {picked:%b} {picked.day}").click()  # the day in words before it goes
     wait_for(lambda: stub.acts == [act(stub, ref, "later", when)])
     expect(reply.locator(".h-said")).to_have_text(re.compile(r"^Later\. It comes back .+\.$"))
     todo = opened(page, "item:deadline-w1")

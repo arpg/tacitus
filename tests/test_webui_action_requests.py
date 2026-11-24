@@ -233,6 +233,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
         assert page.evaluate(SIDEWAYS) == [0, 0]
         assert page.evaluate("$('thread-list').scrollWidth - $('thread-list').clientWidth") == 0
     field.fill("Yes, if the deadline can move to December 8.")
+    stub.reply_hold.clear()  # the reply is written once the test has seen it being written: a slow page cannot miss it
     field.press("Enter")
     wait_for(lambda: stub.clicks)
     assert stub.clicks == [{"channel": m["channel"], "id": m["id"], "action_id": "reply_draft",
@@ -240,6 +241,7 @@ def test_a_decision_asks_its_question_and_drafts_the_reply_from_one_answer(app, 
                             "text": "Yes, if the deadline can move to December 8."}]
     expect(page.locator(f'.req.u-working[data-id="{m["id"]}"] .req-busy')).to_have_text(
         "Writing the reply: Yes, if the deadline can move to December 8.")
+    stub.reply_hold.set()
     send = page.locator(".req.open:has(.card button:has-text('Send'))")
     expect(send).to_be_visible(timeout=8000)  # the draft's Send request, opened in its place
     expect(send.locator(".card-body")).to_contain_text("Yes, if the deadline can move to December 8")

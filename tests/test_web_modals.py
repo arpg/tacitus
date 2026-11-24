@@ -115,6 +115,23 @@ def test_the_saved_values_are_checked_against_the_view(fe):
     assert post({"body_block": {"body": "ok"}}) == 200                       # still open after a refusal
 
 
+def test_a_day_in_a_window_comes_back_as_slacks_datepicker_value(fe):
+    """The app draws a `datepicker` as its day field (dayPick) and posts the
+    ISO day; the handler reads it as Slack's datepicker gives it."""
+    day = {"type": "input", "block_id": "due", "label": {"type": "plain_text", "text": "Due date"},
+           "element": {"type": "datepicker", "action_id": "day", "initial_date": "2031-03-04"}}
+    saved, done = [], threading.Event()
+    fe.registry.action("approve_send")(lambda ev: fe.open_modal(ev.trigger_id, {**VIEW, "blocks": [day]}))
+    fe.registry.view("edit_draft_modal")(lambda ev: (saved.append(ev), done.set()))
+    trigger = _click(fe)
+    owner(fe, "GET", f"/api/modals/{trigger}")
+    post = lambda v: owner(fe, "POST", f"/api/modals/{trigger}", {"values": {"due": {"day": v}}})[0]  # noqa: E731
+    assert post("next Friday") == 400 and post("") == 400                     # a day, and required
+    assert post("2031-03-11") == 200
+    assert done.wait(5)
+    assert saved[0].values == {"due": {"day": {"type": "datepicker", "selected_date": "2031-03-11"}}}
+
+
 def test_only_a_trigger_minted_here_takes_a_view(fe):
     assert fe.open_modal("web:never-minted", VIEW) is False
     assert fe.open_modal("", VIEW) is False

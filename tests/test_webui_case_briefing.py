@@ -184,7 +184,7 @@ def test_a_step_presses_the_case_cards_own_answer(app):
     field = block.locator(".h-deeper input[type='date']")
     expect(field).to_be_focused()
     field.fill(day(12))
-    block.locator(".h-deeper").get_by_role("button", name="Use this date").click()
+    block.locator(".h-deeper .day-use").click()  # Use, with the day in words (tests/test_webui_dates.py)
     wait_for(lambda: len(stub.letter_presses) == 2)
     assert stub.letter_presses[1] == (CID, "date", "", day(12))
     assert stub.acts[-1]["choice"] == "step:s3" and stub.acts[-1]["arg"] == day(12)

@@ -1109,7 +1109,8 @@ somewhere the item names, Open it in Action requests or Open in Outlook,
 is a link to `goto`; a question with answers draws them with the decision
 control of Action requests); the line or the days a choice asks for (Tell
 Tacitus what to say: one line and Draft it; Later: its `options`, Pick a
-date a date field within `min` and `max`); the bot's line; and Ask about
+date the day control of Action requests within `min` and `max`; a choice
+with `input: "date"` the same control at its `proposed` day); the bot's line; and Ask about
 this (`ask`). The page asks for the deeper briefing (`POST
 /api/home/deeper`) only on an open, and only when the item says `none`,
 `failed` or `stale`; meanwhile the card shows "Reading the messages..."
@@ -1426,6 +1427,36 @@ and what the place does changed.
   takes both names, and what the store held before.
 - **Opening place.** The app opens on Home (a bot from before it: on Ask
   Tacitus); a link or the address names any other place.
+- **A day to pick.** Wherever Tacitus asks for a date, the app draws one
+  control (`dayPick` in app.js), never a line to type a day in: a card's
+  action with `date` (`{"proposed"?, "min", "max"}`, ISO days; its `ask`
+  is the field's name), a Home choice or a next step with `input: "date"`
+  (`min`, `max`, `proposed`), Later's Pick a date, and a window's
+  `datepicker` (Windows). The action's button opens the control under the
+  card's buttons and shuts it again: the browser's own date field within
+  min and max, at the proposed day, and one button that says the day in
+  words before it goes ("Use Tue Dec 1"), pressable only for a day in the
+  range; Enter in the field presses it. A card posts the ISO day as the
+  action's line (`text`), a Home choice as its `arg`. The proposed day is
+  one tap only on the bot's own button for it ("Yes, by Tue Dec 1": a plain
+  action, the day in its value); the app never makes up an action. The day
+  picked and whether the control is open are kept by the card and action
+  (`S.days`), so a redraw draws them as they were. A press the bot refuses
+  (400) shows the bot's words in the card, which stays open with its day;
+  a card the bot updates in place after a press that did not work carries
+  its words in `failed`, shown as an alert line above the buttons, and
+  keeps its place in the list.
+- **No label without a name.** An action, a menu entry, a Home choice or a
+  next step whose label has no name once its emoji is off (empty, or
+  ending in a colon: "Submitted: " with the name missing) is not drawn:
+  two such buttons could not be told apart.
+- **The lock.** A lock before a card's title marks a press that passes the
+  bot's confirmation gate: the kinds `send`, `bulk`, `schedule`, `event`,
+  `event_update`, `event_delete`, `plugin`, `publish` and `browser` (the
+  handlers behind `_reject_if_stale_confirmation` or a `request-confirm`
+  token). Any other card (a letter's decision, the Replies card, a close
+  proposal, a room picker) keeps its own leading emoji, and a lock in its
+  title is dropped.
 
 ## State
 
@@ -1537,13 +1568,16 @@ web front end takes a view only for a trigger it minted, one per click.
 | POST | `/api/modals/{trigger}` | `{"values": {block_id: {action_id: "text or option value"}}}` → `{"ok": true}`; dispatches a `ViewEvent` as the owner |
 
 The app shows the view's context and section lines, and its input blocks:
-a text field (`plain_text_input`, multiline or not) or a choice
-(`static_select`). Save sends the values. The server builds the
+a text field (`plain_text_input`, multiline or not), a choice
+(`static_select`) or a day (`datepicker`, at its `initial_date`: the day
+control of Action requests, with the day in words under it). Save sends
+the values. The server builds the
 `ViewEvent` from the stored view: its `callback_id` and `private_metadata`,
 and only the values of its input blocks, in Slack's shape (`{"value": ...}`,
-or `{"selected_option": {"value": ...}}`). A required field left empty, a
-text longer than 3,000 characters or an option the view lacks is a 400,
-and the window stays open. A saved window closes (404 after); an unsaved
+`{"selected_option": {"value": ...}}` or `{"selected_date": "YYYY-MM-DD"}`).
+A required field left empty, a text longer than 3,000 characters, an option
+the view lacks or a day that is not an ISO day is a 400, and the window
+stays open. A saved window closes (404 after); an unsaved
 one is dropped after 30 minutes. A device on the relay below "all" may
 not save a window, as it may not press a card button.
 
