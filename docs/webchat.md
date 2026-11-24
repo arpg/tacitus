@@ -1289,10 +1289,11 @@ and what the place does changed.
   needed", its question and who wrote. Opened, the question is the
   headline, with who wrote and how long it has waited, then one "Your
   answer" control: the card's quick answers (its `reply_choice_*`
-  actions), a line (the action that `ask`s), and one primary button, Draft
-  the reply, pressable only once a quick answer is chosen or a line typed
-  (a typed line takes the place of a chosen answer). Enter in the line
-  presses it; the line scrolls above a phone's keyboard. Each press is one
+  actions), each one tap that answers, and a line (the action that
+  `ask`s) with one primary button, Draft the reply. With quick answers
+  the button shows only once the line has words; with none it is there,
+  pressable once a line is typed. Enter in the line presses it; the line
+  scrolls above a phone's keyboard. Each press is one
   of the card's own actions on its own route with its own value; Skip and
   Not needed stay below as quiet buttons. Slack keeps its path and words:
   the thread takes typed answers there.
