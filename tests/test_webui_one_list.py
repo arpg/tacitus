@@ -4,7 +4,10 @@ its Undo, Not done) and a letter, each answered in place; a reply Home
 started says it is being written and then, in the same block, becomes the
 way to its Send card; Action requests and its count hold only what needs
 the lock; Settings, Home, Where you answer turns it back. With one list
-off, Action requests holds every card as before.
+off, Action requests holds every card as before. An item unfolds in place:
+its mail folded as a Send card folds it, what Tacitus has, and one note box
+whose quick answers fill it and whose Ask sends it once; the note's answer
+shows on the item. The row keeps Done, Later and No reply needed.
 
 The bot's own code answers (tests/webui_stub_server.py, `home_src`,
 `one_list`): Home, the items and the choices are home_screen's and
@@ -92,7 +95,8 @@ def test_home_holds_a_decision_a_close_proposal_and_a_letter_each_answered_in_pl
     labels = page.locator(".h-main .h-block .h-label").all_inner_texts()
     assert "Looks done" in labels and "Answer needed" in labels and "Letter" in labels
     block = opened(page, "proposal:task-s2")
-    expect(block.locator("[data-part='choices'] .btn")).to_have_text(["Done", "Not done", "Ask"])
+    expect(block.locator("[data-part='row'] .btn")).to_have_text(["Done", "Not done"])
+    expect(block.locator("[data-part='tell'] textarea")).to_be_visible()                   # Ask is the note's
     expect(block.locator("[data-part='brief']")).to_contain_text("Tacitus thinks it is done: The slides went out on Friday")
     block.get_by_role("button", name="Not done").click()
     wait_for(lambda: stub.home_presses == [("close", "task-s2", True)])
@@ -101,7 +105,8 @@ def test_home_holds_a_decision_a_close_proposal_and_a_letter_each_answered_in_pl
     letter = opened(page, "letter:lc-made-up-1")
     expect(letter.locator("[data-part='choices'] .btn").first).to_be_visible()
     names = letter.locator("[data-part='choices'] .btn").all_inner_texts()
-    assert "Open it in Action requests" not in names and names[-1] == "Ask"     # no card to open: its answers here
+    assert "Open it in Action requests" not in names and "Ask" not in names     # no card to open: its answers here
+    expect(letter.locator("[data-part='tell'] textarea")).to_be_visible()                    # and the note in Ask's place
     assert not errors, errors
 
 
@@ -126,7 +131,7 @@ def test_a_reply_being_written_turns_into_its_send_card_in_the_same_block(app):
     stub.set_home(stub.real_payload())
     expect(block.locator(".h-detail")).to_have_text("Drafting the reply.")
     expect(block.locator("[data-part='brief'] .h-then")).to_have_text("Drafting the reply.")
-    expect(block.locator("[data-part='choices'] .btn")).to_have_text(["Ask"])
+    expect(block.locator(".h-acts .btn, [data-part='choices'] .btn, textarea")).to_have_count(0)
     send = F.request("w61", "send", "Send email", "Re: Seminar date", "To Sam Rivera", dm=W.DM)
     send["card"]["actions"][0]["value"] = '{"conversation_id": "conv-r1", "draft_id": "d1"}'
     state.update(turns={}, requests={"waiting": [send], "done": []})
@@ -205,9 +210,10 @@ def test_needs_you_is_part_of_home_with_one_count(app):
     block = page.locator(".h-block[data-ref^='thread:']")
     expect(block.locator(".h-label")).to_have_text("Answer needed")
     expect(block.locator(".h-title")).to_have_text("Which project is the new grant for?")
+    expect(block.locator("[data-part='row'] .btn")).to_have_text(["Done"])                  # on its folded row
     block.locator("> button").click()
-    expect(block.locator("[data-part='choices'] .btn")).to_have_text(["Ask", "Done"])
-    block.get_by_role("button", name="Ask", exact=True).click()
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_disabled()             # the note's, empty
+    block.get_by_role("link", name="Open it there").click()
     expect(page.locator("#channel-name")).to_have_text("example-project")    # its room, its thread
     page.evaluate("location.hash = '#/needs'")
     expect(page.locator("#channel-name")).to_have_text("Home")               # no Needs you place
@@ -227,3 +233,122 @@ def test_needs_you_comes_back_when_the_owner_answers_in_action_requests(app):
     assert page2.evaluate("$('needs-link').hidden") is False
     assert page2.locator(".h-block[data-ref^='thread:']").count() == 0
     assert not errors and not errors2, errors + errors2
+
+
+# ── an item unfolds in place: its mail, what Tacitus has, one note box ──
+
+MAIL = {"conv-r1": [{"id": "m-1", "from": {"name": "Sam Rivera", "address": "sam.rivera@example.org"},
+                     "sent": "2026-11-20T15:00:00Z", "subject": "Seminar date",
+                     "text": "Could you give the seminar in March?\nAny Thursday works for us."}]}
+
+
+def _unfold(app, **kw):
+    page, stub, errors, state = one_list_app(app, **kw)
+    stub.mails = MAIL
+    return page, stub, errors, state
+
+
+def test_a_reply_unfolds_in_place_with_its_mail_what_tacitus_has_and_one_note_box(app):
+    from playwright.sync_api import expect
+    page, stub, errors, _state = _unfold(app, **PHONE)
+    block = page.locator(".h-block[data-ref='reply:response-r1']")
+    expect(block.locator("[data-part='row'] .btn")).to_have_text(["Later", "No reply needed"])   # folded
+    expect(block.locator(".h-body")).to_be_hidden()
+    assert block.get_by_role("button", name="Draft").count() == 0
+    hash_before = page.evaluate("location.hash")
+    block = opened(page, "reply:response-r1")
+    assert page.evaluate("location.hash") == hash_before                         # in place: no new page
+    parts = block.locator(".h-body > [data-part]").evaluate_all("(ns) => ns.map((n) => n.dataset.part)")
+    assert parts.index("mail") < parts.index("brief") < parts.index("tell")      # mail, what Tacitus has, the note
+    mail = block.locator("details.card-quoted")
+    expect(mail.locator("summary")).to_have_text("The email from Sam Rivera, Nov 20")
+    assert mail.get_attribute("open") is None                                    # folded, as on a Send card
+    mail.locator("summary").click()
+    expect(mail.locator("pre.card-body")).to_have_text("Could you give the seminar in March?\nAny Thursday works for us.")
+    assert stub.mail_reads == ["conv-r1"] and stub.note_presses == [] and stub.acts == []   # no turn on unfold
+    expect(block.locator("[data-part='row'] .btn")).to_have_text(["Later", "No reply needed"])   # the row keeps them
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")    # the phone's width
+    assert not errors, errors
+
+
+def test_quick_answers_fill_the_note_box_and_an_empty_note_cannot_be_sent(app):
+    from playwright.sync_api import expect
+    page, stub, errors, _state = _unfold(app)
+    block = opened(page, "reply:response-r1")
+    box, ask = block.locator("[data-part='tell'] textarea"), block.get_by_role("button", name="Tell Tacitus", exact=True)
+    expect(block.locator("label").filter(has_text="Tell Tacitus what to do")).to_be_visible()
+    expect(ask).to_be_disabled()
+    box.fill("   ")
+    expect(ask).to_be_disabled()
+    block.get_by_role("button", name="Yes", exact=True).click()
+    expect(box).to_have_value("Yes")
+    expect(box).to_be_focused()
+    page.keyboard.type(", but after Dec 21")
+    expect(box).to_have_value("Yes, but after Dec 21")
+    block.get_by_role("button", name="No", exact=True).click()
+    expect(box).to_have_value("No")                                              # a chip replaces the words
+    expect(ask).to_be_enabled()
+    assert stub.acts == [] and stub.note_presses == []                           # a chip never acts
+    assert not errors, errors
+
+
+def test_a_note_sends_once_and_its_answer_shows_on_the_item(app):
+    from playwright.sync_api import expect
+    page, stub, errors, _state = _unfold(app, **PHONE)
+    stub.deeper_delay = 0.3                                                      # its briefing comes as Tacitus works
+    block = opened(page, "reply:response-r1")
+    box = block.locator("[data-part='tell'] textarea")
+    box.fill("When is the seminar room free?")
+    block.get_by_role("button", name="Tell Tacitus", exact=True).click()
+    expect(block.locator(".h-tell .req-busy")).to_have_text("Tacitus is working on it.")
+    expect(block.locator(".h-asked")).to_have_text("You asked: When is the seminar room free?")
+    expect(box).to_have_value("")
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_disabled()
+    box.fill("And the date?")
+    box.press("Enter")
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_disabled()  # one turn at a time
+    assert [w for _i, w in stub.note_presses] == ["When is the seminar room free?"]
+    ((info, _w),) = stub.note_presses
+    assert info["key"] == "conv-r1" and info["lid"] == "response-r1"
+    assert [a["choice"] for a in stub.acts] == ["note"]
+    expect(page.locator(".h-block[data-ref='reply:response-r1'] .h-detail")).to_have_text("Tacitus is working on your note.")
+    stub.notes[0].update(state="answered", said="It is free on March 5 and March 12.")
+    stub.emit_item("reply:response-r1")
+    expect(block.locator(".h-answer")).to_have_text("It is free on March 5 and March 12.")
+    link = block.get_by_role("link", name="Open the conversation")
+    assert link.get_attribute("href").endswith("/t-note")                       # the conversation stays reachable
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_enabled()   # the words typed are kept
+    expect(block.locator(".h-deeper .text")).to_be_visible()                     # the briefing is in
+    expect(block.locator(".req-busy")).to_have_count(0)                          # no line says Tacitus still reads
+    assert page.evaluate("location.hash") == "#/home"                            # he stays where he pressed
+    assert not errors, errors
+
+
+def test_with_one_list_off_an_item_opens_as_before(app):
+    from playwright.sync_api import expect
+    page, stub, errors, _state = one_list_app(app, {"one_list": False})
+    stub.mails = MAIL
+    block = page.locator(".h-block[data-ref='reply:response-r1']")
+    assert block.locator(".h-acts").count() == 0
+    block = opened(page, "reply:response-r1")
+    expect(block.locator("[data-part='choices'] .btn").first).to_have_text("Draft")
+    assert block.locator("textarea, details.card-quoted").count() == 0 and stub.mail_reads == []
+    assert not errors, errors
+
+
+def test_the_folded_rows_buttons_act_without_unfolding(app):
+    from playwright.sync_api import expect
+    page, stub, errors, _state = _unfold(app, **PHONE)
+    block = page.locator(".h-block[data-ref='reply:response-r1']")
+    block.locator("[data-part='row']").get_by_role("button", name="Later").click()
+    days = block.locator(".h-acts [data-part='in']")
+    expect(days.get_by_role("button", name="Tomorrow")).to_be_visible()          # under the row, still folded
+    expect(block.locator(".h-body")).to_be_hidden()
+    days.get_by_role("button", name="Tomorrow").click()
+    expect(block.locator(".h-said")).to_have_text("Later. It comes back tomorrow.")
+    expect(block.get_by_role("button", name="Undo")).to_be_visible()
+    assert [a["choice"] for a in stub.acts] == ["later"] and stub.note_presses == [] and stub.mail_reads == []
+    other = page.locator(".h-block[data-ref='reply:response-r2']")
+    other.locator("[data-part='row']").get_by_role("button", name="No reply needed").click()
+    expect(other.locator(".h-said")).to_have_text("No reply needed. It is off your list.")
+    assert not errors, errors

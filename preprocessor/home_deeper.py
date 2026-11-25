@@ -1652,13 +1652,35 @@ STEP_HEADS = {"draft_reply": "Draft", "ask_sender": "Draft a question", "work_on
 def _public_step(s: dict) -> dict:
     """A step as the app draws it: its id and label. When the label had to
     cut the step's words, the label is the action alone and the whole
-    words are its `detail`, so the button says them once."""
+    words are its `detail`, so the button says them once. A step that would
+    start a turn (a draft, a conversation, a hold) carries the words it
+    would send as `fill`: with one list, Home shows it as a quick answer
+    that fills the item's note box (home_items.note_block)."""
     out = {"id": s["id"], "label": s["label"]}
     words = next((s["params"].get(k) for k in ("say", "question", "ask") if s["params"].get(k)), "")
     if words and words not in s["label"]:
         out["label"] = STEP_HEADS.get(s.get("kind") or "", s["label"])
         out["detail"] = words
+    fill = _fill(s)
+    if fill:
+        out["fill"] = fill
     return out
+
+
+def _fill(s: dict) -> str:
+    """The words a step that starts a turn would send; '' for any other."""
+    kind, p = s.get("kind"), s.get("params") or {}
+    try:
+        if kind in ("draft_reply", "ask_sender", "propose_times"):
+            return str(runs(kind, p, s.get("choice") or "say")[1] or "")
+        if kind == "work_on_it":
+            return str(p.get("ask") or "")
+        if kind == "hold_slot":
+            return (f"Hold {p['minutes']} minutes on {day_words(_date(p['date']))} on my calendar "
+                    f"to work on this.")
+    except (KeyError, TypeError, ValueError):
+        return ""
+    return ""
 
 
 def _view(job: dict, item: dict | None) -> dict:

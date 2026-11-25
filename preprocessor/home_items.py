@@ -90,6 +90,18 @@ The deeper briefing is home_deeper's (one hook, read lazily, and
 "unavailable" while the module is not there): its block in the item, its
 start, and its next steps (`deeper.steps`, after the code-built choices).
 A step that names one of the choices above runs here as that tap.
+
+With one list (docs/webchat.md, Home items, "The item unfolded") an item
+is three parts under its row. The row keeps the choices that need no model
+(`acts`: Done, Not done, Later, Later: waiting on them, No reply needed),
+on Home's list too (row_acts). Unfolded: its mail (mail_part, read when it
+opens, as the Send card reads its quoted thread), the quick and deeper
+briefings, and one note box (`note`, note_block): the owner's words go to
+the item's one conversation and start one turn there (Hooks.note), which
+answers, drafts, or both; quick answers fill the box and never act. Draft,
+Draft with my words, an answer and Ask are the note's, so no tap starts a
+turn on its own. A kept item has its mail, its row and a note; what goes
+with its note is code's fixed words alone.
 """
 from __future__ import annotations
 
@@ -158,6 +170,31 @@ REOPEN = {"id": "reopen", "label": "Not done"}
 # A close proposal's answers on Home (one list): Done confirms it, after the
 # Undo window; Not done keeps the row open and vetoes the evidence.
 NOT_DONE = {"id": "not_done", "label": "Not done"}
+# One list: the note box's one filled button. The owner's words (a
+# question, a direction, or both) go to the item's one conversation and
+# start one turn (Hooks.note).
+NOTE = {"id": "note", "label": "Tell Tacitus", "style": "primary"}
+
+# One list: the choices that act on an item with no model, on its folded
+# row and in this order; the rest stay in the opened item.
+ACT_IDS = ("done", "not_done", "later", "waiting", "not_needed")
+# The kinds whose act choices go on the folded row.
+ROW_KINDS = ("reply", "question", "item", "proposal", "conversation")
+# The kinds that take a note (one list; a kept item too, in code's words).
+NOTE_KINDS = ("reply", "question", "item", "proposal", "conversation", "letter", "case")
+# The note's bounds: its words, its quick answers (chips) and theirs.
+NOTE_MAX = 600
+CHIPS_MAX = 6
+CHIP_MAX = 160
+# A reply's quick answers; a question's are its own picks.
+QUICK = ("Yes", "No")
+NOTE_BUSY = "Tacitus is still working on your last note. Wait for its answer."
+NOTE_EMPTY = "Write your note first."
+NOTE_STARTED = "Tacitus is working on it."
+# The longest answer an item shows; the rest is in its conversation.
+NOTE_SAID_MAX = 1500
+# The item's mail: the longest text shown (the rest is in the mail itself).
+MAIL_MAX = 3000
 
 GONE = "This is not on your list any more."
 CHANGED = "This changed since you opened it. Here it is as it is now."
@@ -232,6 +269,17 @@ class Hooks:
         one list: the auto-close note's Not done, on a row Tacitus closed.
     which(question id, pick) -> {"ok", "said"}
         one list: a pick on a "which one was it?" question (case_which).
+    note(item, words) -> {"ok", "said"}
+        one list: the owner's note on an item (note_info), posted as his
+        own message in the item's one conversation, and the one turn that
+        answers it, drafts to it, or both.
+    notes() -> [{"ref", "key", "lid", "conv", "case", "state", "asked",
+                 "said", "at", "route", "card"?}]
+        one list: the notes and their turns, newest first (Sources.notes).
+    mail(conversation id) -> [{"id", "from", "sent", "subject", "text"}]
+        one list: the thread's messages, read now as the Send card reads
+        its draft (the bot's own graph_actions read, never the mediator's),
+        oldest first, each one's own text without the quoted history.
     """
     draft: Callable[[str, str, str], dict] | None = None
     not_needed: Callable[[str, str], dict] | None = None
@@ -242,6 +290,9 @@ class Hooks:
     close: Callable[[str, bool], dict] | None = None
     reopen: Callable[[str], dict] | None = None
     which: Callable[[str, str], dict] | None = None
+    note: Callable[[dict, str], dict] | None = None
+    notes: Callable[[], list] | None = None
+    mail: Callable[[str], list] | None = None
 
 
 # ── finding the item ────────────────────────────────────────────────
@@ -261,6 +312,8 @@ class Found:
     # One list: the row's reply turn as the bot keeps it ({"state":
     # "writing"} or {"state": "failed", "why"}); {} with none.
     turn: dict | None = None
+    # One list: the owner's newest note on the item and its turn.
+    note: dict | None = None
 
 
 def find(src, ref: str) -> Found | None:
@@ -274,6 +327,12 @@ def find(src, ref: str) -> Found | None:
         hit = next((x for x in hs.done(src) if x.get("id") == ref), None)
     if hit is None:
         return None
+    return found(src, hit)
+
+
+def found(src, hit: dict) -> Found:
+    """What the bot knows of the list item `hit`."""
+    hs = _hs()
     rows = src.rows or {}
     lid, conv, rid = str(hit.get("_lid") or ""), str(hit.get("_conv") or ""), str(hit.get("_rid") or "")
     kind = hit.get("kind")
@@ -300,6 +359,8 @@ def find(src, ref: str) -> Found | None:
     f.keep = level if hs.is_kept(level) else ""
     if not f.conv:
         f.conv = str((f.row or {}).get("conversation_id") or (f.reply or {}).get("conversation_id") or "")
+    if getattr(src, "one_list", False):
+        f.note = hs.note_of(hit, getattr(src, "notes", None))
     return f
 
 
@@ -378,7 +439,7 @@ def version(f: Found) -> str:
     changes it."""
     reply, req = f.reply or {}, f.request or {}
     item = {k: f.item.get(k) for k in ("kind", "label", "title", "kept", "due", "href", "link", "by", "at")}
-    item["detail"] = _WAITED.sub("", str(f.item.get("detail") or ""))
+    item["detail"] = _WAITED.sub("", str(f.item.get("_detail", f.item.get("detail")) or ""))
     return _digest({
         "item": item, "row": row_version(f.row), "row_keys": {k: (f.row or {}).get(k) for k in ROW_KEYS},
         "queued": _queued(f), "said": _owner_said(f),
@@ -591,13 +652,16 @@ def owner_names() -> tuple[str, ...]:
         else:
             import resident_io
         text = resident_io.read_text(_hs()._ea_dir() / "config" / "user-profile.json")
-        name = " ".join(str((json.loads(text) if text else {}).get("name") or "").split())
+        prof = json.loads(text) if text else {}
+        email = str(prof.get("email") or "").strip().lower()
+        name = " ".join(str(prof.get("name") or "").split())
         first = name.split(" ")[0] if name else ""
         if len(first) >= 2 and first.isalpha():
             names = tuple(dict.fromkeys(x for x in (name, first) if x))
     except Exception as e:
         log.debug("home: the owner's name could not be read: %s", e)
-    _PROFILE.update(at=now, names=names)
+        email = ""
+    _PROFILE.update(at=now, names=names, email=email)
     return names
 
 
@@ -835,7 +899,7 @@ def brief(f: Found, src) -> dict:
         out["what"] = "A conversation waits for your answer."
         out["standing"] = [x for x in (_sentence(f.item.get("detail")) if f.item.get("detail") else "",
                                        "It has been quiet for a week." if f.item.get("_stale") else "") if x]
-        out["next"] = "Ask opens it. Done takes it off your list."
+        out["next"] = "Tell Tacitus sends your note to it. Done takes it off your list."
         return out
     if f.item.get("kind") in CASE_ITEMS:
         cs, case = _case(f)
@@ -931,11 +995,39 @@ def later_choice(today: date) -> dict:
     return {"id": "later", "label": "Later", "input": "later", "options": opts}
 
 
+def noting(f: Found, src) -> bool:
+    """One list: the item takes a note (the note box in place of Draft and
+    Ask): a kind in NOTE_KINDS, never while its reply is being written. A
+    kept item takes one too: what goes with it is code's fixed words
+    (note_info), and its turn reads the mail as the keep level lets it."""
+    return bool(getattr(src, "one_list", False)) and f.item.get("kind") in NOTE_KINDS and not _writing(f)
+
+
+def acts_of(got: list[dict]) -> list[dict]:
+    """The choices that act with no model (ACT_IDS), in their row order."""
+    return sorted((c for c in got if c.get("id") in ACT_IDS), key=lambda c: ACT_IDS.index(c["id"]))
+
+
+def row_acts(src, hit: dict) -> list[dict]:
+    """One list: the buttons on a list item's folded row: Done, Not done,
+    Later, Later: waiting on them, No reply needed, where it offers them;
+    [] for a kind that keeps its choices inside (ROW_KINDS)."""
+    if not getattr(src, "one_list", False) or hit.get("kind") not in ROW_KINDS:
+        return []
+    try:
+        return acts_of(choices(found(src, hit), src))
+    except Exception as e:
+        log.warning("home: the row's choices of %s could not be read: %s", hit.get("id"), e)
+        return []
+
+
 def choices(f: Found, src) -> list[dict]:
     """The code-built choices, in their order; the deeper briefing's steps
-    go after them."""
+    go after them. With a note (noting) no choice starts a turn: Draft,
+    Draft with my words, an answer and Ask are the note's."""
     kind = f.item.get("kind")
     today = _today(src)
+    note = noting(f, src)
     if kind == "request":
         return [dict(OPEN)]
     if kind == "answered":
@@ -950,10 +1042,10 @@ def choices(f: Found, src) -> list[dict]:
         cs, case = _case(f)
         got = cs.home_choices(case, today, f.keep or "full") if case else []
         got = [c for c in got if c.get("id") != OPEN["id"] or f.item.get("href")]
-        return got + ([dict(ASK)] if got and not f.keep else [])
+        return got + ([dict(ASK)] if got and not f.keep and not note else [])
     if kind == "conversation":
-        # what Needs you listed (one list): its conversation, or done with it
-        return [dict(START), dict(DONE)]
+        # what Needs you listed (one list): done with it; the note goes to it
+        return [dict(DONE)] if note else [dict(START), dict(DONE)]
     if kind == "which":
         if __package__:
             from . import case_surface as cs
@@ -965,12 +1057,20 @@ def choices(f: Found, src) -> list[dict]:
     if kind == "proposal":
         # the close card's answers, here (one list): Done waits for its Undo
         return ([dict(DONE, style="primary"), dict(NOT_DONE)] if acts else []) + \
-            ([] if f.keep else [dict(ASK)])
+            ([] if f.keep or note else [dict(ASK)])
     if f.keep:  # keep_gate's line alone: open it in Outlook, or settle it here
         return ([dict(OUTLOOK)] if (f.item.get("link") or f.conv) else []) + \
             ([dict(DONE), later_choice(today)] if acts else [])
     if kind in ("reply", "question") and _writing(f):
-        return [dict(ASK)]  # its reply is being written: its Send card comes next
+        # its reply is being written: its Send card comes next
+        return [] if getattr(src, "one_list", False) else [dict(ASK)]
+    if note:
+        # one list: what acts with no model; the note box does the rest
+        if kind == "item":
+            waits = _ledger().is_waiting(f.row or {})
+            return ([dict(DONE), later_choice(today)] + ([] if waits else [dict(WAITING)])) if acts else []
+        return ([later_choice(today)] + ([dict(NOT_NEEDED)] if kind == "reply" or _decision(f) else [])) \
+            if acts else []
     if kind == "reply":
         return [dict(DRAFT), dict(SAY)] + ([later_choice(today), dict(NOT_NEEDED)] if acts else []) + [dict(ASK)]
     if kind == "question":
@@ -997,14 +1097,22 @@ def _goto(f: Found) -> str:
     return ""
 
 
-def item(src, ref: str, *, fe=None, pending: dict | None = None) -> dict | None:
+def item(src, ref: str, *, fe=None, pending: dict | None = None,
+         mail: Callable[[str], list] | None = None) -> dict | None:
     """The item as GET /api/home/item answers it, or None when Home does not
     list it now. `pending`: a choice that waits for its undo window (the item
-    is shown with what it said, and no choices)."""
+    is shown with what it said, and no choices). `mail` reads a thread's
+    messages (Home.mail): with one list, the item carries its mail
+    (mail_part), read here, when it opens, and nowhere else."""
     f = find(src, ref)
     if f is None:
         return None
-    return shape(f, src, fe=fe, pending=pending)
+    out = shape(f, src, fe=fe, pending=pending)
+    if mail is not None and not pending and getattr(src, "one_list", False):
+        got = mail_part(f, mail, src)
+        if got:
+            out["mail"] = got
+    return out
 
 
 def shape(f: Found, src, *, fe=None, pending: dict | None = None) -> dict:
@@ -1012,26 +1120,179 @@ def shape(f: Found, src, *, fe=None, pending: dict | None = None) -> dict:
     once (it never waits on a model, and never starts one)."""
     v = version(f)
     x = f.item
+    every = choices(f, src)
+    # one list: the choices that act with no model go on the folded row
+    acts = acts_of(every) if getattr(src, "one_list", False) and x.get("kind") in ROW_KINDS else []
     out = {"ref": x["id"], "kind": x.get("kind"), "label": x.get("label") or "",
            "kept": f.keep, "title": x.get("title") or "", "detail": "" if f.keep else (x.get("detail") or ""),
            "version": v, "row_version": row_version(f.row) if f.row is not None else "",
-           "brief": brief(f, src), "choices": choices(f, src)}
+           "brief": brief(f, src), "choices": [c for c in every if c not in acts]}
+    if acts:
+        out["acts"] = acts
     goto = _goto(f)
     if goto:
         out["goto"] = goto
     if pending:
         out["choices"] = []
+        out.pop("acts", None)
         out["pending"] = {"said": pending.get("said") or "", "undo": pending.get("token") or "",
                           "until": pending.get("due")}
         out["deeper"] = {"state": "none"}
         return out
-    out["deeper"] = deeper_state(fe, f, out)
-    # One Ask per card: the item's own choice opens the conversation the
-    # deeper briefing's Ask would (with that briefing, when it is ready).
+    note = noting(f, src)
+    # The deeper briefing reads every choice; with a note, also Draft with
+    # my words, so a step that would draft stays, to fill the note box.
+    out["deeper"] = deeper_state(fe, f, dict(out, choices=every + (
+        [dict(SAY)] if note and not f.keep and x.get("kind") not in CASE_ITEMS else [])))
+    # One Ask per card: the item's own choice (or its note) opens the
+    # conversation the deeper briefing's Ask would.
     steps = out["deeper"].get("steps")
-    if isinstance(steps, list) and any(c.get("id") == ASK["id"] for c in out["choices"]):
+    if isinstance(steps, list) and (note or any(c.get("id") == ASK["id"] for c in every)):
         out["deeper"]["steps"] = [st for st in steps if not (isinstance(st, dict) and st.get("id") == "continue")]
+    if note:
+        out["note"] = note_block(f, src, fe, out)
+    elif f.note:
+        out["note"] = {"open": False, "chips": [], "last": _last(f, fe)}
     return out
+
+
+def note_block(f: Found, src, fe, out: dict) -> dict:
+    """One list: the note box of an item that takes one: `open`, its quick
+    answers (`chips`: a reply's Yes and No, a question's own picks, and the
+    words of each deeper step that would start a turn, which leaves the
+    steps) and the last note's turn (`last`). A chip fills the box; it
+    never acts."""
+    kind = f.item.get("kind")
+    chips: list[str] = []
+    if kind == "question" and _decision(f) and not f.keep:  # a kept item's picks are words from its mail
+        chips += _picks(f)
+    elif kind in ("reply", "question"):
+        chips += list(QUICK)
+    steps = out["deeper"].get("steps")
+    if isinstance(steps, list):
+        keep = []
+        for st in steps:
+            fill = st.get("fill") if isinstance(st, dict) else ""
+            if fill:
+                chips.append(str(fill))
+            else:
+                keep.append(st)
+        out["deeper"]["steps"] = keep
+    seen: list[str] = []
+    for c in chips:
+        c = " ".join(str(c or "").split())[:CHIP_MAX]
+        if c and c not in seen:
+            seen.append(c)
+    got = {"open": True, "chips": seen[:CHIPS_MAX]}
+    last = _last(f, fe)
+    if last:
+        got["last"] = last
+    return got
+
+
+def _last(f: Found, fe) -> dict:
+    """The item's last note as the app shows it: {"state", "asked", "said",
+    "goto" (its conversation), "card" (its Send card, once drafted)}; {}
+    with none."""
+    n = f.note or {}
+    if not n.get("state"):
+        return {}
+    out = {"state": str(n["state"]), "asked": _plain(n.get("asked"), NOTE_MAX),
+           "said": str(n.get("said") or "")[:NOTE_SAID_MAX]}
+    if n.get("route"):
+        out["goto"] = str(n["route"])
+    card = n.get("card") if isinstance(n.get("card"), (list, tuple)) else []
+    if len(card) == 2 and fe is not None:
+        route = _route(fe, str(card[0]), str(card[1]))
+        if route:
+            out["card"] = route
+    return out
+
+
+def note_key(f: Found) -> str:
+    """The key an item's notes are kept under: a conversation item's own
+    thread (its ref), else its one conversation's key (thread_key)."""
+    if f.item.get("kind") == "conversation":
+        return str(f.item.get("id") or "")
+    return thread_key(f)
+
+
+def note_info(f: Found, it: dict) -> dict:
+    """What the bot's note hook needs of the item: where its conversation
+    is kept, what it is, and the first message of a new conversation (the
+    quick briefing in code's words, never the mail). A kept item's is its
+    fixed line alone (keep_gate.kept_line: at `local` the date, at `facts`
+    also the sender and subject from the headers), its ids and its level:
+    no briefing, and none of the owner's earlier words on the thread."""
+    x, b = f.item, ({} if f.keep else it.get("brief") or {})
+    said = _owner_said(f) if not f.keep else {}
+    return {"ref": it["ref"], "kind": x.get("kind"), "lid": f.lid, "conv": f.conv,
+            "case": str(x.get("_case") or ""), "key": note_key(f), "thread": list(x.get("_thread") or []),
+            "title": _plain(x.get("title"), 200), "kept": f.keep,
+            "brief": {k: b.get(k) or "" for k in ("what", "asked", "due")},
+            "reply": x.get("kind") in ("reply", "question") and f.reply is not None,
+            "owner_said": [said] if said else [],
+            "opening": ask_text(f, b, tail="")}
+
+
+# ── the item's mail (one list) ──────────────────────────────────────
+# The message that started the item, read when it opens (Home.mail, the
+# bot's Hooks.mail): the same read as a Send card's quoted thread (the bot's
+# own graph_actions, live, never the mediator's sealed view), so the keep
+# level changes it as little as it changes that card. It goes only to the
+# item's answer to the app: never to Home's list, never into the deeper
+# briefing's packet, a note's message or anything a model reads.
+
+def owner_address() -> str:
+    """The owner's address from user-profile.json, lower case; '' when it
+    cannot be read."""
+    owner_names()
+    return str(_PROFILE.get("email") or "")
+
+
+def _sender(m: dict) -> dict:
+    got = m.get("from")
+    return got if isinstance(got, dict) else {"address": str(got or "")}
+
+
+def pick_mail(messages: list[dict], message_id: str = "", own: str = "") -> dict | None:
+    """The message that started an item, from its thread oldest first: the
+    row's source message where the thread holds it, else the newest from
+    someone else, else the newest."""
+    msgs = [m for m in messages or [] if isinstance(m, dict)]
+    if message_id:
+        hit = next((m for m in msgs if str(m.get("id") or "") == message_id), None)
+        if hit is not None:
+            return hit
+    own = (own or "").lower()
+    theirs = [m for m in msgs if own and str(_sender(m).get("address") or "").lower() != own]
+    pool = theirs or msgs
+    return pool[-1] if pool else None
+
+
+def mail_part(f: Found, read: Callable[[str], list], src) -> dict | None:
+    """The item's mail: {"label", "text", "cut"}, the text at most MAIL_MAX
+    characters; None for an item with no mail thread (a row from chat, a
+    case, a conversation) or a thread that cannot be read."""
+    kind = f.item.get("kind")
+    if not f.conv or kind in ("conversation", "which") or kind in CASE_ITEMS:
+        return None
+    try:
+        m = pick_mail(read(f.conv) or [], str((f.row or {}).get("source_message_id") or ""), owner_address())
+    except Exception as e:
+        log.warning("home: the mail of %s could not be read: %s", f.item.get("id"), e)
+        return None
+    text = str((m or {}).get("text") or "").strip()
+    if not text:
+        return None
+    cut = len(text) > MAIL_MAX
+    if cut:
+        text = text[:MAIL_MAX].rstrip()
+    who = _sender(m)
+    name = _plain(who.get("name") or who.get("address"), 80)
+    day = _hs()._mail_day(m.get("sent"), src.zone)
+    label = "The email" + (f" from {name}" if name else "") + (f", {day}" if day else "")
+    return {"label": label, "text": text, "cut": cut}
 
 
 # ── the deeper briefing's hook ──────────────────────────────────────
@@ -1302,16 +1563,17 @@ def _project_of(lid: str, conv: str) -> str:
     return ""
 
 
-def ask_text(f: Found, b: dict) -> str:
+def ask_text(f: Found, b: dict, tail: str = "Write here what to do next.") -> str:
     """Tacitus's first message in the conversation Ask opens with no deeper
     briefing: the item's name (it titles the thread), the quick briefing,
-    and the ledger item or the case it names; the owner writes next."""
+    and the ledger item or the case it names; the owner writes next (a
+    note's conversation: his note, `tail` "")."""
     title = _plain(f.item.get("title"), 200)
     lines = [f"*{title or 'An item from Home'}*"]
     lines += [x for x in (b.get("what"), b.get("asked"), b.get("due")) if x]
     case = str(f.item.get("_case") or "")
     named = f" (item {f.lid})" if f.lid else f" (case {case})" if case else ""
-    lines += ["", f"From Home{named}. Write here what to do next."]
+    lines += ["", f"From Home{named}." + (f" {tail}" if tail else "")]
     return "\n".join(lines)
 
 
@@ -1382,10 +1644,12 @@ class Acts:
             # that press, Home's choices or not
             move = bool(got.get("move")) and f.item.get("kind") in CASE_ITEMS and \
                 choice.startswith(f"{f.item.get('kind')}:")
-        offered = {c["id"] for c in now_item["choices"]}
+        offered = {c["id"] for c in list(now_item["choices"]) + list(now_item.get("acts") or [])}
+        if (now_item.get("note") or {}).get("open"):
+            offered.add(NOTE["id"])
         if choice not in offered and not (choice == "say" and "draft" in offered) and not move:
             return {"ok": False, "said": NO_CHOICE, "item": now_item}, None
-        if choice in ("say", "answer") and not stepped and "not_needed" in offered \
+        if choice in ("say", "answer", NOTE["id"]) and not stepped and "not_needed" in offered \
                 and _ledger().no_reply_line(arg):
             # his line says only that no reply is needed: No reply needed, never a draft
             choice, arg = "not_needed", ""
@@ -1435,6 +1699,8 @@ class Acts:
             return {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or
                     ("Not done. It stays on your list."
                      if got.get("ok") else "Nothing was done. Try again in a minute.")}, None
+        if choice == NOTE["id"]:
+            return self._note(f, it, arg), None
         words = one_line(arg)
         if choice.startswith(("letter:", "case:")):
             cs, case = _case(f)
@@ -1508,6 +1774,26 @@ class Acts:
             log.info("home: %s opened a conversation for %s", choice, f.lid or f.item.get("id"))
             return {"ok": True, "said": "Opened a conversation with Tacitus about it.", "goto": route}, after
         return {"ok": False, "said": NO_CHOICE}, None
+
+    def _note(self, f: Found, it: dict, arg: str) -> dict:
+        """One list: the owner's note goes to the item's one conversation and
+        starts one turn there (Hooks.note); the item shows that turn's
+        answer. An empty note, or one while the last is still worked on,
+        starts nothing."""
+        words = one_line(arg, NOTE_MAX)
+        if not words:
+            return {"ok": False, "said": NOTE_EMPTY}
+        if ((it.get("note") or {}).get("last") or {}).get("state") == "working":
+            return {"ok": False, "said": NOTE_BUSY}
+        hooks = getattr(self.home, "hooks", None) or Hooks()
+        if hooks.note is None:
+            return {"ok": False, "said": "Tacitus cannot do that from here."}
+        got = hooks.note(note_info(f, it), words) or {}
+        ok = bool(got.get("ok"))
+        self.home.changed()
+        log.info("home: a note on %s: %s", f.lid or f.item.get("id"), "started" if ok else "refused")
+        return {"ok": ok, "said": _plain(got.get("said"), 200) or
+                (NOTE_STARTED if ok else "Nothing was done. Try again in a minute.")}
 
     def _ask(self, f: Found, it: dict) -> dict:
         """Ask: the item's conversation opens with Tacitus's first message

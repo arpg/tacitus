@@ -638,7 +638,13 @@ push opens Home, and a turn Home starts runs in the item's one
 conversation with a card-less turn record Home reads (`_home_turns`). The
 close cards, the close notes and the case cards give way to Home items the
 same way, each press through Home's hooks into the code the card's button
-ran.
+ran. On Home no tap starts a turn: an item's one turn comes from the
+owner's note on it (`_home_note`), posted as his message in the item's
+one conversation and run there with the item's context; it answers,
+drafts (its Send card as any draft's), or both, and its record
+(`home-notes.json`, `_home_notes`) is what the item shows. The item's
+mail is the bot's own graph_actions read when it opens (`_home_mail`),
+as a Send card's quoted thread is, and no model reads it.
 "Draft" starts a turn there that writes the reply for that one row; for
 a draft that exists it posts a new Send card instead. "Draft" takes one
 line of the owner's words (`CardAction.ask`): the turn writes the reply

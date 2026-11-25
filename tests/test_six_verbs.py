@@ -1,5 +1,7 @@
 """The app's six verbs, Send, Draft, Done, Later, Not done and Ask, and
-the one exception, Edit (change a draft that exists): every button label
+two exceptions, Edit (change a draft that exists) and Tell Tacitus (the
+one note on a Home item, a question, a direction or both, which the owner
+named himself: Ask read wrong for a direction): every button label
 the code can draw for a done, not-done, later, ask, draft or edit act is
 one of their words, so the words do not drift again. Try again is only
 the retry of something that failed.
@@ -62,8 +64,9 @@ HOME = {
     "draft": "draft", "say": "draft", "not_needed": "done", "done": "done", "start": "ask",
     "waiting": "later", "later": "later", "reopen": "not_done", "open": "go", "outlook": "go",
     "answer": "answer", "answer:{}": "answer",
-    # one list: a close proposal's Not done, a "which one was it?" pick
-    "not_done": "not_done", "which:{}": "answer",
+    # one list: a close proposal's Not done, a "which one was it?" pick, and
+    # the note box's one button (the owner's words to Tacitus)
+    "not_done": "not_done", "which:{}": "answer", "note": "tell",
 }
 # A work case's choices and buttons, by the answer after the kind's prefix.
 CASE = {
@@ -85,6 +88,8 @@ ALLOWED = {
     "ask": r"Ask|Ask: .+",
     "draft": r"Draft|Draft with my words|Draft: .+|Draft (the|a) .+",
     "edit": r"Edit|Edit the .+",
+    # the one note on a Home item: a question, a direction, or both
+    "tell": r"Tell Tacitus",
     # a work case's one draft button: Draft before a draft exists, Edit after
     "draft_or_edit": r"Draft|Draft (the|a) .+|Edit|Edit the .+",
     "retry": r"Try again",
@@ -351,7 +356,8 @@ def test_each_home_item_kind_has_its_one_name():
         if x["kind"] in ITEM_NAMES:
             seen.add(x["kind"])
             assert x["label"] == ITEM_NAMES[x["kind"]], (x["kind"], x["label"])
-            for c in I.item(src, x["id"])["choices"]:
+            got = I.item(src, x["id"])
+            for c in got["choices"] + got.get("acts", []) + ([I.NOTE] if got.get("note", {}).get("open") else []):
                 meaning = HOME.get(c["id"]) or HOME.get(re.sub(r":\d+$", ":{}", c["id"]))
                 assert meaning and _check(meaning, c["label"]), (x["kind"], c)
     assert seen == set(ITEM_NAMES), seen
