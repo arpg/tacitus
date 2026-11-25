@@ -57,7 +57,7 @@ first; the operating file is read on every turn of every install.
 3. Match the code around your change. Comments state what the code does,
    in present tense.
 4. Add or update tests. Run the wall, every test file the way CI runs
-   it: `python3 tests/run_wall.py` (about seven minutes). One file:
+   it: `python3 tests/run_wall.py` (about two minutes). One file:
    `python3 -m pytest -q tests/test_<name>.py`.
 5. Never commit real names, email addresses or mail text, in code,
    tests, commit messages or pull request descriptions. Use made-up
@@ -136,9 +136,14 @@ python3 tests/evals/run_evals.py --verbose  # prompt evals: real prompt assembly
 python3 tests/validate_config.py          # config files are complete
 ```
 
-The wall runs every other file one at a time and, beside them, the
-browser files (`tests/test_webui*.py`) a few at a time: half the CPUs
-the load leaves free, at most four, or `WALL_BROWSER_JOBS`. Each file's
+The wall runs the browser files (`tests/test_webui*.py`) a few at a
+time (half the CPUs the load leaves free, at most four, or
+`WALL_BROWSER_JOBS`) and, beside them, every other file several at a time
+(the CPUs less the browser lane's, at most eight, or `WALL_JOBS`; `WALL_JOBS=1` runs them one
+at a time). Each file gets a temporary directory of its own, removed when
+it passes. A file that shares what a directory cannot separate, such as a
+fixed port, goes in `SERIAL` in `tests/run_wall.py` with its reason and
+runs alone after the rest. Each file's
 line gives its time. A failing file's line is followed by the ids of its
 failing tests and the path of its whole output (under the temp
 directory, `tacitus-wall-<uid>/`). A file over 90 seconds is named at the
