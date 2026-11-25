@@ -62,6 +62,17 @@ def test_hook_diffs_from_the_commit_the_copy_ran_not_the_last_commit_only():
     assert hook.index('deploy_git fetch "$REPO_ROOT" HEAD') < hook.index("RUNTIME_CHANGED=")
 
 
+def test_the_running_commit_matches_whatever_length_its_short_id_has():
+    hook = HOOK.read_text()
+    fn = re.search(r"same_commit\(\) \{.*?\n        \}", hook, re.S)
+    assert fn and 'same_commit "$DEPLOYED_FULL" "$INSTANCE_COMMIT"' in hook
+    full = "0123456789abcdef0123456789abcdef01234567"
+    def same(stamp):
+        return subprocess.run(["bash", "-c", fn.group(0) + '\nsame_commit "$1" "$2"', "x", full, stamp]).returncode == 0
+    assert same(full[:7]) and same(full[:8]) and same(full[:12]) and same(full)
+    assert not same("") and not same(full[:6]) and not same("0123456f") and not same("zzzzzzz")
+
+
 def test_hook_waits_for_an_idle_bot_before_restarting():
     hook = HOOK.read_text()
     i = hook.index("RUNTIME_CHANGED=")

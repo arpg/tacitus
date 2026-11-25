@@ -256,12 +256,19 @@ print(sum(1 for v in d.values() if v.get('lane') not in ('resident', 'deferred')
         # bot-instance.json and confirm it is running the just-deployed commit.
         INSTANCE_FILE="/home/ea-bot/.ea/state/bot-instance.json"
         DEPLOYED_SHORT=$(deploy_git rev-parse --short HEAD)
+        DEPLOYED_FULL=$(deploy_git rev-parse HEAD)
+        # The bot stamps a short id from its own tree, and two trees may
+        # shorten one commit to different lengths: match on the full id.
+        same_commit() {
+            [ "${#2}" -ge 7 ] && case "$1" in "$2"*) return 0 ;; esac
+            return 1
+        }
         VERIFIED=""
         for _ in 1 2 3 4 5 6 7 8 9 10; do
             sleep 1
             INSTANCE_COMMIT=$(python3 -c "
     import json;print(json.load(open('$INSTANCE_FILE')).get('commit',''))" 2>/dev/null)
-            if [ "$INSTANCE_COMMIT" = "$DEPLOYED_SHORT" ]; then
+            if same_commit "$DEPLOYED_FULL" "$INSTANCE_COMMIT"; then
                 VERIFIED=yes
                 break
             fi
