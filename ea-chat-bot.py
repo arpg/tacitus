@@ -10262,8 +10262,12 @@ def _run_browser(ev: "_chat.ActionEvent") -> None:
         result = bg.execute(item, token, tree=SCRIPT_DIR, ea_dir=str(EA_DIR))
         if result.get("submitted") is True:
             message = "The form confirmed submission."
+        elif result.get("started") is False:
+            message = "The form was not opened, so nothing was submitted: " + str(result.get("error") or "unknown error")[:400]
         elif item["verb"] == "submit" and result.get("submitted") is None:
             message = "Submission status is unknown. I will not retry automatically."
+            if result.get("error"):
+                message += " " + str(result["error"])[:300]
         elif result.get("ok"):
             message = "The approved answers were entered. The final Submit control was not clicked."
         else:

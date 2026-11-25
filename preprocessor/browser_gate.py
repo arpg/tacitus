@@ -105,25 +105,59 @@ def render(item: dict) -> dict:
             "label": "Submit form" if item["verb"] == "submit" else "Fill form"}
 
 
+NEEDS = "import bs4, playwright.sync_api"
+
+
+def _python(home: Path, tree: Path, base: list[str], run) -> str | None:
+    """The first interpreter that loads the form tool's libraries as the
+    resident. The resident's venv need not hold them, so each is asked."""
+    for cand in ("/usr/bin/python3", home / ".local" / "venv" / "bin" / "python3",
+                 Path(tree) / ".venv" / "bin" / "python3"):
+        try:
+            p = run([*base, str(cand), "-c", NEEDS], capture_output=True, text=True, timeout=30,
+                    cwd="/", env={"PATH": "/usr/bin:/bin"})
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if getattr(p, "returncode", 0) == 0:
+            return str(cand)
+    return None
+
+
 def execute(item: dict, token: str, *, tree: Path, ea_dir: str, runner=None) -> dict:
     validate(item)
     home = Path(pwd.getpwnam("ea-bot").pw_dir)
+    run = runner or subprocess.run
+    base = ["sudo", "-n", "-u", "ea-bot", "env", "-i", f"HOME={home}",
+            "PATH=/usr/local/bin:/usr/bin:/bin"]
+    python = _python(home, Path(tree), base, run)
+    if not python:
+        return {"ok": False, "submitted": False, "started": False,
+                "error": "The form tool's browser is not installed for ea-bot. Nothing was entered."}
     # The plan is inline, so the resident cannot replace a plan file after
     # the click. Uploaded bytes are fingerprinted again by the worker.
-    from plugin_cards import resident_python
-    argv = ["sudo", "-n", "-u", "ea-bot", "env", "-i", f"HOME={home}",
-            "PATH=/usr/local/bin:/usr/bin:/bin", f"EA_DIR={Path(ea_dir).resolve()}",
-            "EA_BROWSER_DIRECT=1", f"{TOKEN_ENV}={token}", resident_python(home, Path(tree)),
+    argv = [*base, f"EA_DIR={Path(ea_dir).resolve()}",
+            "EA_BROWSER_DIRECT=1", f"{TOKEN_ENV}={token}", python,
             str(Path(tree) / "preprocessor" / "web_browser.py"), item["verb"],
             "--url", item["url"], "--actions-json", json.dumps(item["actions"]),
             "--origins-json", json.dumps(item["origins"])]
     if item["verb"] == "submit":
         argv += ["--submit-selector", item["submit_selector"], "--success-text", item["success_text"]]
     try:
-        p = (runner or subprocess.run)(argv, capture_output=True, text=True, timeout=120,
-                                       cwd="/", env={"PATH": "/usr/bin:/bin"})
-        return json.loads(p.stdout)
+        p = run(argv, capture_output=True, text=True, timeout=120,
+                cwd="/", env={"PATH": "/usr/bin:/bin"})
     except subprocess.TimeoutExpired:
         return {"ok": False, "submitted": None, "error": "Browser timed out. Status unknown; do not retry automatically."}
-    except (OSError, ValueError) as e:
-        return {"ok": False, "submitted": None, "error": str(e)[:500]}
+    except OSError as e:
+        return {"ok": False, "submitted": False, "started": False, "error": str(e)[:500]}
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        pass
+    # The tool prints its result for every run that reaches the page. With
+    # no result and an ordinary exit it stopped while loading, before the
+    # form opened. A kill by signal can come at any moment.
+    why = ((getattr(p, "stderr", "") or "").strip().splitlines() or ["no output"])[-1][:300]
+    if getattr(p, "returncode", -1) in (1, 2):
+        return {"ok": False, "submitted": False, "started": False,
+                "error": f"The form tool did not start ({why}). Nothing was entered."}
+    return {"ok": False, "submitted": None, "error": f"The form tool stopped without a result ({why})."}
