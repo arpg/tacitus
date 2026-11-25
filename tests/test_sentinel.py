@@ -994,6 +994,9 @@ def test_a_graph_breaker_alerts_only_after_it_stays_open_for_the_grace():
 
 
 if __name__ == "__main__":
+    # The deploy checks build their own repos; a host with the updater's
+    # release link at /opt/ea-system must not lend them its real commit.
+    os.environ["EA_LIVE_DIR"] = str(Path(tempfile.gettempdir()) / "no-live-tree")
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = failed = 0
     for t in tests:

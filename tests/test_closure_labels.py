@@ -239,8 +239,12 @@ def test_a_model_judgment_from_the_event_log(tree):
 
 # ── dedupe and the live hook ──────────────────────────────────────────
 
-def test_the_nightly_report_appends_one_history_line_a_run(tree, capsys):
+def test_the_nightly_report_appends_one_history_line_a_run(tree, capsys, monkeypatch):
     import closure_eval as ce
+    # The report's window is the last 30 days; read it a day after the
+    # fixture's taps, not today (2026-11-25: T0 left the window).
+    evaluate = ce.evaluate
+    monkeypatch.setattr(ce, "evaluate", lambda recs, **kw: evaluate(recs, **{**kw, "now": kw.get("now") or T0 + DAY}))
     hist = tree.labels.parent / ce.HISTORY_FILE
     for n in (1, 2):
         assert cl.main(["collect", "--report"]) == 0
