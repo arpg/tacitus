@@ -108,7 +108,7 @@ def test_a_kept_proposal_reads_the_fixed_words_alone():
     assert it["kept"] == "local" and "Send the slides" not in it["title"] and it["detail"] == ""
     card = I.item(src, "proposal:task-s2")
     assert acts(card) == ["done", "not_done"] and card["brief"]["what"] == ""   # no Ask on a kept item
-    assert "note" not in card                                                   # and no note
+    assert card["note"]["open"] and card["note"]["chips"] == []                 # its note: code's words go with it
 
 
 def test_a_send_card_for_a_reply_takes_its_items_place_and_its_ref():
@@ -422,7 +422,8 @@ def _reply_ns(queue, fe, **kw):
               _load_reply_turns=lambda: json.loads(json.dumps(turns)),
               _save_reply_turns=lambda d: (turns.clear(), turns.update(d)),
               _home_push=lambda keys, line: calls.setdefault("home_pushes", []).append((list(keys), line)) or True,
-              _item_conversation=lambda key, rid="", conv="", case_rows=(): kept.get(key, ("main", "")),
+              _item_conversation=lambda key, rid="", conv="", case_rows=(), room=True:
+                  calls.setdefault("rooms", []).append(room) or kept.get(key, ("main", "")),
               _keep_item_conversation=lambda key, ch, th: kept.__setitem__(key, (ch, th)))
     return ns, calls, turns, kept
 
@@ -765,7 +766,7 @@ def test_the_message_that_started_it_is_the_rows_source_else_the_newest_from_the
 def test_kept_mail_shows_as_the_send_card_shows_it_and_reaches_no_model(owner, monkeypatch):
     """The Send card shows its quoted thread as the bot's own live read gives
     it, at every keep level, and puts it in nothing a model reads: the item
-    does the same. A kept item gets no note."""
+    does the same."""
     seen_items: list = []
 
     class Deeper:
@@ -780,7 +781,7 @@ def test_kept_mail_shows_as_the_send_card_shows_it_and_reaches_no_model(owner, m
     it = h.item("reply:response-r1")
     assert it["kept"] == "local" and "Sam Rivera" not in it["title"] and it["brief"]["what"] == ""
     assert it["mail"] == plain_item["mail"]                                      # one rule: the Send card's
-    assert "note" not in it and acts(it) == ["done", "later"]
+    assert it["note"]["open"] and it["note"]["chips"] == ["Yes", "No"] and acts(it) == ["done", "later"]
     assert not any("Could you give the seminar" in x for x in seen_items)        # never in the deeper packet
     f = I.find(one_list(cases=[]), "reply:response-r1")
     info = I.note_info(f, plain_item)
@@ -943,9 +944,8 @@ def test_the_bot_posts_the_note_as_the_owners_message_and_runs_one_turn():
     assert rec["state"] == "drafted" and rec["card"] == ["dm", "s9"]
 
 
-def test_the_bot_takes_no_note_on_a_kept_item_or_with_one_list_off():
+def test_the_bot_takes_no_note_with_one_list_off():
     ns, calls, _notes, _kept, fe = _note_ns()
-    assert not ns["_home_note"](dict(ITEM, kept="local"), "Yes.")["ok"]
     fe.one_list = False
     assert not ns["_home_note"](dict(ITEM), "Yes.")["ok"]
     assert calls["turns"] == [] and calls["owner"] == []
@@ -974,3 +974,64 @@ def test_the_items_mail_is_the_bots_own_read_as_the_send_cards_is():
     assert reads == [("get-conversation", "--conversation-id", "conv-r1", "--max-chars", "3001")]
     assert [m["id"] for m in got] == ["m-1", "m-2"] and got[0]["text"].startswith("Could you give")
     assert ns["_home_mail"]("not a mail id") == [] and len(reads) == 1
+
+
+# ── a kept item's note: code's fixed words alone go with it ─────────────
+
+ASK_WORDS = "Pick a date in March for the seminar"      # the thread record's ask (words from the mail)
+
+
+def _kept(level: str) -> H.Sources:
+    """One list's afternoon with response-r1's thread kept at `level`; the
+    owner's earlier word on it and a question's picks made up."""
+    src = one_list(cases=[])
+    src.replies[0].update(keep_level=level, since="2026-11-23T15:00:00Z",
+                          owner_said=[{"said": "Tell them March is fine", "at": "2026-11-21T10:00:00Z"}])
+    return src
+
+
+@pytest.mark.parametrize("level", ["local", "facts"])
+def test_a_kept_items_note_carries_no_mail_and_no_more_than_its_level(owner, level):
+    src = _kept(level)
+    h, seen, _clock, _fe = _home(src)
+    it = h.item("reply:response-r1")
+    assert it["kept"] == level and it["note"]["open"] and it["note"]["chips"] == ["Yes", "No"]
+    got, _after = h.act("reply:response-r1", "note", "Can I say yes for March 5?")
+    assert got["ok"]
+    ((info, words),) = seen["notes"]
+    assert words == "Can I say yes for March 5?" and info["kept"] == level
+    sent = json.dumps(info)
+    for never in ("Could you give the seminar", "Any week works", ASK_WORDS, "March is fine"):
+        assert never not in sent, never                                         # no mail, no record, no earlier word
+    assert info["brief"] == {"what": "", "asked": "", "due": ""} and info["owner_said"] == []
+    assert info["opening"].startswith(f"*{info['title']}*") and "(item response-r1)" in info["opening"]
+    if level == "local":                                                         # the date alone
+        assert "Sam Rivera" not in sent and "Seminar date" not in sent
+        assert info["title"] == "A kept message from Nov 23 needs you. Open it in Outlook."
+    else:                                                                        # also the headers' sender and subject
+        assert "Sam Rivera" in info["title"] and "Seminar date" in info["title"]
+
+
+def test_a_kept_questions_picks_are_not_its_quick_answers():
+    src = _kept("facts")
+    src.replies[0]["queued"] = {"outcome": "decision", "note": "Thursday or Friday?",
+                                "choices": ["Thursday the 5th", "Friday the 6th"]}
+    it = I.item(src, "reply:response-r1")
+    assert it["note"]["chips"] == ["Yes", "No"] and "Thursday" not in json.dumps(it)
+
+
+def test_the_bot_runs_a_kept_items_note_on_code_words_alone_and_never_in_a_room():
+    ns, calls, _notes, _kept, _fe = _note_ns()
+    line = "A kept message from Nov 23 needs you. Open it in Outlook."
+    item = dict(ITEM, kept="local", title=line, brief={"what": "", "asked": "", "due": ""},
+                opening=f"*{line}*\n\nFrom Home (item response-ana).")
+    got = ns["_home_note"](item, "Can I say yes?")
+    assert got["ok"] and calls["rooms"] == [False]                               # Ask Tacitus, never a room
+    assert calls["posts"][0][2] == item["opening"] and calls["owner"][0][1] == "Can I say yes?"
+    ((_ch, _th, _msg, prompt, _u, _r),) = calls["turns"]
+    assert "Ledger item response-ana: made up" not in prompt                     # never its row's words
+    assert line in prompt and "keep level local" in prompt and "mail_actions.py" in prompt
+    assert "ledger item response-ana" in prompt and "conversation id conv-ana" in prompt
+    assert '"Can I say yes?"' in prompt
+    plain_item = ns["_home_note_prompt"](dict(ITEM), "Yes.")
+    assert "Ledger item response-ana: made up" in plain_item and "keep level" not in plain_item

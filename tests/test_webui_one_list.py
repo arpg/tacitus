@@ -212,7 +212,7 @@ def test_needs_you_is_part_of_home_with_one_count(app):
     expect(block.locator(".h-title")).to_have_text("Which project is the new grant for?")
     expect(block.locator("[data-part='row'] .btn")).to_have_text(["Done"])                  # on its folded row
     block.locator("> button").click()
-    expect(block.get_by_role("button", name="Ask", exact=True)).to_be_disabled()             # the note's, empty
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_disabled()             # the note's, empty
     block.get_by_role("link", name="Open it there").click()
     expect(page.locator("#channel-name")).to_have_text("example-project")    # its room, its thread
     page.evaluate("location.hash = '#/needs'")
@@ -275,7 +275,7 @@ def test_quick_answers_fill_the_note_box_and_an_empty_note_cannot_be_sent(app):
     from playwright.sync_api import expect
     page, stub, errors, _state = _unfold(app)
     block = opened(page, "reply:response-r1")
-    box, ask = block.locator("[data-part='tell'] textarea"), block.get_by_role("button", name="Ask", exact=True)
+    box, ask = block.locator("[data-part='tell'] textarea"), block.get_by_role("button", name="Tell Tacitus", exact=True)
     expect(block.locator("label").filter(has_text="Tell Tacitus what to do")).to_be_visible()
     expect(ask).to_be_disabled()
     box.fill("   ")
@@ -295,17 +295,18 @@ def test_quick_answers_fill_the_note_box_and_an_empty_note_cannot_be_sent(app):
 def test_a_note_sends_once_and_its_answer_shows_on_the_item(app):
     from playwright.sync_api import expect
     page, stub, errors, _state = _unfold(app, **PHONE)
+    stub.deeper_delay = 0.3                                                      # its briefing comes as Tacitus works
     block = opened(page, "reply:response-r1")
     box = block.locator("[data-part='tell'] textarea")
     box.fill("When is the seminar room free?")
-    block.get_by_role("button", name="Ask", exact=True).click()
+    block.get_by_role("button", name="Tell Tacitus", exact=True).click()
     expect(block.locator(".h-tell .req-busy")).to_have_text("Tacitus is working on it.")
     expect(block.locator(".h-asked")).to_have_text("You asked: When is the seminar room free?")
     expect(box).to_have_value("")
-    expect(block.get_by_role("button", name="Ask", exact=True)).to_be_disabled()
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_disabled()
     box.fill("And the date?")
     box.press("Enter")
-    expect(block.get_by_role("button", name="Ask", exact=True)).to_be_disabled()  # one turn at a time
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_disabled()  # one turn at a time
     assert [w for _i, w in stub.note_presses] == ["When is the seminar room free?"]
     ((info, _w),) = stub.note_presses
     assert info["key"] == "conv-r1" and info["lid"] == "response-r1"
@@ -316,7 +317,9 @@ def test_a_note_sends_once_and_its_answer_shows_on_the_item(app):
     expect(block.locator(".h-answer")).to_have_text("It is free on March 5 and March 12.")
     link = block.get_by_role("link", name="Open the conversation")
     assert link.get_attribute("href").endswith("/t-note")                       # the conversation stays reachable
-    expect(block.get_by_role("button", name="Ask", exact=True)).to_be_enabled()   # the words typed are kept
+    expect(block.get_by_role("button", name="Tell Tacitus", exact=True)).to_be_enabled()   # the words typed are kept
+    expect(block.locator(".h-deeper .text")).to_be_visible()                     # the briefing is in
+    expect(block.locator(".req-busy")).to_have_count(0)                          # no line says Tacitus still reads
     assert page.evaluate("location.hash") == "#/home"                            # he stays where he pressed
     assert not errors, errors
 

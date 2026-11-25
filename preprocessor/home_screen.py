@@ -816,9 +816,10 @@ def note_of(x: dict, notes) -> dict | None:
 def _noted(out: list[dict], src: Sources) -> None:
     """One list: an item whose note Tacitus works on says so on its line,
     and one it answered says that, until the answer is a day old (the bot
-    keeps it that long). The line it had stays as `_detail`."""
+    keeps it that long); a kept item too, in these fixed words. The line it
+    had stays as `_detail`."""
     for x in out:
-        n = note_of(x, src.notes) if not x.get("kept") else None
+        n = note_of(x, src.notes)
         line = {"working": NOTE_WORKING, "answered": NOTE_ANSWERED}.get(str((n or {}).get("state") or ""))
         if line and x.get("kind") != "request":
             x["_detail"] = x.get("detail") or ""

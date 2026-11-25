@@ -1008,9 +1008,9 @@ the rows closed today, each request by the rows and thread its card
 names, and each item of the post's own list (which keeps the post's
 level and its fixed line, never the item's title or sender). A kept item
 carries no other words: no name, no project, no line of the post, and no
-Ask or note; opened with one list, it shows its mail as a Send card shows
-its quoted thread (Home items, The item unfolded), read for that item's
-answer alone; a request keeps its block in Action requests, and So far
+Ask; opened with one list, it shows its mail as a Send card shows its
+quoted thread, and its note goes with code's fixed words alone (Home
+items, The item unfolded); a request keeps its block in Action requests, and So far
 today names a kept row "A kept message". When the keep check cannot run,
 every item from mail reads `local`. The folded briefing is the post's own
 text, whose kept lines are already fixed.
@@ -1238,7 +1238,7 @@ pane or route: the item opens where it is, as before.
 - **What Tacitus has.** The quick briefing and the deeper briefing, as
   before (below).
 - **The note.** One box, "Tell Tacitus what to do", and one filled button,
-  Ask (`note`: `open`, `chips`, `last`). The owner's words go to the
+  Tell Tacitus (`note`: `open`, `chips`, `last`). The owner's words go to the
   item's one conversation as his own message (a new one opens with
   Tacitus's line about the item), and one turn reads them with the item's
   context (`Hooks.note`, the bot's `_home_note`): a question gets an
@@ -1250,7 +1250,16 @@ pane or route: the item opens where it is, as before.
   Quick answers are chips above the box: a reply's Yes and No, a
   question's own picks, and the words of a deeper step that would start
   a turn. A chip replaces what the box holds and puts the cursor at its
-  end; it never acts. A kept item has no note.
+  end; it never acts. A kept item takes a note too, and what goes with it
+  is code's fixed words alone: its message is the owner's words, its new
+  conversation's first line is the kept line (`keep_gate.kept_line`: at
+  `local` the date, at `facts` also the sender and subject from the
+  headers) and its ledger id, and its turn's prompt names it by that line
+  and its ids, never by its row's words or the owner's earlier word on
+  the thread; the turn reads the mail through `mail_actions.py`, which
+  gives the level's record (`remote_record`), never the text. Its
+  conversation never opens in a room, and its quick answers are Yes and
+  No alone (a question's own picks are words from its mail).
 - **The result, where he pressed.** The bot keeps each note's turn
   (owner-private `home-notes.json`; `Hooks.notes`): working while it runs,
   then answered (its answer, cut at 1,500 characters), drafted (its Send
@@ -1299,8 +1308,8 @@ An error is the bot's plain words in the card. A device that may not
 press card buttons sees the choices and steps disabled, with Action
 requests' line. Home drawn again (a `home` event, a read every five
 minutes) keeps the open card's block itself, so a choice made, words
-typed and the focus stay, and the card draws again only its parts whose
-data changed; Action requests keeps its open block the same way while
+typed and the focus stay, and the card draws again its line and only the
+parts whose data changed; Action requests keeps its open block the same way while
 its request has not changed.
 
 ## Unread
@@ -1696,7 +1705,8 @@ them hold where one list is off.
 ## The six verbs
 
 Every button the owner presses, on a card, on Home or in a thread's
-header, is one of six verbs, or Edit for a draft that exists, and the
+header, is one of six verbs, or Edit for a draft that exists, or Tell
+Tacitus for the note on a Home item, and the
 line after the press says what happened in the same verb, then the one
 fact he needs ("Done. It is off your list.", "Not done. It stays on your
 list.", "Later. It comes back on Friday."). A line after a failure says what did not happen and the one
@@ -1706,7 +1716,8 @@ thing to do next ("Nothing was done. Try again in a minute.").
 |---|---|---|
 | Send (behind the lock, with Cancel) | Send, Send all N, Schedule, Create, Reschedule, Delete, Publish, Push, a plugin's own word | |
 | Draft | Draft, Draft with my words, Draft: X, Draft the letter (the report, the answers), Draft a question: X | Draft it, Draft a reply, Draft the reply, Tell Tacitus what to say, Fill it in |
-| Edit (the one exception: change a draft that exists) | Edit, Edit the letter (the report, the answers, the draft) | Change the letter (the report, the answers, the draft) |
+| Edit (an exception: change a draft that exists) | Edit, Edit the letter (the report, the answers, the draft) | Change the letter (the report, the answers, the draft) |
+| Tell Tacitus (an exception: the one note on a Home item, a question, a direction or both) | Tell Tacitus | Ask, on the note box, which read wrong for a direction |
 | Done | Done, Done (N), Done: I sent it; a reply's No reply needed; a work part's Submitted (Returned, Delivered): X | Close, Close all, Mark done, Mark it done, Mark all done, Handled, Sent myself, Not needed, All submitted |
 | Later | Later (Tomorrow, Monday, Pick a date), Later: waiting on them, Later: a day | Skip 3 days, Waiting on someone, Wait until a day |
 | Not done | Not done | Still open, Reopen, Not done yet, Needs me |

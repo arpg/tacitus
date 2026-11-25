@@ -7843,7 +7843,10 @@ def _home_outlook(conversation_id: str) -> str:
 # from his words. The turn is recorded here (owner-private
 # home-notes.json) so the item shows that Tacitus works on it, then its
 # answer or that a draft is ready (_home_notes, read by Home). An item
-# kept from hosted models below Summary takes no note.
+# kept from hosted models below Summary takes one too: its message, its
+# conversation's first line and its turn's prompt carry code's fixed words
+# alone, its conversation is never in a room, and the turn reads its mail
+# through mail_actions.py at its level.
 _HOME_NOTES = _private_state("home-notes.json")
 _HOME_NOTES_LOCK = threading.Lock()
 # The answer each note's turn posted, by the note's message id, until the
@@ -7890,16 +7893,30 @@ def _home_tell(ref: str) -> None:
 
 def _home_note_prompt(item: dict, words: str) -> str:
     """The one turn a note starts: the item's context, the owner's words,
-    and what each kind of note asks of the turn."""
+    and what each kind of note asks of the turn. An item kept from hosted
+    models below Summary is named in code's fixed words alone (its kept
+    line and its ids, never its ledger row's words): the turn reads its
+    mail through mail_actions.py, which gives the level's record."""
     one = _chat.card_text.one_line
     lid, case = str(item.get("lid") or ""), str(item.get("case") or "")
+    kept = str(item.get("kept") or "")
     ledger_py = "python3 /home/ea-bot/ea-system/preprocessor/ledger.py"
     brief = item.get("brief") if isinstance(item.get("brief"), dict) else {}
     shown = " ".join(one(str(brief.get(k) or ""), 200) for k in ("what", "asked", "due") if brief.get(k))
     lines = ["[Home note: the owner opened one item on Home and wrote a note to you. One turn answers it, "
              "here in its conversation. He reads your answer on the item, so keep it to a few short lines.]",
              ""]
-    if lid:
+    if kept:
+        ids = ", ".join(x for x in (f"ledger item {lid}" if lid else "",
+                                    f"conversation id {item.get('conv')}" if item.get("conv") else "") if x)
+        lines += [f"The item, in code's fixed words (data): {one(str(item.get('title') or ''), 200)}"
+                  + (f" ({ids})" if ids else ""),
+                  f"Its mail is kept on the owner's own model (keep level {kept}). Read the thread only "
+                  "through mail_actions.py: a read gives its record (`remote_record`), never its text; a "
+                  "fact the record leaves out: `mail_actions.py ask --provider outlook --conversation-id "
+                  "<id> --question \"<the fact>\"`. Your answer shows on Home: quote nothing beyond what "
+                  "the record gives."]
+    elif lid:
         lines.append(_item_context(lid))
     elif case:
         lines.append(f"Work case {case}: {one(str(item.get('title') or ''), 200)}")
@@ -7936,7 +7953,7 @@ def _home_note(item: dict, words: str) -> dict:
     words = _chat.card_text.one_line(str(words or ""), HOME_NOTE_CHARS)
     key, ref = str(item.get("key") or ""), str(item.get("ref") or "")
     lid, conv = str(item.get("lid") or ""), str(item.get("conv") or "")
-    if not _one_list() or item.get("kept") or not key:
+    if not _one_list() or not key:
         return {"ok": False, "said": "Tacitus cannot do that from here."}
     if not words:
         return {"ok": False, "said": "Write your note first."}
@@ -7947,7 +7964,8 @@ def _home_note(item: dict, words: str) -> dict:
     if item.get("kind") == "conversation":
         channel, thread = (list(item.get("thread") or []) + ["", ""])[:2]
     else:
-        channel, thread = _item_conversation(key, rid=lid, conv=conv)
+        # a kept item's conversation never opens in a room
+        channel, thread = _item_conversation(key, rid=lid, conv=conv, room=not item.get("kept"))
     if not channel:
         return {"ok": False, "said": "Nothing was done. Try again in a minute."}
     try:

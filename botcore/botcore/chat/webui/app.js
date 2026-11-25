@@ -1266,7 +1266,7 @@ async function loadHome(checkin = false) {
   try { S.home = await call('GET', `/home?tz=${enc(homeZone())}${checkin ? '&checkin=1' : ''}`); } catch { return; }
   if (checkin) S.homeAt = Date.now();
   S.homeStale = false;
-  if (S.homeView && !S.search && S.ready) renderThreads();
+  if (S.homeView && !S.search && S.ready) { renderThreads(); drawItem(S.homeOpen); } // the open block kept, its line new
   const c = S.homeCards.get(S.homeOpen) || {}, o = S.homeOpen && listed(S.homeOpen); // a deeper briefing the stream missed, or an item that
   if ((c.deeper || {}).state === 'working' || (o && c.kind && !c.pending && (o.kind !== c.kind || o.detail !== c.detail))) loadItem(S.homeOpen); // turned (written, now its Send card)
 }
@@ -1567,8 +1567,8 @@ function actsRow(it, x, acts) {
   part('in', m && [m.id, m.mode], m ? inputRow(it, m) : null), saidLine(S.homeSaid.get(ref) || {})];
 }
 // One list: the note box. What the owner writes goes to the item's own conversation, where one turn answers a question,
-// drafts to a direction, or both. A quick answer fills the box (it replaces what is there) and never acts; Ask sends
-// it. The last note's turn shows above: Tacitus working, then its answer, or that a draft is ready.
+// drafts to a direction, or both. A quick answer fills the box (it replaces what is there) and never acts; Tell
+// Tacitus sends it. The last note's turn shows above: Tacitus working, then its answer, or that a draft is ready.
 function tellPart(it, x) {
   const ref = refOf(it), n = x.note, last = n.last || {}, busy = last.state === 'working', id = `hn-${ref}`, out = [];
   if (last.state) {
@@ -1583,7 +1583,7 @@ function tellPart(it, x) {
   const box = Object.assign(h('textarea', { id, class: 'card-ask', rows: 2, maxlength: 600, 'data-key': `${ref}/tell`, enterkeyhint: 'send',
     placeholder: 'A question, or what the reply should say', oninput: () => { S.homeNotes[ref] = box.value; sync(); },
     onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } } }), { value: S.homeNotes[ref] || '' });
-  const go = h('button', { type: 'button', class: 'btn primary', 'data-key': `${ref}/tell-go`, onclick: () => send() }, 'Ask');
+  const go = h('button', { type: 'button', class: 'btn primary', 'data-key': `${ref}/tell-go`, onclick: () => send() }, 'Tell Tacitus');
   const sync = () => { go.disabled = busy || cardsOff() || !box.value.trim(); };
   const send = () => !go.disabled && homeAct(it, 'note', box.value.trim()).then((o) => {
     if (o.ok) { box.value = ''; delete S.homeNotes[ref]; sync(); loadItem(ref); } });
