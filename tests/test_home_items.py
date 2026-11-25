@@ -592,7 +592,11 @@ def test_waiting_marks_the_row_as_owed_by_others(monkeypatch):
     led = Ledger(monkeypatch)
     _fe, h, _bot, clock = home()
     out, _a = h.act("item:task-s2", "waiting")
-    assert out["said"] == "Later. It comes back on Sunday."
+    # The day it comes back depends on the day the test runs (2026-11-25:
+    # "Sunday" passed only on a Tuesday).
+    back = TODAY + timedelta(days=ledger.WAITING_DAYS)
+    assert out["said"] == f"Later. It comes back {I._when(back, TODAY)}."
+    assert out["said"].endswith(f"on {back.strftime('%A')}.")
     clock[0] += I.UNDO_S
     assert h.acts.commit_due() == [{"op": "waiting", "id": "task-s2", "ok": True}]
     got = dict(zip(led.calls[0][2::2], led.calls[0][3::2]))

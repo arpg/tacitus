@@ -38,8 +38,10 @@ sys.path.insert(0, str(ROOT / "preprocessor"))
 
 # A sandboxed EA tree and private dir: nothing here touches live state, and
 # resident_io's move() takes the sandbox as the resident's space.
-EA_DIR = Path(tempfile.mkdtemp(prefix="ea-test-ownerwrites-"))
-PRIV = Path(tempfile.mkdtemp(prefix="ea-test-ownerwrites-priv-"))
+# Resolved: resident_io follows no link on the way, and macOS's temp dir
+# is under /var, a link to /private/var.
+EA_DIR = Path(tempfile.mkdtemp(prefix="ea-test-ownerwrites-")).resolve()
+PRIV = Path(tempfile.mkdtemp(prefix="ea-test-ownerwrites-priv-")).resolve()
 os.environ["EA_DIR"] = str(EA_DIR)
 # Only while the modules below import (resident_bridge binds its private
 # paths then); put back after, so no other test file sees this sandbox.
@@ -115,7 +117,7 @@ def _victim(tmp: Path, name: str = "victim.json", mode: int = 0o600) -> Path:
 
 
 def _tmpdir() -> Path:
-    return Path(tempfile.mkdtemp(dir=EA_DIR / "state"))
+    return Path(tempfile.mkdtemp(dir=EA_DIR / "state")).resolve()
 
 
 # ── draft_events ──────────────────────────────────────────────────────
@@ -383,7 +385,7 @@ def test_bridge_state_and_locks_are_owner_private():
 
 
 def test_a_link_at_a_bridge_lock_is_never_truncated():
-    tmp = Path(tempfile.mkdtemp())
+    tmp = Path(tempfile.mkdtemp()).resolve()
     victim = _victim(tmp)
     saved = (rb.SEND_LOCK_FILE, rb.INFLIGHT_FILE)
     try:
@@ -397,7 +399,7 @@ def test_a_link_at_a_bridge_lock_is_never_truncated():
 
 
 def test_the_legacy_router_and_pending_copies_are_read_once_and_validated():
-    tmp = Path(tempfile.mkdtemp())
+    tmp = Path(tempfile.mkdtemp()).resolve()
     saved = (rb.ROUTER_STATE_FILE, rb.PENDING_FILE, rb.SEND_LOCK_FILE)
     state = EA_DIR / "state"
     try:
@@ -436,7 +438,7 @@ def test_attachment_names_are_reduced_to_a_safe_basename():
 
 
 def test_attachments_land_inside_the_workspace():
-    work = Path(tempfile.mkdtemp())
+    work = Path(tempfile.mkdtemp()).resolve()
     outside = work.parent / f"escaped-{uuid.uuid4().hex[:6]}.txt"
     fake = types.SimpleNamespace(
         get_attachments=lambda mid: [
@@ -479,7 +481,7 @@ class _Resp:
 
 def test_slack_download_replaces_a_link_instead_of_writing_through_it():
     dest = EA_DIR / "uploads"
-    victim = _victim(Path(tempfile.mkdtemp()))
+    victim = _victim(Path(tempfile.mkdtemp()).resolve())
     fixed = types.SimpleNamespace(now=lambda: types.SimpleNamespace(
         strftime=lambda fmt: "20261001-120000"))
     target = dest / "20261001-120000_a.pdf"
@@ -518,7 +520,7 @@ def _claim_ns(tmp: Path) -> dict:
 
 
 def test_a_claim_is_moved_into_the_private_dir():
-    tmp = Path(tempfile.mkdtemp())
+    tmp = Path(tempfile.mkdtemp()).resolve()
     (tmp / "state").mkdir()
     (tmp / "state" / "pending-event.json").write_text(json.dumps({"subject": "x"}))
     ns = _claim_ns(tmp)
@@ -529,7 +531,7 @@ def test_a_claim_is_moved_into_the_private_dir():
 
 
 def test_a_claim_that_is_a_link_or_a_second_name_is_not_read():
-    tmp = Path(tempfile.mkdtemp())
+    tmp = Path(tempfile.mkdtemp()).resolve()
     ns = _claim_ns(tmp)
     victim = _victim(tmp)
     link = tmp / "claim-link"
@@ -548,7 +550,7 @@ def test_a_claim_that_is_a_link_or_a_second_name_is_not_read():
 
 
 def test_private_state_copies_only_a_json_object_read_as_the_resident():
-    tmp = Path(tempfile.mkdtemp())
+    tmp = Path(tempfile.mkdtemp()).resolve()
     (tmp / "ea" / "state").mkdir(parents=True)
     reads = []
 
