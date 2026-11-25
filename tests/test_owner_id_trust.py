@@ -176,14 +176,14 @@ def test_handled_delete_reports_a_busy_lock_as_failure(rc, ok, monkeypatch):
     assert seen["timeout"] > draft_lock.WAIT_S + 30
 
 
-def test_handled_closes_and_archives_only_after_the_delete():
+def test_handled_closes_and_marks_read_only_after_the_delete():
     body = _fn_src("handle_draft_handled")
-    assert "timeout=20, cwd=str(SCRIPT_DIR))" not in body.split("archive-conversation")[0]
+    assert "timeout=20, cwd=str(SCRIPT_DIR))" not in body.split("mark-conversation-read")[0]
     i_del = body.index("_handled_delete_draft(draft_id)")
     i_fail = body.index("if rc != 0:")
     i_ret = body.index("return", i_fail)
     i_close = body.index("_close_ledger_for_draft(")
-    i_arch = body.index("archive-conversation")
+    i_arch = body.index("mark-conversation-read")
     i_done = body.index("No reply needed. The draft is deleted.")
     i_retired = body.index('_mark_draft_confirmation(draft_id, "retired")')
     assert i_del < i_fail < i_ret < min(i_close, i_arch, i_done, i_retired)

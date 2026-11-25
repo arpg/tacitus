@@ -1597,6 +1597,28 @@ def cmd_archive_conversation(args):
     }))
 
 
+def cmd_mark_conversation_read(args):
+    """Mark every unread inbox message of a conversation read, in place:
+    nothing is moved. The Done: I sent it and No reply needed buttons use
+    it; the owner keeps all mail in the inbox, and unread is the todo list."""
+    cid = args.conversation_id
+    resp = graph.graph_get("/me/mailFolders/inbox/messages", {
+        "$filter": f"conversationId eq '{str(cid).replace(chr(39), chr(39) * 2)}' and isRead eq false",
+        "$select": "id", "$top": 50})
+    done, errors = [], []
+    for m in resp.get("value", []):
+        mid = m.get("id")
+        if not mid:
+            continue
+        try:
+            graph.mark_message_read(mid)
+            done.append(mid)
+        except Exception as e:
+            errors.append({"id": mid, "error": str(e)})
+    print(json.dumps({"conversation_id": cid, "marked_read_count": len(done),
+                      "marked_read_ids": done, "errors": errors}))
+
+
 def _snooze_lock(ea_dir: Path) -> Path:
     """The snooze lock, beside the snooze file in resident space. On an
     install without mail mediation the resident runs the snooze verbs
@@ -2675,6 +2697,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("archive-conversation", allow_abbrev=False)
     p.add_argument("--conversation-id", required=True)
     p.set_defaults(func=cmd_archive_conversation)
+
+    # mark-conversation-read
+    p = sub.add_parser("mark-conversation-read", allow_abbrev=False)
+    p.add_argument("--conversation-id", required=True)
+    p.set_defaults(func=cmd_mark_conversation_read)
 
     # snooze-message
     p = sub.add_parser("snooze-message", allow_abbrev=False)

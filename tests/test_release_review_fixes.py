@@ -581,6 +581,7 @@ def test_a_gmail_edit_saves_through_mail_actions(tmp_path):
               "SCRIPT_DIR": REPO, "Path": __import__("pathlib").Path, "os": __import__("os"),
               "json": __import__("json"), "_draft_account": _account_fn(),
               "_build_send_confirmation": lambda *a: built.append(a) or (None, "x"),
+              "_load_draft_confirms": lambda: {"g1": {"status": "live", "channel": "dm", "message_ts": "1.1"}},
               "log": types.SimpleNamespace(info=lambda *a: None, error=lambda *a: None)}
         _bot_function("_apply_draft_edit", ns)({"draft_id": "g1", "email_system": "gmail",
                                                 "thread_ts": "t1"}, "New text")
@@ -590,6 +591,73 @@ def test_a_gmail_edit_saves_through_mail_actions(tmp_path):
     assert cmd[1].endswith("mail_actions.py") and cmd[2:9] == [
         "update-draft", "--provider", "gmail", "--account", "me@example.test", "--draft-id", "g1"]
     assert built == [("main", "t1", "g1", "gmail", "me@example.test")]
+
+
+def _edit_ns(tmp_path, registry, updated, posted):
+    import subprocess
+    ns = {"FRONTEND": types.SimpleNamespace(post=lambda **k: posted.append(("note", k.get("text"))),
+                                            update_card=lambda ref, card: updated.append(ref)),
+          "CHANNEL_ID": "main", "_private_tmp": lambda: tmp_path, "_HELPER_PY": "python3",
+          "SCRIPT_DIR": REPO, "Path": __import__("pathlib").Path, "os": __import__("os"),
+          "json": __import__("json"), "_draft_account": _account_fn(),
+          "_build_send_confirmation": lambda *a: (types.SimpleNamespace(content_fingerprint="f"), None),
+          "_load_draft_confirms": lambda: registry,
+          "_card_ref": lambda ch, ts: (ch, ts), "_card_summary": lambda c: {},
+          "_set_draft_fingerprint": lambda *a: None,
+          "_post_send_confirmation": lambda *a, **k: posted.append(("card", a[2])),
+          "log": types.SimpleNamespace(info=lambda *a: None, error=lambda *a: None)}
+    real = subprocess.run
+    subprocess.run = lambda cmd, **kw: types.SimpleNamespace(stdout="{}", returncode=0, stderr="")
+    return ns, lambda: setattr(subprocess, "run", real)
+
+
+def test_an_edit_window_redraws_the_drafts_live_card_not_the_one_it_was_opened_from(tmp_path):
+    # 2026-11-25: the window was opened on the first card; a chat revision
+    # then retired it and posted a second. Saving brought the first back
+    # live and left the second with the old text.
+    updated, posted = [], []
+    ns, restore = _edit_ns(tmp_path, {"d1": {"status": "live", "channel": "dm", "message_ts": "2.2"}},
+                           updated, posted)
+    try:
+        _bot_function("_apply_draft_edit", ns)({"draft_id": "d1", "dm_channel": "dm",
+                                                "message_ts": "1.1", "thread_ts": "t1"}, "New")
+    finally:
+        restore()
+    assert updated == [("dm", "2.2")]
+    assert [p for p in posted if p[0] == "card"] == []
+
+
+def test_an_edit_with_no_live_card_posts_a_new_one(tmp_path):
+    updated, posted = [], []
+    ns, restore = _edit_ns(tmp_path, {"d1": {"status": "retired", "channel": "dm", "message_ts": "1.1"}},
+                           updated, posted)
+    try:
+        _bot_function("_apply_draft_edit", ns)({"draft_id": "d1", "dm_channel": "dm",
+                                                "message_ts": "1.1", "thread_ts": "t1"}, "New")
+    finally:
+        restore()
+    assert updated == [] and ("card", "d1") in posted
+
+
+def test_a_draft_counts_as_unsent_only_when_a_read_says_so():
+    for read, want in (({"is_draft": True}, True), ({"is_draft": None}, True),
+                       ({"is_draft": False}, False), ({"error": "gone"}, False)):
+        ns = {"_fetch_draft_body": lambda *a, **k: read}
+        assert _bot_function("_draft_still_unsent", ns)("d1") is want, read
+    assert _bot_function("_draft_still_unsent", {"_fetch_draft_body": None})("") is False
+
+
+def test_done_i_sent_it_closes_nothing_while_the_draft_is_unsent():
+    posted, marked = [], []
+    ev = types.SimpleNamespace(card=types.SimpleNamespace(channel="dm", id="1.1"))
+    ns = {"_verify_button_user": lambda ev: True,
+          "_card_value": lambda ev: {"thread_ts": "t1", "draft_id": "d1", "conversation_id": "c1"},
+          "_draft_account": _account_fn(), "_draft_still_unsent": lambda *a: True,
+          "FRONTEND": types.SimpleNamespace(post=lambda **k: posted.append(k["text"])),
+          "_mark_draft_confirmation": lambda *a: marked.append(a),
+          "log": types.SimpleNamespace(info=lambda *a: None)}
+    _bot_function("handle_sent_myself", ns)(ev)
+    assert marked == [] and len(posted) == 1 and "still unsent" in posted[0]
 
 
 if __name__ == "__main__":

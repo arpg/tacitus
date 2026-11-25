@@ -663,7 +663,8 @@ def test_review_interface_and_cron_drafts():
     assert "_execute_send(" in bulk and "_claim_draft_for_send(draft_id)" in bulk
     assert "email_system=system" in bulk
     handled = _fn_body("handle_draft_handled")
-    assert "delete-draft" in handled and "_close_ledger_for_draft(" in handled and "archive-conversation" in handled
+    assert "delete-draft" in handled and "_close_ledger_for_draft(" in handled and "mark-conversation-read" in handled
+    assert "archive-conversation" not in handled and "archive-conversation" not in _fn_body("handle_sent_myself")
     edit = _fn_body("_apply_draft_edit")
     assert '"update-draft"' in edit and "_build_send_confirmation(" in edit and "FRONTEND.update_card(" in edit
     sweep = _fn_body("_sweep_late_resident_drafts")

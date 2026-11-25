@@ -4784,6 +4784,17 @@ def handle_sent_myself(ev: "_chat.ActionEvent"):
     dm_channel, message_ts = ev.card.channel, ev.card.id
     channel = ea_channel or dm_channel
 
+    # The draft is still unsent: closing now would drop the reply
+    # (2026-11-25: pressed on a card whose Send had just been refused,
+    # it archived the thread and nothing went out).
+    system, acct = _draft_account(value)
+    if _draft_still_unsent(draft_id, system, acct):
+        FRONTEND.post(channel=channel, thread_ts=thread_ts or None,
+                      text=":warning: This draft is still unsent in your Drafts. Press Send "
+                           "on its card, or tell me to delete it. Nothing was closed.")
+        log.info(f"Done: I sent it refused: draft ...{draft_id[-12:]} is still a draft")
+        return
+
     # Terminal: the user says the mail went out by hand, so a later
     # `updated` record must not repost a Send button.
     _mark_draft_confirmation(draft_id, "consumed")
@@ -4798,20 +4809,19 @@ def handle_sent_myself(ev: "_chat.ActionEvent"):
     )
     if conversation_id:
         import subprocess as sp
-        # Archive the inbox-side of this conversation. "Sent myself" = the
-        # thread is off the user's radar until it re-raises.
+        # Marked read in place, never archived: the owner keeps all mail in
+        # the inbox and unread is the todo list (2026-11-25).
         try:
-            arch = sp.run(
+            res = sp.run(
                 ["python3", str(SCRIPT_DIR / "preprocessor" / "graph_actions.py"),
-                 "archive-conversation", "--conversation-id", conversation_id],
+                 "mark-conversation-read", "--conversation-id", conversation_id],
                 capture_output=True, text=True, timeout=20, cwd=str(SCRIPT_DIR),
             )
-            arch_result = json.loads(arch.stdout) if arch.stdout.strip() else {}
-            count = arch_result.get("archived_count", 0)
+            count = (json.loads(res.stdout) if res.stdout.strip() else {}).get("marked_read_count", 0)
             if count:
-                log.info(f"Archived {count} inbox message(s) for conversation {conversation_id}")
+                log.info(f"Marked {count} inbox message(s) read for conversation {conversation_id}")
         except Exception as e:
-            log.warning(f"Could not archive conversation {conversation_id}: {e}")
+            log.warning(f"Could not mark conversation {conversation_id} read: {e}")
         _file_admissions_after_send(conversation_id)
 
 
@@ -8055,12 +8065,22 @@ def _apply_draft_edit(meta: dict, new_body: str) -> None:
         data = json.loads(r.stdout or "{}")
         if data.get("error") or r.returncode != 0:
             raise RuntimeError(data.get("error") or (r.stderr or "")[-200:])
-        card, _err = _build_send_confirmation(ea_channel, thread_ts, draft_id, system, acct)
-        if card is not None and dm_channel and message_ts:
-            FRONTEND.update_card(_card_ref(dm_channel, message_ts), card)
-            _set_draft_fingerprint(draft_id, message_ts,
-                                   getattr(card, "content_fingerprint", "") or "",
-                                   _card_summary(card))
+        # The draft's live card shows the new text, not the card the window
+        # was opened from: that one may have been retired since, by a
+        # revision in chat (2026-11-25: the retired card came back live and
+        # the newest card kept the old text). No live card: a new one.
+        live = _load_draft_confirms().get(draft_id) or {}
+        if live.get("status") == "live" and live.get("channel") and live.get("message_ts"):
+            dm_channel, message_ts = live["channel"], live["message_ts"]
+            card, _err = _build_send_confirmation(ea_channel, thread_ts, draft_id, system, acct)
+            if card is not None:
+                FRONTEND.update_card(_card_ref(dm_channel, message_ts), card)
+                _set_draft_fingerprint(draft_id, message_ts,
+                                       getattr(card, "content_fingerprint", "") or "",
+                                       _card_summary(card))
+        else:
+            _post_send_confirmation(ea_channel, thread_ts, draft_id, email_system=system,
+                                    gmail_email=acct)
         FRONTEND.post(channel=ea_channel, thread_ts=thread_ts or None,
                       text=":pencil2: Draft revised in chat; the Send block shows the new text.")
         log.info(f"Draft edited in chat: ...{draft_id[-12:]}")
@@ -8132,7 +8152,7 @@ def handle_draft_handled(ev: "_chat.ActionEvent"):
         rc, why = _handled_delete_draft(draft_id)
         if rc != 0:
             # The draft is still there (a send holds its lock, or the delete
-            # failed): close nothing and archive nothing, and say so.
+            # failed): close nothing, mark nothing read, and say so.
             log.warning(f"handled: delete-draft failed: {why}")
             _replace_buttons_with_status(
                 dm_channel, message_ts,
@@ -8148,12 +8168,13 @@ def handle_draft_handled(ev: "_chat.ActionEvent"):
             _with_closed(":white_check_mark: No reply needed. The draft is deleted.", closed))
         if not conversation_id:
             return
+        # Read in place, never archived (2026-11-25).
         try:
             sp.run(["python3", str(SCRIPT_DIR / "preprocessor" / "graph_actions.py"),
-                    "archive-conversation", "--conversation-id", conversation_id],
+                    "mark-conversation-read", "--conversation-id", conversation_id],
                    capture_output=True, text=True, timeout=20, cwd=str(SCRIPT_DIR))
         except Exception as e:
-            log.warning(f"handled: archive failed: {e}")
+            log.warning(f"handled: mark-read failed: {e}")
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -9261,7 +9282,23 @@ def _fetch_draft_body(draft_id: str, email_system: str = "outlook",
         "attachments": [a.get("name") or "" for a in data.get("attachments") or []
                         if isinstance(a, dict)],
         "fingerprint": data.get("fingerprint", ""),
+        "is_draft": data.get("is_draft"),
     }
+
+
+def _draft_still_unsent(draft_id: str, email_system: str = "outlook",
+                        gmail_email: str = "") -> bool:
+    """True only when a read shows the draft is still an unsent draft. A
+    draft that cannot be read (sent and gone, deleted, or a failed read)
+    is not held up: the owner's word stands."""
+    if not draft_id:
+        return False
+    try:
+        d = _fetch_draft_body(draft_id, email_system=email_system, gmail_email=gmail_email)
+    except Exception:
+        return False
+    # A sent Gmail draft is gone; an Outlook one stays readable with isDraft false.
+    return "error" not in d and d.get("is_draft") is not False
 
 
 _EMDASH_ERROR_FRAGMENT = "em-dash"
