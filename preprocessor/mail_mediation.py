@@ -110,8 +110,8 @@ SAFE = {
         # files.
         "remove-attachment",
         "archive-message", "archive-conversation", "snooze-message",
-        # The read flag only, in place.
-        "mark-read", "mark-unread",
+        # The read flag only, in place: unread is the user's todo list.
+        "mark-read", "mark-unread", "mark-conversation-read",
         # Writes the categories list on one message: a label, nothing
         # leaves the mailbox.
         "set-categories",

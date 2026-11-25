@@ -754,6 +754,7 @@ NOT_DRAFT_CHANGING = {
         "archive-conversation": "moves received mail; content unchanged",
         "snooze-message": "moves received mail; content unchanged",
         "mark-read": "the read flag only", "mark-unread": "the read flag only",
+        "mark-conversation-read": "the read flag only",
         "set-categories": "a mailbox label; not part of what is sent",
         "wake-snoozed": "moves received mail back to the inbox",
         "create-todo": "a To Do task, not mail",

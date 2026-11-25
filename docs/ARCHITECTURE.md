@@ -134,11 +134,13 @@ against the user's calendars (`validate-draft`) and the internal recipients'
 own (`check-attendees`), for the length the draft states; a calendar
 invite's Create card carries the same invitee check. It has five
 buttons: Send (mints the token and sends), Edit (opens the body in
-a modal; Save runs `update-draft` and redraws the block so the reviewed
-text is the sent text), No reply needed (deletes the draft, archives the source
-thread and closes the ledger row: the owner dealt with it or no reply is
-owed; when the delete fails or a send holds the draft's lock, it archives
-and closes nothing and says so), Done: I sent it (closes and archives, the mail went out from Outlook)
+a modal; Save runs `update-draft` and redraws the draft's live block, or
+posts one, so the reviewed text is the sent text), No reply needed (deletes
+the draft, marks the source thread read in place and closes the ledger row:
+the owner dealt with it or no reply is owed; when the delete fails or a send
+holds the draft's lock, it marks and closes nothing and says so), Done: I
+sent it (closes and marks read, the mail went out from Outlook; while the
+draft is still unsent it closes nothing and says so). Neither archives.
 and Cancel (keeps the draft, asks what to do instead). When two or more
 blocks are posted within about a minute, one Send-all card follows; its
 button repeats the single-Send gate for each draft that is still live.

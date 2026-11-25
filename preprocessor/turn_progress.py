@@ -28,6 +28,7 @@ SCRIPTS: dict[str, dict[str, str]] = {
                       "attach-file": "attaching a file", "remove-attachment": "changing an attachment",
                       "get-event": "reading the calendar", "calendar-view": "reading the calendar",
                       "archive-message": "archiving mail", "archive-conversation": "archiving mail",
+                      "mark-conversation-read": "marking mail read",
                       "scan-attachments": "reading the attachments", "get-attachments": "reading the attachments",
                       "snooze-message": "snoozing the thread", "set-categories": "tagging mail",
                       "delete-draft": "deleting the draft", "clear-hold": "clearing the hold"},
