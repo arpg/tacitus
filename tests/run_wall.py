@@ -13,16 +13,21 @@ once instead of maintaining a per-file block list.
 
 Two lanes run at once: the browser files (test_webui*.py, each with its
 own Chromium; they wait on a page far more than they compute) a few at a
-time, and every other file one at a time, as before. Each file's line
+time, and every other file several at a time (WALL_JOBS), each with a
+temporary directory of its own, so two files' sandboxes never meet. The
+files in SERIAL share something a directory cannot separate (a fixed
+port, the real home) and run one at a time after the rest. Each file's line
 carries its time; a failing file's line is followed by its failing tests,
 and its whole output is kept in LOG_DIR. A file slower than SOFT_LIMIT is
 named at the end: split it by area before it nears TIMEOUT.
 
   python3 tests/run_wall.py            every file
   python3 tests/run_wall.py --browser  the browser files alone
+  WALL_JOBS=1 python3 tests/run_wall.py  every other file one at a time
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -47,6 +52,8 @@ TAIL_LINES = 60
 # removes it.
 LOG_DIR = Path(os.environ.get("WALL_LOG_DIR") or Path(tempfile.gettempdir()) / f"tacitus-wall-{os.getuid()}")
 LOG_KEEP_S = 86400
+# Files that must not run beside another one, each with its reason.
+SERIAL: dict = {}
 _PRINT = threading.Lock()
 
 
@@ -79,6 +86,18 @@ def browser_jobs() -> int:
     return max(1, min(4, round((cpus - load) / 2)))
 
 
+def wall_jobs() -> int:
+    """How many non-browser files run at once: WALL_JOBS, else the CPUs
+    less the browser lane's, at most eight. Not the load average: a wall
+    run just before leaves its own load in it, and the next run then ran
+    two at a time for no one's sake; too many at once only slows a file."""
+    env = os.environ.get("WALL_JOBS", "")
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    return max(1, min(8, cpus - browser_jobs()))
+
+
 def failing_tests(out: str) -> list:
     """The tests a file's output names as failed: pytest's FAILED and ERROR
     lines, and a script-style file's FAIL lines."""
@@ -88,7 +107,19 @@ def failing_tests(out: str) -> list:
 
 
 def check_file(path: Path, env: dict | None = None) -> tuple:
-    """(ok, label, output) for one test file."""
+    """(ok, label, output) for one test file, run with a temporary
+    directory of its own: removed when the file passes, kept for a look
+    when it fails."""
+    # A literal prefix, so _tmp_retention removes a kept one after a day.
+    tmp = tempfile.mkdtemp(prefix="wall-file-")
+    env = dict(env or _test_env(), TMPDIR=tmp, TEMP=tmp, TMP=tmp)
+    result = _check_file(path, env)
+    if result[0]:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return result
+
+
+def _check_file(path: Path, env: dict) -> tuple:
     src = path.read_text()
     lines = src.splitlines()
     main_i = next((i for i, l in enumerate(lines)
@@ -105,7 +136,7 @@ def check_file(path: Path, env: dict | None = None) -> tuple:
         # No terminal: code that would prompt (a Graph sign-in started from a
         # terminal waits for a browser) fails fast instead of hanging the wall.
         r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                           timeout=TIMEOUT, cwd=str(TESTS.parent), env=env or _test_env())
+                           timeout=TIMEOUT, cwd=str(TESTS.parent), env=env)
     except subprocess.TimeoutExpired as e:
         out = e.stdout or b""  # bytes, whatever `text` says
         return False, f"TIMEOUT after {TIMEOUT}s", out.decode(errors="replace") if isinstance(out, bytes) else out
@@ -163,9 +194,11 @@ def main(argv: list | None = None) -> int:
     files = sorted(p for p in TESTS.glob("test_*.py"))
     browser = [p for p in files if p.match(BROWSER)]
     rest = [] if "--browser" in argv else [p for p in files if p not in browser]
-    jobs = browser_jobs()
-    print(f"  {len(browser)} browser files, {jobs} at a time, beside {len(rest)} other files one at a time",
-          flush=True)
+    jobs, rest_jobs = browser_jobs(), wall_jobs()
+    alone = [p for p in rest if p.name in SERIAL]
+    rest = [p for p in rest if p.name not in SERIAL]
+    print(f"  {len(browser)} browser files, {jobs} at a time, beside {len(rest)} other files "
+          f"{rest_jobs} at a time, then {len(alone)} alone", flush=True)
     took: dict = {}
     failures = []
 
@@ -178,13 +211,17 @@ def main(argv: list | None = None) -> int:
             failures.append(path)
 
     t0 = time.monotonic()
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
+    # The largest files first (a rough guide to the slowest), so one long
+    # file does not finish last alone.
+    rest.sort(key=lambda p: -p.stat().st_size)
+    with ThreadPoolExecutor(max_workers=jobs) as pool, \
+            ThreadPoolExecutor(max_workers=rest_jobs) as rest_pool:
         lane = [pool.submit(run, p) for p in browser]
-        for path in rest:
-            run(path)
-        for f in lane:
+        for f in [rest_pool.submit(run, p) for p in rest] + lane:
             f.result()
-    n = len(browser) + len(rest)
+    for path in alone:
+        run(path)
+    n = len(browser) + len(rest) + len(alone)
     for path in sorted(took, key=took.get, reverse=True):
         if took[path] > SOFT_LIMIT:
             print(f"  ⚠  {path.name} took {took[path]:.0f} s, past the soft limit of {SOFT_LIMIT} s: "
