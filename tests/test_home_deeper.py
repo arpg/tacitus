@@ -375,7 +375,8 @@ def test_a_step_runs_as_the_items_own_choice_or_not_at_all(env):
     assert st["state"] == "ready" and st["model"] == "Your own model"
     # No reply needed and a Later step with a day run the card's own No reply
     # needed and Later with nothing of their own: one button each, the card's
-    assert st["steps"] == [{"id": "s1", "label": "Draft: The rover can go out for the field week."},
+    assert st["steps"] == [{"id": "s1", "label": "Draft: The rover can go out for the field week.",
+                            "fill": "The rover can go out for the field week."},
                            {"id": "continue", "label": "Ask"}]
     for s in st["steps"]:
         plain(s["label"])
@@ -954,7 +955,8 @@ def test_a_step_whose_words_do_not_fit_its_label_says_them_once():
     cut = {"id": "s1", "kind": "draft_reply", "label": D._step_label("draft_reply", {"say": words}),
            "params": {"say": words}}
     assert words not in cut["label"]
-    assert D._public_step(cut) == {"id": "s1", "label": "Draft", "detail": words}
+    assert D._public_step(cut) == {"id": "s1", "label": "Draft", "detail": words, "fill": words}
     short = {"id": "s2", "kind": "ask_sender", "label": D._step_label("ask_sender", {"question": "Which day?"}),
              "params": {"question": "Which day?"}}
-    assert D._public_step(short) == {"id": "s2", "label": "Draft a question: Which day?"}
+    assert D._public_step(short) == {"id": "s2", "label": "Draft a question: Which day?",
+                                     "fill": "Ask them: Which day?"}

@@ -5,8 +5,12 @@ reply that waits, a close proposal, a close note, a work case's cards, a
 a press there runs the code the card's button ran; Action requests and its
 count hold the rest (the gated cards); a reply Home starts is written in
 the item's one conversation and the item says so, then becomes the way to
-its Send card. The switch is the web block's `home.one_list` (Settings,
-Home, Where you answer); off, everything is as before. Made-up data only.
+its Send card. An item unfolds in place with its mail (read when it opens,
+as the Send card reads its quoted thread), what Tacitus has, and one note
+box whose words start one turn in the item's conversation; its row keeps
+Done, Later and No reply needed, and nothing on the row starts a turn. The
+switch is the web block's `home.one_list` (Settings, Home, Where you
+answer); off, everything is as before. Made-up data only.
 """
 from __future__ import annotations
 
@@ -69,6 +73,11 @@ def ids(it: dict) -> list[str]:
     return [c["id"] for c in it["choices"]]
 
 
+def acts(it: dict) -> list[str]:
+    """The ids of the buttons on an item's folded row (one list)."""
+    return [c["id"] for c in it.get("acts") or []]
+
+
 # ── Home's list ───────────────────────────────────────────────────────
 
 def test_a_close_proposal_is_a_looks_done_item_with_done_and_not_done():
@@ -78,11 +87,11 @@ def test_a_close_proposal_is_a_looks_done_item_with_done_and_not_done():
     assert it["detail"] == "The slides went out on Friday"
     assert not any(x["id"] == "item:task-s2" for x in left)           # the row once
     card = I.item(one_list(), "proposal:task-s2")
-    assert ids(card) == ["done", "not_done", "start"]
-    assert card["choices"][0]["style"] == "primary"
+    assert acts(card) == ["done", "not_done"] and ids(card) == [] and card["note"]["open"]   # Ask is the note's
+    assert card["acts"][0]["style"] == "primary"
     assert "Tacitus thinks it is done: The slides went out on Friday" in card["brief"]["standing"]
     assert card["brief"]["next"] == "Close it once you say it is done."
-    for w in [card["label"], card["title"], *[c["label"] for c in card["choices"]], *card["brief"]["standing"]]:
+    for w in [card["label"], card["title"], *[c["label"] for c in card["acts"]], *card["brief"]["standing"]]:
         plain(w)
 
 
@@ -98,7 +107,8 @@ def test_a_kept_proposal_reads_the_fixed_words_alone():
     it = next(x for x in H.left(src) if x["id"] == "proposal:task-s2")
     assert it["kept"] == "local" and "Send the slides" not in it["title"] and it["detail"] == ""
     card = I.item(src, "proposal:task-s2")
-    assert ids(card) == ["done", "not_done"] and card["brief"]["what"] == ""   # no Ask on a kept item
+    assert acts(card) == ["done", "not_done"] and card["brief"]["what"] == ""   # no Ask on a kept item
+    assert "note" not in card                                                   # and no note
 
 
 def test_a_send_card_for_a_reply_takes_its_items_place_and_its_ref():
@@ -124,11 +134,12 @@ def test_a_reply_being_written_says_so_and_offers_only_its_conversation():
     it = next(x for x in H.left(src) if x["id"] == "reply:response-r1")
     assert it["detail"] == "Drafting the reply."
     card = I.item(src, "reply:response-r1")
-    assert ids(card) == ["start"] and card["brief"]["next"] == "Drafting the reply."
+    assert ids(card) == [] and acts(card) == [] and "note" not in card          # its Send card comes next
+    assert card["brief"]["next"] == "Drafting the reply."
     src = one_list(turns={"response-r1": {"state": "failed", "why": "The thread asks for a file Tacitus cannot find."}})
     card = I.item(src, "reply:response-r1")
     assert card["brief"]["standing"][0] == "The reply was not drafted: The thread asks for a file Tacitus cannot find."
-    assert ids(card)[:2] == ["draft", "say"]                                     # Draft a reply is Try again
+    assert acts(card) == ["later", "not_needed"] and card["note"]["open"]       # a note is Try again
     off = one_list(one_list=False, turns={"response-r1": {"state": "writing"}})
     assert next(x for x in H.left(off) if x["id"] == "reply:response-r1")["detail"] != "Drafting the reply."
 
@@ -179,6 +190,10 @@ def _home(src, *, fe=None, clock=None):
     h.hooks.which = lambda qid, pick: seen["which"].append((qid, pick)) or {"ok": True, "said": "Recorded."}
     h.hooks.draft = lambda rid, words, answer: seen["drafts"].append((rid, words, answer)) or \
         {"ok": True, "home": True, "said": "Drafting the reply. Its Send card comes to Action requests."}
+    seen["notes"], seen["mail"] = [], []
+    h.hooks.note = lambda info, words: seen["notes"].append((info, words)) or \
+        {"ok": True, "said": "Tacitus is working on it."}
+    h.hooks.mail = lambda conv: seen["mail"].append(conv) or [dict(m) for m in MAIL.get(conv, [])]
     return h, seen, clock, fe
 
 
@@ -233,27 +248,16 @@ def test_a_which_one_question_is_an_item_whose_pick_runs_the_cards_answer():
     assert not any(x["kind"] == "which" for x in H.left(one_list(questions=[q], one_list=False)))
 
 
-def test_a_draft_from_home_stays_on_home_and_tells_the_apps():
+def test_draft_and_ask_leave_the_row_and_off_they_are_as_before():
     src = one_list()
     h, seen, _clock, fe = _home(src)
+    for choice in ("draft", "say", "start", "answer:1"):
+        got, _after = h.act("reply:response-r1", choice, "Yes")
+        assert not got["ok"] and got["said"] == I.NO_CHOICE, choice
+    assert seen["drafts"] == [] and fe.posts == []                    # no turn from one tap
+    h, seen, _clock, fe = _home(one_list(one_list=False), fe=_FE(one=False))
     got, _after = h.act("reply:response-r1", "draft")
-    assert got["ok"] and "goto" not in got and seen["drafts"] == [("response-r1", "", "")]
-    assert fe.changed == 1
-
-
-def test_ask_opens_the_items_one_conversation_and_keeps_the_one_it_opens(threads):
-    src = one_list()
-    h, _seen, _clock, fe = _home(src)
-    got, _after = h.act("reply:response-r1", "start")
-    assert got["ok"] and got["goto"] == "#/main/tb1" and len(fe.posts) == 1
-    assert json.loads(threads.read_text())["conv-r1"]["thread"] == "tb1"
-    got, _after = h.act("reply:response-r1", "start")                 # again: the same one, no new post
-    assert got["goto"] == "#/main/tb1" and len(fe.posts) == 1
-    assert got["said"] == "Opened its conversation. Write what you need."
-    item_threads.record("conv-r2", "main", "t-turn")                  # where its reply was written
-    got, _after = h.act("reply:response-r2", "start")
-    assert got["goto"] == "#/main/t-turn" and len(fe.posts) == 1
-    h, _seen, _clock, fe = _home(one_list(one_list=False), fe=_FE(one=False))
+    assert got["ok"] and seen["drafts"] == [("response-r1", "", "")]
     h.act("reply:response-r1", "start")
     h.act("reply:response-r1", "start")
     assert len(fe.posts) == 2                                          # off: a new one each time, as before
@@ -565,20 +569,23 @@ def test_a_conversation_that_needs_you_is_an_answer_needed_item_once():
     assert first["href"] == "#/main/t9" and talk[1]["project"] == "lab-budget"
     assert left[-1]["id"] == "thread:main:t12"
     card = I.item(src, "thread:main:t9")
-    assert ids(card) == ["start", "done"] and card["brief"]["standing"] == ["A question waits for you."]
+    assert acts(card) == ["done"] and ids(card) == [] and card["note"]["open"]
+    assert card["brief"]["standing"] == ["A question waits for you."]
     for w in [card["brief"]["what"], card["brief"]["next"], card["label"]]:
         plain(w)
     assert not any(x["kind"] == "conversation" for x in H.left(one_list(one_list=False, conversations=[_talk()])))
 
 
-def test_ask_opens_the_conversation_and_done_is_its_mark_done_after_the_undo():
+def test_a_note_goes_to_the_conversation_and_done_is_its_mark_done_after_the_undo():
     src = one_list(conversations=[_talk()])
     fe = _FE()
     marked = []
     fe.web_set_state = lambda ch, tk, state: marked.append((ch, tk, state)) or {}
-    h, _seen, clock, fe = _home(src, fe=fe)
-    got, _after = h.act("thread:main:t9", "start")
-    assert got["ok"] and got["goto"] == "#/main/t9" and fe.posts == []
+    h, seen, clock, fe = _home(src, fe=fe)
+    got, _after = h.act("thread:main:t9", "note", "The lab budget one.")
+    assert got["ok"] and fe.posts == []
+    ((info, words),) = seen["notes"]
+    assert words == "The lab budget one." and info["key"] == "thread:main:t9" and info["thread"] == ["main", "t9"]
     got, _after = h.act("thread:main:t9", "done")
     assert got["ok"] and got["undo"] and marked == []
     assert "thread:main:t9" not in [x["ref"] for x in h.payload()["left"]]   # off the list while Undo runs
@@ -690,3 +697,280 @@ def test_a_revised_draft_replaces_its_send_card_in_place():
         assert posted == [("refreshed", "AAMkD=")] and crumbs == []          # no new card, no old one retired
         ns["_reconfirm_updated_drafts"]("main", "t-item", {"AAMkD="}, "test")
         assert crumbs == [("main", "t-item", "DM1", "111.1", "The Send button for the revised draft")]
+
+
+# ── an item unfolds in place: its mail, what Tacitus has, one note box ──
+
+# The mail threads the bot's Hooks.mail would read (oldest first): made up.
+MAIL = {"conv-r1": [
+    {"id": "m-1", "from": {"name": "Sam Rivera", "address": "sam.rivera@example.org"},
+     "sent": "2026-11-20T15:00:00Z", "subject": "Seminar date",
+     "text": "Could you give the seminar in March?\nAny week works for us."},
+    {"id": "m-2", "from": {"name": "Pat Owner", "address": "owner@example.edu"},
+     "sent": "2026-11-21T15:00:00Z", "subject": "Re: Seminar date", "text": "Let me look at my calendar."}],
+    "conv-r2": [{"id": "m-3", "from": {"name": "Alex Kim", "address": "alex.kim@example.org"},
+                 "sent": "2026-11-19T10:00:00Z", "subject": "Data access form", "text": "form " * 1000}]}
+
+
+@pytest.fixture
+def owner(monkeypatch):
+    monkeypatch.setattr(I, "owner_address", lambda: "owner@example.edu")
+
+
+def test_the_folded_row_has_done_later_and_no_reply_needed_and_nothing_that_starts_a_turn():
+    src = one_list(cases=[])
+    src.replies[1]["queued"] = {"outcome": "decision", "note": "Sign it?", "choices": ["Yes, I sign it", "No"]}
+    left = {x["ref"]: x for x in H.build(src)["left"]}
+    assert acts(left["reply:response-r1"]) == ["later", "not_needed"]
+    assert acts(left["reply:response-r2"]) == ["later", "not_needed"]          # a question: its picks are chips
+    assert acts(left["item:deadline-w1"]) == ["done", "later", "waiting"]
+    assert acts(left["proposal:task-s2"]) == ["done", "not_done"]
+    assert acts(left["request:w41"]) == []                                       # Send stays in Action requests
+    for x in left.values():
+        assert set(acts(x)) <= set(I.ACT_IDS) and acts(x) == sorted(acts(x), key=I.ACT_IDS.index)
+        assert "mail" not in x and "note" not in x                               # read when it opens, not here
+        for c in x.get("acts") or []:
+            plain(c["label"])
+    off = H.build(one_list(one_list=False, cases=[]))
+    assert not any("acts" in x for x in off["left"])
+
+
+def test_an_item_opened_reads_its_mail_once_the_way_the_send_card_shows_quoted_mail(owner):
+    src = one_list(cases=[])
+    h, seen, _clock, _fe = _home(src)
+    h.payload()
+    assert seen["mail"] == []                                                    # Home's list reads no mail
+    it = h.item("reply:response-r1")
+    assert it["mail"] == {"label": "The email from Sam Rivera, Nov 20", "cut": False,
+                          "text": "Could you give the seminar in March?\nAny week works for us."}
+    plain(it["mail"]["label"])
+    h.item("reply:response-r1")
+    assert seen["mail"] == ["conv-r1"]                                           # read once, then kept a while
+    long = h.item("reply:response-r2")["mail"]
+    assert long["cut"] and len(long["text"]) <= I.MAIL_MAX < len(MAIL["conv-r2"][0]["text"])   # bounded
+    assert "mail" not in h.item("proposal:task-s2")                              # a row from chat: no mail part
+    h, seen, _clock, _fe = _home(one_list(one_list=False, cases=[]), fe=_FE(one=False))
+    assert "mail" not in h.item("reply:response-r1") and seen["mail"] == []      # off: as before
+
+
+def test_the_message_that_started_it_is_the_rows_source_else_the_newest_from_them():
+    msgs = MAIL["conv-r1"] + [{"id": "m-9", "from": {"name": "Sam Rivera", "address": "sam.rivera@example.org"},
+                               "sent": "2026-11-22T09:00:00Z", "subject": "Re: Seminar date", "text": "Any news?"}]
+    assert I.pick_mail(msgs, "m-1", "owner@example.edu")["id"] == "m-1"
+    assert I.pick_mail(msgs, "", "owner@example.edu")["id"] == "m-9"
+    assert I.pick_mail(msgs[:2], "gone", "owner@example.edu")["id"] == "m-1"     # never the owner's own
+    assert I.pick_mail([], "", "") is None
+
+
+def test_kept_mail_shows_as_the_send_card_shows_it_and_reaches_no_model(owner, monkeypatch):
+    """The Send card shows its quoted thread as the bot's own live read gives
+    it, at every keep level, and puts it in nothing a model reads: the item
+    does the same. A kept item gets no note."""
+    seen_items: list = []
+
+    class Deeper:
+        def state(self, fe, ref, item, row=None):
+            seen_items.append(json.dumps(item))
+            return {"state": "unavailable"}
+    monkeypatch.setattr(I, "_deeper_mod", lambda: Deeper())
+    plain_item = _home(one_list(cases=[]))[0].item("reply:response-r1")
+    src = one_list(cases=[])
+    src.replies[0]["keep_level"] = "local"
+    h, seen, _clock, _fe = _home(src)
+    it = h.item("reply:response-r1")
+    assert it["kept"] == "local" and "Sam Rivera" not in it["title"] and it["brief"]["what"] == ""
+    assert it["mail"] == plain_item["mail"]                                      # one rule: the Send card's
+    assert "note" not in it and acts(it) == ["done", "later"]
+    assert not any("Could you give the seminar" in x for x in seen_items)        # never in the deeper packet
+    f = I.find(one_list(cases=[]), "reply:response-r1")
+    info = I.note_info(f, plain_item)
+    assert "seminar in March" not in json.dumps(info)                            # nor in a note's turn
+
+
+def test_quick_answers_fill_the_note_box_and_never_act(monkeypatch):
+    src = one_list(cases=[])
+    src.replies[1]["queued"] = {"outcome": "decision", "note": "Sign it?", "choices": ["Yes, I sign it", "No"]}
+    h, seen, _clock, _fe = _home(src)
+    assert h.item("reply:response-r1")["note"]["chips"] == ["Yes", "No"]
+    assert h.item("reply:response-r2")["note"]["chips"] == ["Yes, I sign it", "No"]
+    got, _after = h.act("reply:response-r2", "answer:1")
+    assert not got["ok"] and seen["drafts"] == [] and seen["notes"] == []
+
+    class Deeper:
+        def state(self, fe, ref, item, row=None):
+            return {"state": "ready", "text": "What happened\n- A made-up line.", "steps": [
+                {"id": "s1", "label": "Draft: Tuesday at 2:00 works.", "fill": "Tuesday at 2:00 works."},
+                {"id": "s2", "label": "Done"}, {"id": "continue", "label": "Ask"}]}
+
+        def step(self, *a, **k):
+            raise AssertionError("a chip never acts")
+    monkeypatch.setattr(I, "_deeper_mod", lambda: Deeper())
+    it = h.item("reply:response-r1")
+    assert it["note"]["chips"] == ["Yes", "No", "Tuesday at 2:00 works."]
+    assert [st["id"] for st in it["deeper"]["steps"]] == ["s2"]                  # no Ask, no draft step
+    got, _after = h.act("reply:response-r1", "step:s1")
+    assert not got["ok"]
+
+
+def test_a_note_goes_to_the_items_own_conversation_and_starts_one_turn(owner):
+    src = one_list(cases=[])
+    h, seen, clock, _fe = _home(src)
+    it = h.item("reply:response-r1")
+    got, _after = h.act("reply:response-r1", "note", "  Yes, but after Dec 21.  ", it["version"])
+    assert got == {"ok": True, "said": "Tacitus is working on it."}
+    ((info, words),) = seen["notes"]
+    assert words == "Yes, but after Dec 21."
+    assert (info["key"], info["lid"], info["conv"], info["reply"]) == ("conv-r1", "response-r1", "conv-r1", True)
+    assert info["opening"].endswith("From Home (item response-r1).") and not info["kept"]
+    assert "Could you give the seminar" not in json.dumps(info)                 # no mail text goes with it
+    assert seen["drafts"] == []
+    got, _after = h.act("reply:response-r1", "note", "   ")
+    assert got == {"ok": False, "said": I.NOTE_EMPTY} and len(seen["notes"]) == 1
+    got, _after = h.act("reply:response-r1", "note", "No reply needed.")       # the row's own button, not a turn
+    assert got["ok"] and got["undo"] and got["said"] == "No reply needed. It is off your list."
+    assert len(seen["notes"]) == 1
+    plain(got["said"])
+
+
+def test_nothing_on_unfold_starts_a_turn():
+    src = one_list(cases=[], conversations=[_talk()])
+    h, seen, _clock, _fe = _home(src)
+    for x in h.payload()["left"]:
+        h.item(x["ref"])
+    assert seen["notes"] == [] and seen["drafts"] == []
+
+
+def _noted(state, said="", card=None, ref="reply:response-r1", **over):
+    rec = {"ref": ref, "key": "conv-r1", "lid": "response-r1", "conv": "conv-r1", "case": "", "state": state,
+           "asked": "When is the seminar?", "said": said, "at": F.at(13, 0), "route": "#/main/t-note"}
+    return [dict(rec, **({"card": card} if card else {}), **over)]
+
+
+def test_the_items_line_and_card_show_its_note_working_then_its_answer():
+    src = one_list(cases=[], notes=_noted("working"))
+    v = I.item(one_list(cases=[]), "reply:response-r1")["version"]
+    h, seen, _clock, _fe = _home(src)
+    line = next(x for x in h.payload()["left"] if x["ref"] == "reply:response-r1")
+    assert line["detail"] == H.NOTE_WORKING
+    it = h.item("reply:response-r1")
+    assert it["version"] == v                                                    # the line's change is not a change
+    assert it["note"]["last"] == {"state": "working", "asked": "When is the seminar?", "said": "",
+                                  "goto": "#/main/t-note"}
+    got, _after = h.act("reply:response-r1", "note", "And the room?")
+    assert got == {"ok": False, "said": I.NOTE_BUSY} and seen["notes"] == []     # one turn at a time
+    src = one_list(cases=[], notes=_noted("answered", "It is on March 3, in the main hall."))
+    h, _seen, _clock, _fe = _home(src)
+    assert next(x for x in h.payload()["left"] if x["ref"] == "reply:response-r1")["detail"] == H.NOTE_ANSWERED
+    last = h.item("reply:response-r1")["note"]["last"]
+    assert last["state"] == "answered" and last["said"] == "It is on March 3, in the main hall."
+    for w in (H.NOTE_WORKING, H.NOTE_ANSWERED, I.NOTE_BUSY, I.NOTE_EMPTY, I.NOTE_STARTED):
+        plain(w)
+
+
+def test_a_draft_the_note_made_is_its_send_card_in_the_items_place():
+    send = F.request("w52", "send", "Send email", "Re: Seminar date", "To Sam Rivera")
+    send["card"]["actions"][0]["value"] = '{"conversation_id": "conv-r1", "draft_id": "d2"}'
+    src = one_list(cases=[], notes=_noted("drafted", "The draft says yes, after Dec 21.", ["dm", "w52"]))
+    src.requests = {"waiting": [send], "done": []}
+    it = I.item(src, "reply:response-r1", fe=_FE())
+    assert it["kind"] == "request" and ids(it) == ["open"]                       # Send stays in Action requests
+    assert it["note"]["open"] is False and it["note"]["last"]["state"] == "drafted"
+    assert it["note"]["last"]["said"] == "The draft says yes, after Dec 21." and it["note"]["last"]["card"]
+
+
+# ── the bot: the note's one turn ─────────────────────────────────────
+
+class _NoteWeb(_Web):
+    def __init__(self, calls):
+        super().__init__(calls)
+        self.dispatched = 0
+        calls["told"] = []
+        self.home = types.SimpleNamespace(changed=lambda: calls["told"].append("home"))
+        self.store = types.SimpleNamespace(home_item_emit=lambda ref: calls["told"].append(ref))
+
+    def web_message(self, channel, text, thread_key, nonce=None):
+        self.calls["owner"].append((channel, text, thread_key))
+        row = {"id": f"n{len(self.calls['owner'])}", "channel": channel, "thread_key": thread_key}
+        return row, lambda: setattr(self, "dispatched", self.dispatched + 1)
+
+
+def _note_ns():
+    import test_reply_card as T
+    ns, calls, _turns, kept = _reply_ns([T._q("ana", 2, conversation_id="conv-ana")], _Pushes())
+    calls["owner"] = []
+    fe = _NoteWeb(calls)
+    notes: dict = {}
+    ns.update(FRONTEND=fe, _load_home_notes=lambda: json.loads(json.dumps(notes)),
+              _save_home_notes=lambda d: (notes.clear(), notes.update(d)))
+    return ns, calls, notes, kept, fe
+
+
+ITEM = {"ref": "reply:response-ana", "kind": "reply", "lid": "response-ana", "conv": "conv-ana", "case": "",
+        "key": "conv-ana", "thread": [], "title": "Seminar date", "kept": "", "reply": True,
+        "brief": {"what": "A reply you owe Ana.", "asked": "Confirm the date.", "due": ""}, "owner_said": [],
+        "opening": "*Seminar date*\nA reply you owe Ana.\n\nFrom Home (item response-ana)."}
+
+
+def test_the_bot_posts_the_note_as_the_owners_message_and_runs_one_turn():
+    ns, calls, notes, kept, fe = _note_ns()
+    got = ns["_home_note"](dict(ITEM), "Yes, but after Dec 21.")
+    assert got == {"ok": True, "said": "Tacitus is working on it."}
+    assert calls["posts"] == [("main", None, ITEM["opening"])]                   # a new conversation opens
+    assert kept["conv-ana"] == ("main", "p1")                                    # it is the item's one now
+    assert calls["owner"] == [("main", "Yes, but after Dec 21.", "p1")]          # his words, as his message
+    assert fe.dispatched == 0                                                    # its own dispatch never runs
+    ((channel, thread, msg, prompt, user, reply),) = calls["turns"]             # one turn, on his message
+    assert (channel, thread, msg, user, reply) == ("main", "p1", "n1", "U1", True)
+    assert '"Yes, but after Dec 21."' in prompt and "--ledger-id response-ana" in prompt
+    assert "Ledger item response-ana" in prompt and "write no draft for a question alone" in prompt
+    assert ns["_home_notes"]()[0]["state"] == "working"
+    assert calls["told"] == ["home", "reply:response-ana"]                     # the open item reads it again
+    again = ns["_home_note"](dict(ITEM), "And the room?")
+    assert not again["ok"] and len(calls["turns"]) == 1                          # one at a time
+    ns["_note_answer"]("n1", "It is on March 3, in the main hall. *Draft* none.")
+    ns["_note_turn_ended"]("n1", "done", [])
+    (rec,) = ns["_home_notes"]()
+    assert calls["told"][-2:] == ["home", "reply:response-ana"]
+    assert rec["state"] == "answered" and rec["said"] == "It is on March 3, in the main hall. Draft none."
+    assert rec["route"] == "#/main/p1" and rec["asked"] == "Yes, but after Dec 21."
+    # a second note goes to the same conversation; a draft makes it drafted
+    ns["_active_threads"].clear()
+    assert ns["_home_note"](dict(ITEM), "Say yes for Dec 22.")["ok"]
+    assert calls["owner"][-1] == ("main", "Say yes for Dec 22.", "p1") and len(calls["posts"]) == 1
+    ns["_load_draft_confirms"]()["d-9"] = {"status": "live", "channel": "dm", "message_ts": "s9"}
+    ns["_note_turn_ended"]("n2", "done", ["d-9"])
+    rec = ns["_home_notes"]()[0]
+    assert rec["state"] == "drafted" and rec["card"] == ["dm", "s9"]
+
+
+def test_the_bot_takes_no_note_on_a_kept_item_or_with_one_list_off():
+    ns, calls, _notes, _kept, fe = _note_ns()
+    assert not ns["_home_note"](dict(ITEM, kept="local"), "Yes.")["ok"]
+    fe.one_list = False
+    assert not ns["_home_note"](dict(ITEM), "Yes.")["ok"]
+    assert calls["turns"] == [] and calls["owner"] == []
+
+
+def test_a_note_turn_that_ends_with_nothing_says_why():
+    ns, _calls, _notes, _kept, _fe = _note_ns()
+    ns["_home_note"](dict(ITEM), "What did they ask?")
+    ns["_note_turn_ended"]("n1", "timeout", [])
+    rec = ns["_home_notes"]()[0]
+    assert rec["state"] == "failed" and rec["said"] == ns["REPLY_ENDED_WORDS"]["timeout"]
+
+
+def test_the_items_mail_is_the_bots_own_read_as_the_send_cards_is():
+    """Both reads run graph_actions as the owner's process (never the mail
+    mediator, so neither the sealed view nor a model is in it)."""
+    src = (ROOT / "ea-chat-bot.py").read_text()
+    for fn in ("def _graph_json(", "def _fetch_draft_body("):
+        body = src[src.index(fn):src.index("\ndef ", src.index(fn) + 10)]
+        assert '"preprocessor" / "graph_actions.py"' in body and "mail_actions" not in body, fn
+    ns, _calls, _notes, _kept, _fe = _note_ns()
+    reads = []
+    ns["_graph_json"] = lambda *argv: reads.append(argv) or {"messages": MAIL["conv-r1"]}
+    ns["_plain_mail_id"] = lambda v: v == "conv-r1"
+    got = ns["_home_mail"]("conv-r1")
+    assert reads == [("get-conversation", "--conversation-id", "conv-r1", "--max-chars", "3001")]
+    assert [m["id"] for m in got] == ["m-1", "m-2"] and got[0]["text"].startswith("Could you give")
+    assert ns["_home_mail"]("not a mail id") == [] and len(reads) == 1

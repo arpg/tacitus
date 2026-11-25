@@ -62,8 +62,9 @@ HOME = {
     "draft": "draft", "say": "draft", "not_needed": "done", "done": "done", "start": "ask",
     "waiting": "later", "later": "later", "reopen": "not_done", "open": "go", "outlook": "go",
     "answer": "answer", "answer:{}": "answer",
-    # one list: a close proposal's Not done, a "which one was it?" pick
-    "not_done": "not_done", "which:{}": "answer",
+    # one list: a close proposal's Not done, a "which one was it?" pick, and
+    # the note box's one button (the owner's words to Tacitus)
+    "not_done": "not_done", "which:{}": "answer", "note": "ask",
 }
 # A work case's choices and buttons, by the answer after the kind's prefix.
 CASE = {
@@ -351,7 +352,8 @@ def test_each_home_item_kind_has_its_one_name():
         if x["kind"] in ITEM_NAMES:
             seen.add(x["kind"])
             assert x["label"] == ITEM_NAMES[x["kind"]], (x["kind"], x["label"])
-            for c in I.item(src, x["id"])["choices"]:
+            got = I.item(src, x["id"])
+            for c in got["choices"] + got.get("acts", []) + ([I.NOTE] if got.get("note", {}).get("open") else []):
                 meaning = HOME.get(c["id"]) or HOME.get(re.sub(r":\d+$", ":{}", c["id"]))
                 assert meaning and _check(meaning, c["label"]), (x["kind"], c)
     assert seen == set(ITEM_NAMES), seen

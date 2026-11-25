@@ -1079,6 +1079,11 @@ details.h-card[open] > summary::before { transform: rotate(90deg); }
 .h-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 /* An item is a request's block (.req); opened, its card's parts follow its head, the deeper briefing last. */
 .h-body > * { margin-top: 10px; } .h-body > :empty { display: none; } .h-body > div > .card-actions:first-child { margin-top: 0; }
+/* One list: the row's buttons (there folded or not), the item's mail folded as a Send card folds it, and the note box. */
+.h-acts { padding: 0 12px 10px; } .h-acts > :empty { display: none; } .h-acts .card-actions, .h-tell .card-actions { margin-top: 0; }
+.h-tell { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); } .h-answer, .h-asked { white-space: pre-wrap; overflow-wrap: anywhere; }
+.h-tell textarea { width: 100%; min-height: 64px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--bg);
+  color: inherit; font: inherit; font-size: 16px; resize: vertical; } .h-tell .btn.primary:disabled { opacity: .45; cursor: not-allowed; }
 .h-brief { display: grid; gap: 4px; } .h-brief ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
 .h-then, .h-said { font-weight: 600; } .h-quiet { color: var(--muted); font-size: 14px; } .h-quiet .btn { margin-left: 8px; }
 .h-links, .h-undo { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; }

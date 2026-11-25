@@ -239,9 +239,12 @@ def test_a_model_judgment_from_the_event_log(tree):
 
 # ── dedupe and the live hook ──────────────────────────────────────────
 
-def test_the_nightly_report_appends_one_history_line_a_run(tree, capsys):
+def test_the_nightly_report_appends_one_history_line_a_run(tree, capsys, monkeypatch):
     import closure_eval as ce
     hist = tree.labels.parent / ce.HISTORY_FILE
+    # the report's window counts back from now: now is the made-up events' day
+    real = ce.write_report
+    monkeypatch.setattr(ce, "write_report", lambda **kw: real(**{**kw, "now": kw.get("now") or T0 + 2 * DAY}))
     for n in (1, 2):
         assert cl.main(["collect", "--report"]) == 0
         out = json.loads(capsys.readouterr().out)

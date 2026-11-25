@@ -7834,6 +7834,242 @@ def _home_outlook(conversation_id: str) -> str:
     return _proposal_mail_links([{"id": "home", "conversation_id": conversation_id}]).get("home", "")
 
 
+# One list: a Home item opens in place with its mail and one note box
+# (docs/webchat.md, Home items). The owner's note is posted as his own
+# message in the item's one conversation (item_threads; a conversation
+# item's own thread), and ONE turn reads it with the item's context: it
+# answers a question, drafts the reply a direction asks for (its Send card
+# comes to Action requests, as any draft's), or both; the model decides
+# from his words. The turn is recorded here (owner-private
+# home-notes.json) so the item shows that Tacitus works on it, then its
+# answer or that a draft is ready (_home_notes, read by Home). An item
+# kept from hosted models below Summary takes no note.
+_HOME_NOTES = _private_state("home-notes.json")
+_HOME_NOTES_LOCK = threading.Lock()
+# The answer each note's turn posted, by the note's message id, until the
+# turn's end records it (_note_turn_ended).
+_HOME_NOTE_SAID: dict = {}
+HOME_NOTE_CHARS = 600
+HOME_NOTE_SAID_CHARS = 1500
+# A note's turn shows on its item this long after it ended; its record is
+# kept a week.
+HOME_NOTE_SHOW_S = 86400
+HOME_NOTE_KEEP_S = 7 * 86400
+# The longest text of one message the item's mail reads.
+HOME_MAIL_CHARS = 3001
+
+
+def _load_home_notes() -> dict:
+    try:
+        data = json.loads(_HOME_NOTES.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_home_notes(data: dict) -> None:
+    try:
+        _atomic.write_json(_HOME_NOTES, data, mode=0o600)
+    except Exception as e:
+        log.warning(f"home notes store failed: {e}")
+
+
+def _home_tell(ref: str) -> None:
+    """Home changed for the item `ref`: every open app reads Home again, and
+    one that shows the item open reads it again."""
+    home = getattr(FRONTEND, "home", None)
+    try:
+        if home is not None and hasattr(home, "changed"):
+            home.changed()
+        emit = getattr(getattr(FRONTEND, "store", None), "home_item_emit", None)
+        if callable(emit) and ref:
+            emit(ref)
+    except Exception as e:
+        log.debug(f"home note: the apps were not told: {e}")
+
+
+def _home_note_prompt(item: dict, words: str) -> str:
+    """The one turn a note starts: the item's context, the owner's words,
+    and what each kind of note asks of the turn."""
+    one = _chat.card_text.one_line
+    lid, case = str(item.get("lid") or ""), str(item.get("case") or "")
+    ledger_py = "python3 /home/ea-bot/ea-system/preprocessor/ledger.py"
+    brief = item.get("brief") if isinstance(item.get("brief"), dict) else {}
+    shown = " ".join(one(str(brief.get(k) or ""), 200) for k in ("what", "asked", "due") if brief.get(k))
+    lines = ["[Home note: the owner opened one item on Home and wrote a note to you. One turn answers it, "
+             "here in its conversation. He reads your answer on the item, so keep it to a few short lines.]",
+             ""]
+    if lid:
+        lines.append(_item_context(lid))
+    elif case:
+        lines.append(f"Work case {case}: {one(str(item.get('title') or ''), 200)}")
+    else:
+        lines.append(f"The item: {one(str(item.get('title') or ''), 200)}")
+    if shown:
+        lines.append(f"What Home shows for it (code's words, data): {shown}")
+    lines.append("")
+    said = next((d for d in item.get("owner_said") or [] if isinstance(d, dict) and d.get("said")), None)
+    if said:
+        lines.append(f"The owner decided this thread on {str(said.get('at') or '')[:10]}, in his words "
+                     f"(data): \"{one(str(said.get('said') or ''), 160)}\". Nothing you write goes against it "
+                     "unless his note says so.")
+    lines.append(f'The owner\'s note (his words, for this item alone): "{one(words, HOME_NOTE_CHARS)}"')
+    how = ("The note asks a question, gives a direction, or both: decide which from his words. "
+           "A question: answer it from the row, the thread and the records; write no draft for a "
+           "question alone. A direction: do it. ")
+    if lid and item.get("reply"):
+        how += ("For this reply, write the reply that follows his direction, in his voice, and create "
+                f"it as a draft on the thread now, with `--ledger-id {lid}`; its Send card goes to his "
+                "Action requests, and nothing goes out until he taps Send. Then say in one line what "
+                f"the draft says, and record it: `{ledger_py} note-reply --id {lid} --outcome drafted "
+                "--draft-id <the draft id>`. ")
+    how += ("Both: answer first, then do it. When you do not do what the note asks, say why in one line. "
+            "Never send mail.")
+    lines.append(how)
+    return "\n".join(x for x in lines if x is not None)
+
+
+def _home_note(item: dict, words: str) -> dict:
+    """One list: the owner's note on a Home item (home_items.note_info):
+    his own message in the item's one conversation, then one turn with the
+    item's context (_home_note_prompt). {"ok", "said"}."""
+    words = _chat.card_text.one_line(str(words or ""), HOME_NOTE_CHARS)
+    key, ref = str(item.get("key") or ""), str(item.get("ref") or "")
+    lid, conv = str(item.get("lid") or ""), str(item.get("conv") or "")
+    if not _one_list() or item.get("kept") or not key:
+        return {"ok": False, "said": "Tacitus cannot do that from here."}
+    if not words:
+        return {"ok": False, "said": "Write your note first."}
+    with _HOME_NOTES_LOCK:
+        busy = any(n.get("key") == key and not n.get("ended") for n in _load_home_notes().values())
+    if busy or (lid and _reply_turn_of(lid)[0]):
+        return {"ok": False, "said": "Tacitus is still working on this one. Wait for its answer."}
+    if item.get("kind") == "conversation":
+        channel, thread = (list(item.get("thread") or []) + ["", ""])[:2]
+    else:
+        channel, thread = _item_conversation(key, rid=lid, conv=conv)
+    if not channel:
+        return {"ok": False, "said": "Nothing was done. Try again in a minute."}
+    try:
+        if not thread:
+            # a new conversation opens with Tacitus's line about the item
+            root = FRONTEND.post(channel=channel, thread_ts=None, text=str(item.get("opening") or "")
+                                 or f"*{_chat.card_text.one_line(str(item.get('title') or ''), 200)}*")
+            thread = str(getattr(root, "thread_key", "") or root.id)
+            _keep_item_conversation(key, channel, thread)
+        # His words as his own message; the turn below is its one turn, so
+        # its own dispatch is not run.
+        row, _dispatch = FRONTEND.web_message(channel, words, thread)
+    except Exception as e:
+        log.warning(f"home note: the note was not posted: {e}")
+        return {"ok": False, "said": "Nothing was done. Try again in a minute."}
+    ts = str(row.get("id") or "")
+    channel, thread = str(row.get("channel") or channel), str(row.get("thread_key") or thread)
+    if not ts:
+        return {"ok": False, "said": "Nothing was done. Try again in a minute."}
+    now = time.time()
+    with _HOME_NOTES_LOCK:
+        notes = _load_home_notes()
+        notes[ts] = {"key": key, "ref": ref, "lid": lid, "conv": conv, "case": str(item.get("case") or ""),
+                          "channel": channel, "thread": thread, "asked": words, "started": now}
+        _save_home_notes(notes)
+    with _active_lock:
+        _active_threads.add(ts)
+    prompt = _home_note_prompt(item, words)
+
+    def run() -> None:
+        handle_message_async(channel, thread, ts, prompt, OWNER_SLACK_USER_ID, True)
+    threading.Thread(target=run, daemon=True).start()
+    log.info(f"home note: a turn started for {lid or ref}")
+    _home_tell(ref)
+    return {"ok": True, "said": "Tacitus is working on it."}
+
+
+def _note_answer(msg_ts: str, response: str) -> None:
+    """A turn posted its answer: kept for the note it answers, if it is one."""
+    if msg_ts and msg_ts in _load_home_notes():
+        _HOME_NOTE_SAID[msg_ts] = str(response or "")
+
+
+def _note_turn_ended(msg_ts: str, how: str, drafts=()) -> None:
+    """A note's turn ended (handle_message_async's own end): its record says
+    what came of it, once: `drafted` with the live Send card of a draft it
+    made, `answered` with its answer, else `failed` with why."""
+    with _HOME_NOTES_LOCK:
+        n = _load_home_notes().get(str(msg_ts or ""))
+    if not n or n.get("ended"):
+        return
+    said = _HOME_NOTE_SAID.pop(msg_ts, "") or (
+        _reply_turn_text(n.get("channel") or "", n.get("thread") or "", msg_ts) if how == "done" else "")
+    said = _strip_slack_markup(said)[:HOME_NOTE_SAID_CHARS].strip()
+    where = _reply_live_send(drafts)
+    outcome = "drafted" if drafts else "answered" if said and how == "done" else "failed"
+    if outcome == "failed":
+        said = REPLY_ENDED_WORDS.get(how) or REPLY_ENDED_WORDS["done"]
+    with _HOME_NOTES_LOCK:
+        notes = _load_home_notes()
+        rec = notes.get(msg_ts)
+        if not rec or rec.get("ended"):
+            return
+        rec.update(ended=time.time(), outcome=outcome, said=said,
+                   **({"card": list(where)} if where[1] else {}))
+        _save_home_notes(notes)
+    log.info(f"home note: the turn for {n.get('lid') or n.get('ref')} ended: {outcome}")
+    _home_tell(str(n.get("ref") or ""))
+
+
+def _home_notes() -> list:
+    """One list: the notes on Home items and their turns, newest first, one
+    per item (Hooks.notes): a turn still running is `working`; one no run
+    holds past its limit, or that a restart cut short, ended `failed`."""
+    now = time.time()
+    with _HOME_NOTES_LOCK:
+        notes = _load_home_notes()
+        changed = False
+        for mid, n in list(notes.items()):
+            started = float(n.get("started") or 0)
+            if now - started > HOME_NOTE_KEEP_S:
+                notes.pop(mid)
+                changed = True
+            elif not n.get("ended") and not _reply_running(mid) and (
+                    now - started > REPLY_TURN_LIMIT_S or (started < _REPLY_PROCESS_START and
+                                                           now - _REPLY_PROCESS_START > REPLY_RESTART_GRACE_S)):
+                n.update(ended=now, outcome="failed", said=REPLY_ENDED_WORDS["lost"])
+                changed = True
+        if changed:
+            _save_home_notes(notes)
+    out, seen = [], set()
+    for mid, n in sorted(notes.items(), key=lambda kv: -float(kv[1].get("started") or 0)):
+        if n.get("key") in seen:
+            continue
+        seen.add(n.get("key"))
+        if n.get("ended") and now - float(n["ended"]) > HOME_NOTE_SHOW_S:
+            continue
+        from urllib.parse import quote
+        out.append({"ref": n.get("ref") or "", "key": n.get("key") or "", "lid": n.get("lid") or "",
+                    "conv": n.get("conv") or "", "case": n.get("case") or "",
+                    "state": n.get("outcome") if n.get("ended") else "working",
+                    "asked": n.get("asked") or "", "said": n.get("said") or "",
+                    "at": n.get("ended") or n.get("started"),
+                    "route": f"#/{quote(str(n.get('channel') or ''), safe='')}/"
+                             f"{quote(str(n.get('thread') or ''), safe='')}",
+                    **({"card": n["card"]} if n.get("card") else {})})
+    return out
+
+
+def _home_mail(conversation_id: str) -> list:
+    """One list: the messages of an item's mail thread for its opened item,
+    read now as the owner with graph_actions (the read a Send card's quoted
+    thread comes from, never the mediator's), oldest first, each one's own
+    text without the quoted history, at most HOME_MAIL_CHARS."""
+    if not _plain_mail_id(conversation_id):
+        return []
+    got = _graph_json("get-conversation", "--conversation-id", conversation_id,
+                      "--max-chars", str(HOME_MAIL_CHARS))
+    return [{k: m.get(k) for k in ("id", "from", "sent", "subject", "text")}
+            for m in got.get("messages") or [] if isinstance(m, dict)]
+
+
 for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
     _home_of = getattr(_web, "home", None)
     if _home_of is not None and hasattr(_home_of, "hooks"):
@@ -7846,6 +8082,9 @@ for _web in (FRONTEND, getattr(FRONTEND, "shadow", None)):
         _home_of.hooks.close = _home_close
         _home_of.hooks.reopen = _home_reopen
         _home_of.hooks.which = _home_which
+        _home_of.hooks.note = _home_note
+        _home_of.hooks.notes = _home_notes
+        _home_of.hooks.mail = _home_mail
 
 
 def _toggle_quoted(ev: "_chat.ActionEvent", show: bool):
@@ -15885,6 +16124,7 @@ Reminders:
         usage_footer = _record_invocation(
             run_model, elapsed, cr.stderr, cost_usd=cr.cost_usd, usage=cr.usage,
             label="EA · " + _tiers.label(tier_name, backstop=footer_backstop, note=tier_pick.get("note", "")))
+        _note_answer(msg_ts, response)
         response += usage_footer
         _tiers.note_turn(tier=tier_name, source=tier_pick.get("source", ""), lane=_turn_lane(channel, user_id),
                          model=run_model, channel=channel, thread_ts=thread_ts,
@@ -16191,6 +16431,10 @@ Reminders:
                 _handoff_turn_ended(msg_ts, run_drafts)
             except Exception as e:
                 log.warning(f"hand-off turn {msg_ts}: its draft was not recorded: {e}")
+            try:
+                _note_turn_ended(msg_ts, turn_end, run_drafts)
+            except Exception as e:
+                log.warning(f"Home note turn {msg_ts}: its outcome was not recorded: {e}")
 
 
 @app.event("message")

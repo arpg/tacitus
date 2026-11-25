@@ -1008,7 +1008,9 @@ the rows closed today, each request by the rows and thread its card
 names, and each item of the post's own list (which keeps the post's
 level and its fixed line, never the item's title or sender). A kept item
 carries no other words: no name, no project, no line of the post, and no
-Ask; a request keeps its block in Action requests, and So far
+Ask or note; opened with one list, it shows its mail as a Send card shows
+its quoted thread (Home items, The item unfolded), read for that item's
+answer alone; a request keeps its block in Action requests, and So far
 today names a kept row "A kept message". When the keep check cannot run,
 every item from mail reads `local`. The folded briefing is the post's own
 text, whose kept lines are already fixed.
@@ -1048,8 +1050,14 @@ bot (`home_items.Hooks`):
   you." from the reply tick's hour, "This looks done." or "N items look
   done.", a case's card title. Once per reply, proposal or case step
   (`home-pushed.json`, owner-private).
-- **A reply Home starts stays with its item.** Draft a reply, Tell Tacitus
-  what to say or an answer starts the reply's turn in the item's one
+- **An item unfolds in place, and a note is the one way to start a turn**
+  (Home items, The item unfolded). Its row keeps Done, Later and No reply
+  needed, folded or not; Draft and Ask leave it. Unfolded, the item shows
+  its mail, what Tacitus has, and one note box whose words start one turn
+  in the item's one conversation.
+- **A reply Home starts stays with its item.** A reply turn Home started
+  before the note box (Draft a reply, Tell Tacitus what to say or an
+  answer, now only with one list off) runs in the item's one
   conversation (below), not in Action requests; the owner stays on Home.
   The item says "Drafting the reply." and offers only Ask while
   the turn runs (`Hooks.turns`, the bot's turn record with no card); once
@@ -1061,8 +1069,9 @@ bot (`home_items.Hooks`):
   Action requests, behind its token.
 - **One conversation per item.** An item's conversation is kept in
   `item_threads` (under its mail conversation id, else `row:<id>` or
-  `case:<id>`): Ask opens it when there is one and keeps the one it
-  opens, a reply turn and a case's turn (Draft the letter) run in it. A
+  `case:<id>`): a note goes to it and keeps the one it opens (Ask did,
+  before the note box), a reply turn and a case's turn (Draft the letter)
+  run in it. A
   new one opens in the item's project room, as Ask's does; never for an
   item kept from hosted models below Summary, which has no Ask and whose
   case turn opens in Ask Tacitus.
@@ -1109,8 +1118,8 @@ a `ref` (its `id`), which these routes take:
 
 | Route | What it does |
 |---|---|
-| `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, row_version, brief, choices, deeper, goto?, pending?}`; 404 `{ok: false, said}` when Home does not list it now |
-| `POST /api/home/act` `{ref, choice, arg?, version?}` | one choice: `{ok, said, undo?, undo_until?, goto?, item?}` |
+| `GET /api/home/item?ref=` | the item: `{ref, kind, label, kept, title, detail, version, row_version, brief, choices, deeper, goto?, pending?}`, and with one list `acts?` (its row's buttons), `note?` and `mail?` (The item unfolded, below); 404 `{ok: false, said}` when Home does not list it now |
+| `POST /api/home/act` `{ref, choice, arg?, version?}` | one choice: `{ok, said, undo?, undo_until?, goto?, item?}`; with one list, `note` with the owner's words as `arg` is the note |
 | `POST /api/home/undo` `{token}` | takes a Done, No reply needed, Waiting or Later back while its window runs |
 | `POST /api/home/deeper` `{ref}` | starts the deeper briefing (`home_deeper.start`) |
 
@@ -1136,7 +1145,9 @@ behind) is not shown. The stored note never changes. A kept item
 and its choices are Open in Outlook, Done and Later (a kept request: Open
 it in Action requests), which read nothing of it.
 
-**The choices**, and what each runs:
+**The choices**, and what each runs (one list off; with it on, the
+choices that need no model are on the row and the note takes the place of
+Draft, Draft with my words, an answer and Ask: The item unfolded, below):
 
 | Kind | Choices | Runs |
 |---|---|---|
@@ -1189,6 +1200,69 @@ tell `home_briefing_queue` of each open row they write (`ledger._row_written`, t
 `ledger.ROW_WRITTEN_HOOKS`, each loaded only when its source defines
 `row_written`, since the resident's process cannot cache bytecode in the
 install tree); a hook that is missing or fails never fails the write.
+
+### The item unfolded (one list)
+
+With one list on, a Home item has three parts when it unfolds, top to
+bottom, and its row keeps the buttons that need no model. No new page,
+pane or route: the item opens where it is, as before.
+
+- **The row.** The item's choices that act with no model are on its row,
+  folded or not, in this order: Done, Not done (a close proposal), Later
+  (its days open under the row), Later: waiting on them, No reply needed
+  (`home_items.ACT_IDS`, on the kinds in `ROW_KINDS`: a reply, a question,
+  a to-do, a close proposal, a conversation that needs the owner). Home's
+  list carries them (`acts` on each item of `/api/home`, `row_acts`); the
+  opened item carries its own (`acts`). No button on the row starts a
+  model turn: Draft, Draft with my words, an answer and Ask are gone from
+  it, and so are the deeper briefing's Ask (`continue`) and its steps
+  that would start one. A press works as before (its Undo, its line under
+  the row).
+- **The mail.** The message that started the item (`mail`: `label`,
+  `text`, `cut`), folded as a Send card folds its quoted thread. It is
+  the row's source message where its thread holds it, else the newest
+  message from someone else (`home_items.pick_mail`), each message's own
+  text without the quoted history, at most `MAIL_MAX` characters. It is
+  read when the item opens (`GET /api/home/item`, `Home.mail` through the
+  bot's `Hooks.mail`: `graph_actions.py get-conversation` as the owner,
+  the same read and the same rules as the Send card's quoted thread, kept
+  five minutes), never for Home's list. It follows the Send card's rule
+  for kept and sealed mail: the card shows the draft's quoted thread from
+  the bot's own live read, never the mediator's sealed view or a local
+  record, at every keep level, on the owner's network and through the
+  relay alike, and puts it in nothing a model reads. So does the item: a
+  kept item shows its mail as an open one does, and the mail goes into
+  neither the deeper briefing's packet nor a note's turn. Python alone,
+  no model. An item with no mail thread (a row from chat, a case, a
+  conversation) has no mail part; a Gmail thread has none yet.
+- **What Tacitus has.** The quick briefing and the deeper briefing, as
+  before (below).
+- **The note.** One box, "Tell Tacitus what to do", and one filled button,
+  Ask (`note`: `open`, `chips`, `last`). The owner's words go to the
+  item's one conversation as his own message (a new one opens with
+  Tacitus's line about the item), and one turn reads them with the item's
+  context (`Hooks.note`, the bot's `_home_note`): a question gets an
+  answer and no draft; a direction gets the draft (its Send card in
+  Action requests, as any draft's); both get both. The model decides from
+  his words; no code sorts them. A note that says only that no reply is
+  needed is No reply needed (with its Undo), never a turn. An empty note
+  cannot be sent, and a note while the last one is worked on is refused.
+  Quick answers are chips above the box: a reply's Yes and No, a
+  question's own picks, and the words of a deeper step that would start
+  a turn. A chip replaces what the box holds and puts the cursor at its
+  end; it never acts. A kept item has no note.
+- **The result, where he pressed.** The bot keeps each note's turn
+  (owner-private `home-notes.json`; `Hooks.notes`): working while it runs,
+  then answered (its answer, cut at 1,500 characters), drafted (its Send
+  card, which takes the item's place as before) or failed (why), for a
+  day. The item shows "You asked: ...", then "Tacitus is working on it.",
+  then the answer or "A draft is ready." with the way to its Send card,
+  and Open the conversation; its line on Home says "Tacitus is working on
+  your note." and then "Tacitus answered your note.". The bot tells the
+  apps when the turn starts and ends (`home` and `home-item` events).
+
+With one list off, an item opens as before: no row buttons, no mail, no
+note, and Draft, Draft with my words and Ask in its choices.
 
 **In the app.** A tap or Enter on an item opens its card in place, one
 at a time, as a request's block opens (the head stays under the finger

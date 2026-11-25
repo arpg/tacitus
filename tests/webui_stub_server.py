@@ -138,7 +138,11 @@ home_deeper's line for no local model.
 says `one_list`, Action requests and its count leave out the card kinds
 Home holds (HOME_KINDS, as action_requests.listed), Home's `hooks.close`,
 `hooks.reopen` and `hooks.which` record each press in `home_presses`, and
-Settings, Home, Where you answer sets it (`answers`).
+Settings, Home, Where you answer sets it (`answers`). An opened item reads
+its mail through `hooks.mail` from `mails` (conversation id: messages,
+each read recorded in `mail_reads`); a note goes through `hooks.note`,
+recorded in `note_presses` as (the item's info, the words), and is a
+working note in `notes` (Sources.notes, which a test sets to its answer).
 
 The owner's own actions: GET /api/search finds the messages that hold
 every word of `q` (any case, anywhere in the text), newest first, with
@@ -389,6 +393,10 @@ class Stub:
         self.work: list[dict] = []  # cases of other kinds (made-up), in the store's shape
         self.questions: list[dict] = []  # open "which one was it?" questions (cases.questions, kind part)
         self.case_presses: list[tuple] = []  # Home's hooks.case: (case, answer, part, words)
+        self.mails: dict[str, list] = {}  # one list: each mail thread's messages (Hooks.mail)
+        self.mail_reads: list[str] = []
+        self.notes: list[dict] = []  # one list: the notes and their turns (Sources.notes)
+        self.note_presses: list[tuple] = []  # Home's hooks.note: (item info, words)
         self.real = self._real_home(home_src) if home_src else None
         self.home_src = home_src
         if self.real is not None and home is None:
@@ -787,7 +795,8 @@ class Stub:
         dd.local_ready = lambda cfg=None: True
         wts.RUN = lambda script, *args: self.ledger_runs.append((script, *args)) or {"ok": True, "_exit": 0}
         self.clock_offset = 0.0  # the bot's clock against this one's, in seconds
-        home = H.Home(Stub._FE(self), clock=lambda: time.time() + self.clock_offset, sources=src, background=False)
+        home = H.Home(Stub._FE(self), clock=lambda: time.time() + self.clock_offset, sources=self._noted(src),
+                      background=False)
         home.hooks.draft, home.hooks.not_needed, home.hooks.outlook = self._draft, lambda rid, note: {"ok": True}, \
             (lambda conv: f"https://outlook.example.com/mail/{conv}")
         home.hooks.letter = lambda cid, answer, dest, words: self.letter_presses.append((cid, answer, dest, words)) or \
@@ -798,7 +807,28 @@ class Stub:
         home.hooks.reopen = lambda lid: self.home_presses.append(("reopen", lid)) or {"ok": True}
         home.hooks.which = lambda qid, pick: self.home_presses.append(("which", qid, pick)) or \
             {"ok": True, "said": "Recorded. That one is marked done."}
+        home.hooks.mail = lambda conv: self.mail_reads.append(conv) or list(self.mails.get(conv) or [])
+        home.hooks.note = self._note
         return home
+
+    def _noted(self, src):
+        """The sources with the notes this stub holds (`notes`), as the bot's
+        Hooks.notes gives them to Home."""
+        def got(tz=""):
+            out = src(tz)
+            if self.notes:
+                out.notes = [dict(n) for n in self.notes]
+            return out
+        return got
+
+    def _note(self, info: dict, words: str) -> dict:
+        """Home's hooks.note: recorded, and the item's note is working."""
+        self.note_presses.append((info, words))
+        self.notes = [n for n in self.notes if n.get("key") != info.get("key")]
+        self.notes.insert(0, {"ref": info.get("ref"), "key": info.get("key"), "lid": info.get("lid"),
+                              "conv": info.get("conv"), "case": info.get("case"), "state": "working",
+                              "asked": words, "said": "", "at": time.time(), "route": f"#/{quote(MAIN, safe='')}/t-note"})
+        return {"ok": True, "said": "Tacitus is working on it."}
 
     class _CaseStore:
         """case_briefing's store for the stub: the one stored briefing
@@ -822,7 +852,7 @@ class Stub:
     def real_payload(self) -> dict:
         """Home as the bot builds it now, less the choices that wait for an Undo."""
         import home_screen as H
-        src = self.home_src("")
+        src = self._noted(self.home_src)("")
         src.hidden = self.real._hidden()
         return H.build(src)
 

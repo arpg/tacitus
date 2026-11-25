@@ -78,6 +78,10 @@ REPORT_PUSH = {"morning-briefing": "Your morning is ready.",
 REPORT_MAX = 40_000
 # A payload newer than this is served again as it is.
 FRESH_S = 20.0
+# One list: an item's mail, read when it opens, is read again after this
+# long; at most this many threads are kept.
+MAIL_FRESH_S = 300.0
+MAIL_KEPT = 40
 # A check-in this long after the last one starts a new visit: "since you
 # last checked in" counts from the visit before.
 VISIT_GAP_S = 30 * 60
@@ -237,6 +241,11 @@ class Sources:
     # Hooks.turns): {"state": "writing"} while one runs, {"state":
     # "failed", "why"} when it wrote no reply.
     turns: dict = field(default_factory=dict)
+    # One list: the owner's notes on items and the turn each started (the
+    # bot's hook, Hooks.notes), newest first: {"ref", "key", "lid",
+    # "conv", "case", "state" (working, answered, drafted, failed),
+    # "asked", "said", "at", "route", "card"?}. note_of() finds an item's.
+    notes: list = field(default_factory=list)
 
 
 def _today(src: Sources) -> date:
@@ -724,6 +733,7 @@ def left(src: Sources) -> list[dict]:
     if src.one_list:
         _writing(out, src)
         _conversations(out, src)
+        _noted(out, src)
     rank = {"overdue": 0, "soon": 1, "calm": 2}
     kinds = {"request": 0, "proposal": 1, "which": 1, "question": 1, "reply": 2, "item": 3, "letter": 3,
              "case": 3, "conversation": 4}
@@ -784,6 +794,35 @@ def _writing(out: list[dict], src: Sources) -> None:
 
 # The line of an item whose reply is being written (one list).
 WRITING_LINE = "Drafting the reply."
+# The line of an item whose note Tacitus works on, or answered (one list).
+NOTE_WORKING = "Tacitus is working on your note."
+NOTE_ANSWERED = "Tacitus answered your note."
+
+
+def note_of(x: dict, notes) -> dict | None:
+    """The newest of the owner's notes (Sources.notes) on the item `x` (a
+    list item, with its `_lid`, `_conv`, `_case`): by its ref, its row, its
+    mail thread or its case; None with none."""
+    ref, lid, conv, case = (str(x.get(k) or "") for k in ("id", "_lid", "_conv", "_case"))
+    for n in notes or []:
+        if not isinstance(n, dict):
+            continue
+        if (n.get("ref") and n["ref"] == ref) or (lid and n.get("lid") == lid) or \
+                (conv and n.get("conv") == conv) or (case and n.get("case") == case):
+            return n
+    return None
+
+
+def _noted(out: list[dict], src: Sources) -> None:
+    """One list: an item whose note Tacitus works on says so on its line,
+    and one it answered says that, until the answer is a day old (the bot
+    keeps it that long). The line it had stays as `_detail`."""
+    for x in out:
+        n = note_of(x, src.notes) if not x.get("kept") else None
+        line = {"working": NOTE_WORKING, "answered": NOTE_ANSWERED}.get(str((n or {}).get("state") or ""))
+        if line and x.get("kind") != "request":
+            x["_detail"] = x.get("detail") or ""
+            x["detail"] = line
 
 
 def _conversations(out: list[dict], src: Sources) -> None:
@@ -1253,6 +1292,10 @@ def build(src: Sources) -> dict:
     mode_out = dict(md)
     if md["kind"] != "normal":
         mode_out.update(line=mode_line(md, len(shown), len(held), today), held=len(held))
+    if src.one_list:
+        items = _items()
+        for x in shown + held:
+            x["_acts"] = items.row_acts(src, x)
     out = {
         "as_of": src.now,
         "date": today.isoformat(),
@@ -1304,6 +1347,8 @@ def _public(x: dict) -> dict:
     the row, the reply, the request behind it)."""
     out = {k: v for k, v in x.items() if k != "mins" and not k.startswith("_")}
     out["ref"] = x["id"]
+    if x.get("_acts"):
+        out["acts"] = x["_acts"]  # one list: the buttons on its folded row
     return out
 
 
@@ -1404,6 +1449,7 @@ class Home:
         self._briefing = _Briefing(_ea_dir() / "state" / "briefing-latest.json")
         self._lock = threading.Lock()
         self._cache: dict[str, tuple[float, dict]] = {}
+        self._mails: dict[str, tuple[float, list]] = {}
         self._asked: dict[str, float] = {}
         self._asking: set = set()
         self.settings = home_settings(getattr(fe, "cfg", {}))
@@ -1437,6 +1483,11 @@ class Home:
                 src.turns = dict(self.hooks.turns() or {})
             except Exception as e:
                 log.warning("home: the reply turns could not be read: %s", e)
+        if src.one_list and self.hooks.notes is not None:
+            try:
+                src.notes = [n for n in self.hooks.notes() or [] if isinstance(n, dict)]
+            except Exception as e:
+                log.warning("home: the notes on items could not be read: %s", e)
         if src.one_list:
             try:
                 src.conversations = _needs(fe)
@@ -1633,7 +1684,28 @@ class Home:
         briefing and the choices), or None when Home does not list it."""
         key = device_zone if _valid_zone(device_zone) else ""
         src = self.sources(key)
-        return _items().item(src, ref, fe=self.fe, pending=self.acts.pending().get(ref))
+        return _items().item(src, ref, fe=self.fe, pending=self.acts.pending().get(ref), mail=self.mail)
+
+    def mail(self, conversation_id: str) -> list[dict]:
+        """One list: the messages of a mail thread as the bot's hook reads
+        them (Hooks.mail), for the item the owner opened; a thread read in
+        the last MAIL_FRESH_S is not read again. [] when there is no hook or
+        the read fails."""
+        if self.hooks.mail is None or not conversation_id:
+            return []
+        now = self.clock()
+        hit = self._mails.get(conversation_id)
+        if hit and now - hit[0] < MAIL_FRESH_S:
+            return hit[1]
+        try:
+            got = [m for m in self.hooks.mail(conversation_id) or [] if isinstance(m, dict)]
+        except Exception as e:
+            log.warning("home: the mail of an item could not be read: %s", e)
+            return []
+        if len(self._mails) >= MAIL_KEPT:
+            self._mails.clear()
+        self._mails[conversation_id] = (now, got)
+        return got
 
     def act(self, ref: str, choice: str, arg: str = "", version: str = "") -> tuple[dict, Callable | None]:
         """POST /api/home/act: (the answer, a call to run once it is sent)."""

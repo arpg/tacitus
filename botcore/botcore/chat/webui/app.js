@@ -1316,18 +1316,21 @@ function tally(x) {
 }
 
 // An item: a block as a request's, its edge by urgency, opened in place (Home items, below); a row of So far today
-// opens the same way under its line. A kept item (Kept mail, below Summary) has the fixed words alone.
+// opens the same way under its line. A kept item (Kept mail, below Summary) has the fixed words alone. With one list its
+// buttons that need no model (Done, Later, No reply needed) are on the row, folded or not.
 const homeItem = (it) => {
   const ref = refOf(it), a = S.homeActed.get(ref), open = S.homeOpen === ref || Boolean(a && !a.back), id = `hb-${ref}`;
-  const row = DONE_KINDS.has(it.kind), word = !row && URGENT[it.urgency];
+  const row = DONE_KINDS.has(it.kind), word = !row && URGENT[it.urgency], x = (open && S.homeCards.get(ref)) || it;
+  const acts = !(a && !a.back) && !x.pending ? x.acts || [] : []; // the open item's own, else the list's
   return h('li', { class: `${row ? '' : `req u-${a && !a.back ? 'done' : it.urgency || 'calm'} `}h-block${open ? ' open' : ''}`, 'data-ref': ref },
     h('button', { type: 'button', class: row ? 'h-row' : 'req-head h-item', 'aria-expanded': String(open), 'aria-controls': id,
-      'data-key': `${ref}/head`, onclick: () => toggleItem(ref) }, ...(row ? [h('span', { class: `h-by by-${it.by}` }, it.by === 'you' ? 'You' : 'Tacitus'),
+      'data-key': `${ref}/head`, 'data-pane': 'head', onclick: () => toggleItem(ref) }, ...(row ? [h('span', { class: `h-by by-${it.by}` }, it.by === 'you' ? 'You' : 'Tacitus'),
       h('span', { class: 'h-title' }, it.title), h('time', {}, hm(it.at))]
       : [h('span', { class: 'h-top' }, h('span', { class: 'h-label' }, it.label), word ? h('span', { class: `req-flag u-${it.urgency}` }, word) : null,
         it.project ? h('span', { class: 'req-proj' }, it.project) : null), h('span', { class: 'h-title' }, it.title),
       it.detail ? h('span', { class: 'h-detail' }, it.detail) : null])),
-    h('div', { class: 'req-body h-body', id, hidden: !open }, open ? itemBody(it) : null));
+    acts.length ? h('div', { class: 'h-acts', 'data-pane': 'acts' }, actsRow(it, x, acts)) : null,
+    h('div', { class: 'req-body h-body', id, hidden: !open, 'data-pane': 'body' }, open ? itemBody(it) : null));
 };
 const items = (list, label, kind) => h('ul', { class: 'h-items', 'aria-label': label }, withActed(list, kind).map(homeItem));
 
@@ -1424,7 +1427,7 @@ function renderHome(box) {
 // offers Undo, counting down to the end of the bot's window (`undo_until`). The item holds its place from the tap until
 // then, though Home read again lacks it. No choice sends: Send stays in Action requests.
 Object.assign(S, { homeOpen: '', homeCards: new Map(), homeActed: new Map(), homeSaid: new Map(), homeIn: null, itemSeq: {}, undoMs: 30000,
-  homeTop: {}, homeMore: new Set() });
+  homeTop: {}, homeMore: new Set(), homeNotes: {} });
 const ready = (x) => Boolean(x && x.deeper && x.deeper.state === 'ready' && !x.deeper.stale);
 // The milliseconds left of the bot's Undo window ending at `until` (its clock's seconds); a clock far from the bot's reads its whole window.
 const undoLeft = (until) => { const ms = until * 1000 - Date.now(); return ms > 0 && ms <= 60000 ? ms : S.undoMs; };
@@ -1463,14 +1466,21 @@ function keepOpen(box, kids, sel) {
   for (let i = 1; i < A.length; i++) { patch(A[i], [...B[i].childNodes].map((n) => (n === B[i - 1] ? A[i - 1] : n))); sameAttrs(A[i], B[i]); }
   patch(box, [...wrap.childNodes].map((n) => (n === B[B.length - 1] ? A[A.length - 1] : n)));
 }
-// One item drawn again where it is: its head, and each part of its card whose data changed (`data-sig`).
+// One item drawn again where it is: its head, and each part of its row and its card whose data changed (`data-sig`).
 function drawItem(ref) {
   const old = ref && itemLi(ref), it = old && listed(ref);
   if (!it) return;
-  const fresh = homeItem(it), [h0, b0] = old.children, [h1, b1] = fresh.children;
-  sameAttrs(old, fresh); sameAttrs(h0, h1); h0.replaceChildren(...h1.childNodes); sameAttrs(b0, b1);
-  patch(b0, [...b1.children].map((n) => [...b0.children].find((o) => o.dataset.part && o.dataset.part === n.dataset.part
-    && o.dataset.sig === n.dataset.sig) || n));
+  const fresh = homeItem(it);
+  sameAttrs(old, fresh);
+  patch(old, [...fresh.children].map((n) => {
+    const o = old.querySelector(`:scope > [data-pane="${n.dataset.pane}"]`);
+    if (!o) return n;
+    sameAttrs(o, n);
+    if (n.dataset.pane === 'head') o.replaceChildren(...n.childNodes);
+    else patch(o, [...n.children].map((k) => [...o.children].find((x) => x.dataset.part && x.dataset.part === k.dataset.part
+      && x.dataset.sig === k.dataset.sig) || k));
+    return o;
+  }));
 }
 
 // The tapped item opens and the open one closes; the tapped one stays under the finger while one above it closes.
@@ -1529,21 +1539,59 @@ function itemBody(it) {
       class: 'btn small', 'data-key': `${ref}/undo`, onclick: () => undoItem(ref, held.undo) }, 'Undo'),
     h('span', { class: 'h-quiet', 'data-end': held.end }, undoWords(held.end))) : null];
   }
-  const part = (name, sig, ...kids) => h('div', { class: `h-${name}`, 'data-part': name, 'data-sig': JSON.stringify(sig) }, ...kids);
-  const m = S.homeIn && S.homeIn.ref === ref ? S.homeIn : null, step = Boolean(m && m.id.startsWith('step:'));
-  const none = Boolean(x && !(x.choices || []).length), said = S.homeSaid.get(ref) || {};
-  const top = S.homeTop.ref === ref && S.homeTop.top, d = (x && x.deeper) || {};
+  const m = S.homeIn && S.homeIn.ref === ref && !onRow(x || it, S.homeIn.id) ? S.homeIn : null, step = Boolean(m && m.id.startsWith('step:'));
+  const none = Boolean(x && !(x.choices || []).length), said = S.homeSaid.get(ref) || {}, row = ((x || it).acts || []).length;
+  const top = S.homeTop.ref === ref && S.homeTop.top, d = (x && x.deeper) || {}, mail = x && x.mail;
   const deep = x ? part('deeper', [d, step && [m.id, m.mode], cardsOff(), S.showDetails, S.homeMore.has(ref)], deeperPart(it, d, step && m)) : null;
-  return [part('brief', [x && b, x && x.error], x ? [...[b.what, b.asked, b.due].filter(Boolean).map((t) => h('p', {}, t)),
+  return [mail ? part('mail', [mail], h('details', { class: 'card-quoted' }, h('summary', {}, mail.label),
+    h('pre', { class: 'card-body' }, clean(mail.text)), mail.cut ? h('p', { class: 'h-quiet' }, 'The rest is in your mail.') : null)) : null,
+  part('brief', [x && b, x && x.error], x ? [...[b.what, b.asked, b.due].filter(Boolean).map((t) => h('p', {}, t)),
     (b.standing || []).length ? h('ul', {}, b.standing.map((t) => h('li', {}, t))) : null, b.next ? h('p', { class: 'h-then' }, b.next) : null,
     x.error ? h('p', { class: 'answer-failed', role: 'alert' }, x.error) : null] : h('p', { class: 'h-quiet' }, 'Loading...')),
   top ? deep : null, x && !none ? part('choices', [x.kind, x.choices, x.goto, cardsOff()], choiceRow(it, x)) : null,
   part('in', !step && m && [m.id, m.mode], !step && m ? inputRow(it, m) : null),
-  h('p', { class: 'card-note h-note', 'data-part': 'note', 'data-sig': JSON.stringify(said), 'aria-live': 'polite' }, said.text || '',
-    said.goto ? [' ', h('a', { class: 'req-from', href: said.goto }, 'Open it in Action requests')] : null),
+  x && x.note ? part('tell', [x.note, cardsOff()], tellPart(it, x)) : null, row ? null : saidLine(said),
   part('links', [none], none && it.href ? h('a', { class: 'req-from', href: it.href }, 'Open it there') : null,
     none && it.link ? h('a', { class: 'req-from', href: it.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open in Outlook') : null),
   top ? null : deep];
+}
+const part = (name, sig, ...kids) => h('div', { class: `h-${name}`, 'data-part': name, 'data-sig': JSON.stringify(sig) }, ...kids);
+const onRow = (x, id) => (x.acts || []).some((c) => c.id === id);
+const saidLine = (said) => h('p', { class: 'card-note h-note', 'data-part': 'note', 'data-sig': JSON.stringify(said), 'aria-live': 'polite' },
+  said.text || '', said.goto ? [' ', h('a', { class: 'req-from', href: said.goto }, 'Open it in Action requests')] : null);
+// One list: the row's buttons, Later's days under them, and the line a press gets, there whether the item is open or not.
+function actsRow(it, x, acts) {
+  const ref = refOf(it), m = S.homeIn && S.homeIn.ref === ref && onRow({ acts }, S.homeIn.id) ? S.homeIn : null;
+  return [part('row', [acts, cardsOff()], h('div', { class: 'card-actions', role: 'group', 'aria-label': 'Next step' },
+    acts.filter(named).map((c) => choiceBtn(it, c, x))), cardsOff() ? h('p', { class: 'card-note' }, noCards()) : null),
+  part('in', m && [m.id, m.mode], m ? inputRow(it, m) : null), saidLine(S.homeSaid.get(ref) || {})];
+}
+// One list: the note box. What the owner writes goes to the item's own conversation, where one turn answers a question,
+// drafts to a direction, or both. A quick answer fills the box (it replaces what is there) and never acts; Ask sends
+// it. The last note's turn shows above: Tacitus working, then its answer, or that a draft is ready.
+function tellPart(it, x) {
+  const ref = refOf(it), n = x.note, last = n.last || {}, busy = last.state === 'working', id = `hn-${ref}`, out = [];
+  if (last.state) {
+    out.push(h('p', { class: 'h-asked' }, h('span', { class: 'h-label' }, 'You asked: '), last.asked),
+      busy ? h('p', { class: 'req-busy', role: 'status' }, 'Tacitus is working on it.')
+        : h('p', { class: last.state === 'failed' ? 'answer-failed' : 'h-answer', role: 'status' }, last.said),
+      last.state === 'drafted' ? h('p', { class: 'h-then' }, 'A draft is ready.', last.card ? [' ', h('a', { class: 'req-from',
+        href: last.card }, 'Open it in Action requests')] : null) : null,
+      last.goto ? h('a', { class: 'req-from', href: last.goto }, 'Open the conversation') : null);
+  }
+  if (!n.open) return out;
+  const box = Object.assign(h('textarea', { id, class: 'card-ask', rows: 2, maxlength: 600, 'data-key': `${ref}/tell`, enterkeyhint: 'send',
+    placeholder: 'A question, or what the reply should say', oninput: () => { S.homeNotes[ref] = box.value; sync(); },
+    onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } } }), { value: S.homeNotes[ref] || '' });
+  const go = h('button', { type: 'button', class: 'btn primary', 'data-key': `${ref}/tell-go`, onclick: () => send() }, 'Ask');
+  const sync = () => { go.disabled = busy || cardsOff() || !box.value.trim(); };
+  const send = () => !go.disabled && homeAct(it, 'note', box.value.trim()).then((o) => {
+    if (o.ok) { box.value = ''; delete S.homeNotes[ref]; sync(); loadItem(ref); } });
+  const chips = (n.chips || []).map((c) => h('button', { type: 'button', class: 'btn answer-pick', onclick: () => {
+    box.value = S.homeNotes[ref] = c; sync(); box.focus(); box.setSelectionRange(c.length, c.length); } }, c));
+  sync();
+  return [...out, h('label', { for: id, class: 'h-label' }, 'Tell Tacitus what to do'),
+    chips.length ? h('div', { class: 'answer-picks', role: 'group', 'aria-label': 'Quick answers' }, chips) : null, box, h('div', { class: 'card-actions' }, go)];
 }
 // The choices as buttons, as Action requests' decision draws its answers for an item that waits on one.
 function choiceRow(it, x) {
@@ -1616,7 +1664,7 @@ function choose(it, c, arg) {
     S.days.delete(`${ref}/${c.id}`); // a day control opens at its proposed day
     drawItem(ref);
     const li = itemLi(ref), own = li.querySelector(`[data-key="${CSS.escape(`${ref}/${c.id}`)}"]`);
-    li.querySelectorAll('.h-body [aria-expanded]').forEach((el) => el.setAttribute('aria-expanded', String(el === own && Boolean(S.homeIn))));
+    li.querySelectorAll('.h-acts [aria-expanded], .h-body [aria-expanded]').forEach((el) => el.setAttribute('aria-expanded', String(el === own && Boolean(S.homeIn))));
     const f = li.querySelector('.h-in input, .h-in button, .h-deeper input, .h-deeper [role="group"][aria-label="Later"] button') || own;
     if (f) f.focus(); // within the tap, so a phone's keyboard comes up
     return Promise.resolve();
@@ -1624,7 +1672,8 @@ function choose(it, c, arg) {
   return c.confirm && !confirm(c.confirm) ? Promise.resolve() : homeAct(it, c.id, arg);
 }
 async function homeAct(it, choice, arg) {
-  const ref = refOf(it), ctl = [...itemLi(ref).querySelectorAll('.h-body button, .h-body input')], note = () => itemLi(ref).querySelector('.h-note');
+  const ref = refOf(it), ctl = [...itemLi(ref).querySelectorAll('.h-acts button, .h-body button, .h-body input, .h-body textarea')];
+  const note = () => itemLi(ref).querySelector('.h-note');
   const list = listOf(ref) || 'left', spot = { it, list, at: Math.max(0, (S.home[list] || []).findIndex((x) => refOf(x) === ref)), back: true };
   S.homeActed.set(ref, spot);
   ctl.forEach((c) => { c.disabled = true; });
@@ -1638,18 +1687,19 @@ async function homeAct(it, choice, arg) {
   if (!out.ok) {
     if (S.homeActed.get(ref) === spot) S.homeActed.delete(ref);
     if (itemLi(ref)) { drawItem(ref); note().textContent = out.said || 'That did not work.'; }
-    return;
+    return out;
   }
   S.homeIn = null;
   const ms = out.undo ? undoLeft(out.undo_until) : S.undoMs;
   const req = /^#\//.test(out.goto || '') && (chan(decodeURIComponent(out.goto.split('/')[1] || '')) || {}).kind === 'dm';
   if (out.undo) Object.assign(spot, { said: out.said, undo: out.undo, back: false, end: Date.now() + ms });
-  else S.homeSaid.set(ref, { text: out.said || '', goto: req ? out.goto : '' }); // a draft's place: a link, Home stays
+  else S.homeSaid.set(ref, { text: choice === 'note' ? '' : out.said || '', goto: req ? out.goto : '' }); // a draft's place: a link, Home stays
   setTimeout(() => { if (S.homeActed.get(ref) === spot) { S.homeActed.delete(ref); if (S.homeView) renderThreads(); } }, ms);
   homeSoon();
   if (out.goto && /^https:/.test(out.goto)) window.open(out.goto, '_blank', 'noopener');
   else if (out.goto && !req) { goTo(out.goto); if (out.said) toast(out.said); } // a conversation where the work goes on
   else if (itemLi(ref)) drawItem(ref); else if (S.homeView) renderThreads();
+  return out;
 }
 async function undoItem(ref, token) {
   let out;
