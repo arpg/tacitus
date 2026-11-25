@@ -77,7 +77,8 @@ def test_owner_executor_drops_identity_and_environment(tmp_path, monkeypatch):
         calls.append((argv, kw))
         return SimpleNamespace(stdout='{"ok":true,"submitted":true}')
     result = G.execute(item(), "owner-capability", tree=tmp_path, ea_dir=str(tmp_path / "ea"), runner=run)
-    argv, kw = calls[0]
+    assert calls[0][0][-2:] == ["-c", G.NEEDS] and len(calls) == 2
+    argv, kw = calls[-1]
     assert argv[:6] == ["sudo", "-n", "-u", "ea-bot", "env", "-i"]
     assert kw["env"] == {"PATH": "/usr/bin:/bin"}
     assert f"{G.TOKEN_ENV}=owner-capability" in argv
@@ -144,6 +145,45 @@ def test_browser_saturation_never_blocks_the_mail_queue(tmp_path, monkeypatch):
     M.handle(str(request))
     result = json.loads((queue / "resp-busy.json").read_text())
     assert result["rc"] == 3 and "no action started" in result["stderr"]
+
+def _gate_run(tmp_path, monkeypatch, run):
+    from types import SimpleNamespace
+    monkeypatch.setattr(G.pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(tmp_path)))
+    return G.execute(item(), "owner-capability", tree=tmp_path, ea_dir=str(tmp_path / "ea"), runner=run)
+
+
+def test_the_form_tool_runs_on_the_first_python_that_holds_its_libraries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    ran = []
+    def run(argv, **kw):
+        if argv[-2] == "-c":
+            return SimpleNamespace(returncode=0 if ".venv" in argv[-3] else 1, stdout="", stderr="")
+        ran.append(argv)
+        return SimpleNamespace(returncode=0, stdout='{"ok":true,"submitted":true}', stderr="")
+    assert _gate_run(tmp_path, monkeypatch, run)["submitted"] is True
+    assert str(tmp_path / ".venv" / "bin" / "python3") in ran[0]
+
+
+def test_a_tool_that_never_loads_says_nothing_was_entered_not_status_unknown(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    def none(argv, **kw):
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+    got = _gate_run(tmp_path, monkeypatch, none)
+    assert got["submitted"] is False and got["started"] is False and "not installed" in got["error"]
+
+    def dies(argv, **kw):
+        if argv[-2] == "-c":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="Traceback\nModuleNotFoundError: No module named 'x'")
+    got = _gate_run(tmp_path, monkeypatch, dies)
+    assert got["submitted"] is False and got["started"] is False and "No module named" in got["error"]
+
+    def killed(argv, **kw):
+        if argv[-2] == "-c":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=-9, stdout="", stderr="")
+    got = _gate_run(tmp_path, monkeypatch, killed)
+    assert got["submitted"] is None and "started" not in got
 
 
 if __name__ == "__main__":
