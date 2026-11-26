@@ -181,6 +181,11 @@ await fetch('/record',{method:'POST',body:JSON.stringify(Object.fromEntries(new 
 document.body.innerHTML='<h1>Response recorded</h1>'};</script>
 </body></html>"""
 
+TWINS = """<!doctype html><html><body><form>
+<fieldset><legend>Project lead</legend><label>First Name<input name="lead_first"></label></fieldset>
+<fieldset><legend>Requester</legend><label>First Name<input name="req_first"></label></fieldset>
+</form></body></html>"""
+
 
 def test_real_browser_inspects_previews_and_verifies_submission(tmp_path, monkeypatch):
     """Actual Chromium, with HTTP transport replaced by an in-memory site.
@@ -214,7 +219,9 @@ def test_real_browser_inspects_previews_and_verifies_submission(tmp_path, monkey
             if method == "POST":
                 responses.append(json.loads(kw["data"]))
                 return Response(b"ok")
-            return Response(FORM.encode())
+            if url.endswith("/down"):
+                raise OSError("no route")
+            return Response((TWINS if url.endswith("/twins") else FORM).encode())
     monkeypatch.setattr(W.F.requests, "Session", Session)
     args = SimpleNamespace(verb="read", url="https://forms.example/", actions_json="[]", max_chars=12000)
     result = W.run(args)
@@ -228,15 +235,40 @@ def test_real_browser_inspects_previews_and_verifies_submission(tmp_path, monkey
         {"action": "check", "label": "I agree"},
         {"action": "next", "selector": "button[type=button]"},
         {"action": "fill", "label": "Units", "value": "450000"}])
-    # Without an owner-click capability, this prepares a card and must
-    # not open a browser, enter answers, upload or submit anything.
+    # Without an owner-click capability, this prepares a card. It reads the
+    # form to check the plan's targets and must not enter answers, upload
+    # or submit anything.
     staged = W.run(args)
     assert staged["approval_required"] and not responses
     assert (tmp_path / "state" / "pending-browser.json").is_file()
+    # A label that two fields share is refused at staging, before any card,
+    # with the selector of each field and the section it sits in.
+    two = SimpleNamespace(verb="fill", url="https://forms.example/twins", max_chars=12000, actions_json=json.dumps(
+        [{"action": "fill", "label": "First Name", "value": "Test"}]))
+    (tmp_path / "state" / "pending-browser.json").unlink()
+    with pytest.raises(W.TargetError) as err:
+        W.run(two)
+    assert "matches 2 fields" in str(err.value) and "name lead_first" in str(err.value)
+    assert 'section "Requester"' in str(err.value) and not (tmp_path / "state" / "pending-browser.json").exists()
+    fields = {f["name"]: f["selector"] for f in W.run(SimpleNamespace(
+        verb="read", url=two.url, actions_json="[]", max_chars=12000))["fields"]}
+    assert fields["lead_first"] in str(err.value)
+    two.actions_json = json.dumps([{"action": "fill", "selector": fields["req_first"], "value": "Test"}])
+    assert W.run(two)["approval_required"]
+    # A form that does not load is staged with a note that its fields went unchecked.
+    two.url = "https://forms.example/down"
+    assert "did not load" in W.run(two)["message"]
+    two.url = "https://forms.example/twins"
     # The rest exercises the already-approved worker. Token binding has
     # separate tests, without weakening any production check.
     monkeypatch.setenv(W.G.TOKEN_ENV, "test-approval")
     monkeypatch.setattr(W.G, "require", lambda item: None)
+    # An approved plan with a shared label enters nothing.
+    two.actions_json = json.dumps([{"action": "fill", "selector": fields["req_first"], "value": "Entered"},
+                                   {"action": "fill", "label": "First Name", "value": "Test"}])
+    stopped = W.run(two)
+    assert not stopped["ok"] and "matches 2 fields" in stopped["error"]
+    assert not any(f["value"] == "Entered" for f in stopped["fields"])
     result = W.run(args)
     assert result["ok"] and not result["submitted"] and not responses, result
     assert any(f["value"] == "450000" for f in result["fields"])

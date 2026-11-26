@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -48,6 +48,7 @@ import mail_privacy  # noqa: E402
 import plugin_manifest  # noqa: E402
 
 NOW = "2026-11-12T00:00:00Z"
+CLOCK = datetime(2026, 11, 13, tzinfo=timezone.utc)   # the run's clock: mail has an age limit
 FORMS = ["form"]
 REVIEWS = ["review"]
 
@@ -560,13 +561,13 @@ def test_the_models_work_field_fills_facts_but_opens_no_case_alone():
 def test_a_new_message_on_a_cases_thread_shows_on_the_case_once(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger, "DB_PATH", tmp_path / "ledger.db")
     rec = _sign("m-n1", "Lease Renewal Form", conv="conv-lease")
-    first = cases.ingest([rec], kinds_=FORMS)
+    first = cases.ingest([rec], kinds_=FORMS, now=CLOCK)
     assert first[0]["action"] == "case"
     note = {"id": "m-n2", "conversation_id": "conv-lease", "received": "2026-11-13T00:00:00Z",
             "subject": "Re: Lease Renewal Form", "from": "Office@Mapleton.example",
             "from_name": "Leasing office", "result": {"ask": "", "summary": "Any questions?"}}
     mine = dict(note, id="m-n3", own=True)
-    cases.ingest([note, mine, note], kinds_=FORMS)
+    cases.ingest([note, mine, note], kinds_=FORMS, now=CLOCK)
     conn = cases.connect()
     try:
         c = cases.case(conn, first[0]["case"])
