@@ -192,6 +192,60 @@ def test_enable_disable_uninstall(tmp_path, ctx):
     assert json.loads(ctx.lock_path.read_text())["plugins"] == {}
 
 
+def test_uninstall_hands_the_resident_a_path_it_can_follow(tmp_path, ctx, monkeypatch):
+    """The owner reaches the plugins directory through a link the resident
+    cannot follow, so the removal names the directory itself."""
+    I.install(ctx, f"git:{_repo(tmp_path, 'example-notes')}", accept=True, policy=NO_POLICY)
+    link = tmp_path / "owner-link"
+    link.symlink_to(ctx.agent_dir)
+    real = Path(os.path.realpath(ctx.agent_dir))
+    ctx.agent_dir = link
+    seen = []
+    rm = I._resident_rm
+    monkeypatch.setattr(I, "_resident_rm", lambda c, p: seen.append(p) or rm(c, p))
+    I.uninstall(ctx, "example-notes", yes=True)
+    assert len(seen) == 1 and seen[0].parent == real
+    assert list(real.iterdir()) == []
+
+
+def test_a_removal_the_resident_cannot_finish_leaves_no_half_plugin(tmp_path, ctx, monkeypatch):
+    """The resident may not remove a file the owner made in the plugin.
+    The plugin's name is free at once and the owner removes the rest."""
+    I.install(ctx, f"git:{_repo(tmp_path, 'example-notes')}", accept=True, policy=NO_POLICY)
+    dest = ctx.agent_dir / "example-notes"
+    (dest / ".cache").mkdir()
+    (dest / ".cache" / "ids").write_text("x")
+
+    def partial(c, path):
+        assert not dest.exists()
+        for f in path.iterdir():
+            if f.name != ".cache":
+                shutil.rmtree(f) if f.is_dir() else f.unlink()
+        return "rm: cannot remove '.cache/ids': Permission denied"
+
+    monkeypatch.setattr(I, "_resident_rm", partial)
+    I.uninstall(ctx, "example-notes", yes=True)
+    assert list(ctx.agent_dir.iterdir()) == []
+    assert json.loads(ctx.lock_path.read_text())["plugins"] == {}
+    assert not any("left at" in line for line in ctx.lines)
+
+
+def test_an_update_keeps_its_lock_when_old_files_stay_behind(tmp_path, ctx, monkeypatch):
+    """Old files that nobody can remove stay under a hidden name and are
+    named; the new release is in place and the lock matches it."""
+    repo = _repo(tmp_path, "example-notes")
+    I.install(ctx, f"git:{repo}", accept=True, policy=NO_POLICY)
+    (repo / "README.md").write_text("a newer release\n")
+    _commit(repo)
+    monkeypatch.setattr(I, "_resident_rm", lambda c, p: "rm: Permission denied")
+    monkeypatch.setattr(I.shutil, "rmtree", lambda *a, **k: None)
+    I.update(ctx, "example-notes", accept=True, policy=NO_POLICY)
+    assert I.verify(ctx) == {"example-notes": []}
+    assert (ctx.agent_dir / "example-notes" / "README.md").read_text() == "a newer release\n"
+    assert any("left at" in line and "Permission denied" in line for line in ctx.lines)
+    assert [r["name"] for r in I.listing(ctx)] == ["example-notes"]
+
+
 def test_a_lock_manifest_edited_after_consent_is_ignored(tmp_path, ctx):
     I.install(ctx, f"git:{_repo(tmp_path, 'example-notes')}", accept=True, policy=NO_POLICY)
     lock = json.loads(ctx.lock_path.read_text())

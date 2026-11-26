@@ -164,7 +164,9 @@ def discover_interactive_plugins(plugins_dir=None, lock=None) -> list:
 
     plugins: list = []
     try:
-        manifests = sorted(pdir.glob("*/plugin.json"))
+        # A dot name is a release set aside during an update or a removal.
+        manifests = sorted(m for m in pdir.glob("*/plugin.json")
+                           if not m.parent.name.startswith("."))
     except OSError:
         manifests = []
 
