@@ -10,6 +10,7 @@ submit a form; no hidden persistent session or arbitrary JavaScript API.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import mimetypes
@@ -47,7 +48,7 @@ INSPECT = r"""() => {
   return controls.map((e,i) => {
     e.setAttribute('data-ea-field', String(i));
     const question = e.closest('[data-automation-id="questionItem"],fieldset');
-    return {selector: '[data-ea-field="'+i+'"]', tag: e.tagName.toLowerCase(),
+    return {selector: '[data-ea-field="'+i+'"]', tag: e.tagName.toLowerCase(), name: e.getAttribute('name'),
       type: e.getAttribute('type'), role: e.getAttribute('role'),
       label: e.getAttribute('aria-label') || [...(e.labels || [])].map(x=>x.innerText).join(' ') ||
         (e.getAttribute('aria-labelledby') || '').split(/\s+/).map(id=>document.getElementById(id)?.innerText || '').join(' ').trim() ||
@@ -229,9 +230,83 @@ def snapshot(page, max_chars: int) -> dict:
             "truncated": len(text) > max_chars, "fields": fields, "screenshot": str(shot)}
 
 
+def locate(page, action: dict):
+    return (page.locator(action["selector"]) if "selector" in action
+            else page.get_by_label(action["label"], exact=True))
+
+
+class TargetError(ValueError):
+    """An action's target is not exactly one field on the page."""
+
+
+WHICH = """els => els.map(e => '[data-ea-field="' + e.getAttribute('data-ea-field') + '"] (name ' +
+  (e.getAttribute('name') || 'none') + ', section ' +
+  JSON.stringify((e.closest('fieldset')?.querySelector('legend')?.innerText || '').trim().slice(0, 80)) + ')')"""
+
+
+def check_targets(page, actions: list[dict], submit_selector: str = "") -> None:
+    """No target on the first page names two fields. A label that two
+    fields share stops here, with the selectors to use, and not after the
+    owner's press. Fields behind a Next button are not on the page yet."""
+    for index, action in enumerate(actions):
+        if action["action"] in {"next", "back"}:
+            return
+        loc, kind = locate(page, action), "selector" if "selector" in action else "label"
+        n = loc.count()
+        # No match is not a fault here: a field may appear only after an
+        # earlier answer. The run reports it if it never does.
+        if n < 2:
+            continue
+        raise TargetError(f"action {index + 1}: {kind} {json.dumps(action[kind])} matches {n} fields. "
+                          "Use one of these selectors in place of it: " + "; ".join(loc.evaluate_all(WHICH)[:6]))
+    if submit_selector and page.locator(submit_selector).count() > 1:
+        raise TargetError(f"submit selector {json.dumps(submit_selector)} matches "
+                          f"{page.locator(submit_selector).count()} controls; it must match one.")
+
+
+@contextlib.contextmanager
+def open_page(url: str, blocked: list, policy: dict):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        # Chromium itself has no working proxy. Only the Python route
+        # broker performs HTTP, with pinned DNS and the origin policy.
+        # QUIC and direct WebRTC UDP must not bypass HTTP interception.
+        browser = p.chromium.launch(
+            headless=True, proxy={"server": "http://127.0.0.1:9"},
+            args=["--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                  "--proxy-bypass-list=<-loopback>"])
+        try:
+            context = browser.new_context(service_workers="block", accept_downloads=False,
+                                          user_agent=F.USER_AGENT)
+            context.route("**/*", route_handler(blocked, policy))
+            # HTTP routing does not intercept WebSockets. Refuse them.
+            context.route_web_socket("**/*", lambda ws: ws.close())
+            page = context.new_page()
+            page.set_default_timeout(15000)
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            settle(page)
+            page.evaluate(INSPECT)
+            yield page
+        finally:
+            browser.close()
+
+
+def staged_check(url: str, actions: list[dict], submit_selector: str) -> str:
+    """Reads the form as a plain reader does (nothing is entered) and
+    refuses a plan whose targets are not single fields. A page that will
+    not load leaves the plan unchecked, and the note says so."""
+    try:
+        with open_page(url, [], {"entered_data": False, "origins": []}) as page:
+            check_targets(page, actions, submit_selector)
+    except TargetError:
+        raise
+    except Exception as e:
+        return f" The form did not load for a check of its fields ({str(e)[:160]})."
+    return ""
+
+
 def act(page, action: dict, uploads=None):
-    loc = (page.locator(action["selector"]) if "selector" in action
-           else page.get_by_label(action["label"], exact=True))
+    loc = locate(page, action)
     kind = action["action"]
     if kind == "fill":
         loc.fill(action["value"])
@@ -291,36 +366,23 @@ def run(args) -> dict:
         G.render(item)  # refuse a plan too large or misleading to review
         if not os.environ.get(G.TOKEN_ENV):
             path = F.EA_DIR / "state" / G.STAGE_FILE
+            note = staged_check(args.url, actions, item["submit_selector"] if args.verb == "submit" else "")
             stage_plan(path, item)
             return {"ok": True, "approval_required": True, "submitted": False,
-                    "message": "Form plan staged for the owner's confirmation. No answers entered or uploaded."}
+                    "message": "Form plan staged for the owner's confirmation. No answers entered or uploaded." + note}
         G.require(item)
     policy = {"entered_data": False, "origins": item["origins"] if args.verb != "read" else []}
-    from playwright.sync_api import sync_playwright
     blocked = []
     result = {"ok": False, "submitted": False, "submit_clicked": False}
-    with sync_playwright() as p:
-        # Chromium itself has no working proxy. Only the Python route
-        # broker performs HTTP, with pinned DNS and the origin policy.
-        # QUIC and direct WebRTC UDP must not bypass HTTP interception.
-        browser = p.chromium.launch(
-            headless=True, proxy={"server": "http://127.0.0.1:9"},
-            args=["--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                  "--proxy-bypass-list=<-loopback>"])
+    with contextlib.ExitStack() as stack:
         try:
-            context = browser.new_context(service_workers="block", accept_downloads=False,
-                                          user_agent=F.USER_AGENT)
-            context.route("**/*", route_handler(blocked, policy))
-            # HTTP routing does not intercept WebSockets. Refuse them.
-            context.route_web_socket("**/*", lambda ws: ws.close())
-            page = context.new_page()
-            page.set_default_timeout(15000)
-            page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
-            settle(page)
-            page.evaluate(INSPECT)
+            page = stack.enter_context(open_page(args.url, blocked, policy))
             if args.verb != "read":
                 if G.origin(page.url) not in item["origins"]:
                     raise ValueError("form redirected outside the approved origins; read and stage its final URL")
+                # Before any answer is entered: a plan that names two
+                # fields with one target fills nothing.
+                check_targets(page, actions, getattr(args, "submit_selector", "") or "")
                 policy["entered_data"] = True
             for index, action in enumerate(actions):
                 act(page, action, uploads)
@@ -349,8 +411,6 @@ def run(args) -> dict:
                     result.update(snapshot(page, args.max_chars))
                 except Exception:
                     pass
-        finally:
-            browser.close()
     result["blocked_requests"] = blocked[:15]
     F._log_event("browser-action", url=args.url, verb=args.verb,
                  actions=len(actions), submitted=result["submitted"], ok=result["ok"])
