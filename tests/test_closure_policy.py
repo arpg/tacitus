@@ -816,11 +816,13 @@ def test_a_promoted_close_gets_a_note_with_reopen_and_its_mail_archived_after():
     assert first.actions[0].value == {"ledger_id": "t1"}
     assert cli[-1] == ("promoted", "--noted", "t1", "t2")
     assert "\u2014" not in first.title
-    ns["_ledger_cli"] = lambda *a: cli.append(a) or {"entry": {"status": "open"}}
+    ns["_ledger_cli"] = lambda *a: cli.append(a) or {"entry": {"status": "open"}, "ok": True}
     ns["handle_reopen_closed"](types.SimpleNamespace(
         value={"ledger_id": "t1"}, card=types.SimpleNamespace(channel="dm", id="m1")))
-    assert cli[-1][:5] == ("update", "--id", "t1", "--status", "open")
-    assert calls["status"][-1].startswith(":leftwards_arrow_with_hook: Not done.")
+    assert cli[-2][:5] == ("update", "--id", "t1", "--status", "open")
+    assert cli[-1] == ("hold", "--id", "t1")                  # opened again, and held: not now
+    assert calls["status"][-1] == (":leftwards_arrow_with_hook: Not done. Tacitus holds it until you want it. "
+                                   "Next time I ask first.")
     import chat.thread_state as ts
     note = {"kind": "card", "card": {"actions": [{"id": "reopen_closed"}], "undo": True},
             "posted_at": __import__("time").time()}

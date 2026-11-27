@@ -572,15 +572,19 @@ def test_a_row_of_so_far_today_opens_in_place_and_not_done_yet_reopens_it(app):
     row = opened(page, ref)
     expect(row.locator(".h-row")).to_contain_text("Newsletter sign-up")
     expect(row.locator(".h-brief p")).to_have_text(["Tacitus closed it at 12:02."])
-    row.get_by_role("button", name="Not done").click()
-    wait_for(lambda: stub.acts == [act(stub, ref, "reopen")])
-    expect(row.locator(".h-note")).to_have_text("Not done. It is back on your list.")
-    assert stub.ledger_runs[0][:2] == ("ledger.py", "update")  # the web chat's reopen, recorded and never run
     # a draft that waits for Send is left for you, never also under So far today
     assert page.locator(".h-block[data-ref='drafted:w41']").count() == 0
     waiting = opened(page, "request:w41")
     expect(waiting.get_by_role("link", name="Open it in Action requests")).to_have_attribute("href", "#/stream%3A7/tw41/w41")
     expect(row.locator(".h-body")).to_be_hidden()  # one open at a time, across both lists
+    row = opened(page, ref)
+    row.get_by_role("button", name="Not done").click()
+    wait_for(lambda: stub.acts == [act(stub, ref, "reopen")])
+    # its line alone, as a Done's: the row is open again and held ("Open, not now")
+    expect(row.locator(".h-said")).to_have_text("Not done. Tacitus holds it until you want it.")
+    expect(row.get_by_role("button", name="Not done")).to_have_count(0)
+    # the web chat's reopen, then the hold, recorded and never run
+    assert [r[:2] for r in stub.ledger_runs[:2]] == [("ledger.py", "update"), ("ledger.py", "hold")]
     assert not errors, errors
 
 

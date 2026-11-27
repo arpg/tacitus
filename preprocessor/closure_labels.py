@@ -124,7 +124,10 @@ _OUTCOME_RULES = (
                 r"|deleted in|draft was deleted|settled outside|was already handled"
                 r"|sent it yourself|has its answer|changed since the card", re.I),
      "outside"),
-    (re.compile(r"kept open|still open|not done\. it stays", re.I), "kept_open"),
+    # "Not done" on a close card: the row stays open (and is held), never
+    # the reopen note's "Not done", which says more after it.
+    (re.compile(r"kept open|still open|not done\. it stays|not done\. tacitus holds it until you want it\.\s*$",
+                re.I), "kept_open"),
     # A failure line says what did not happen and what to do next (the six
     # verbs' pattern): "Not sent: <why>. Ask me to try again."
     (re.compile(r"\btry again\b|too old", re.I), "failed"),

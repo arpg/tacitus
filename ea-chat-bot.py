@@ -5429,20 +5429,42 @@ def _confirm_proposed(rid: str) -> bool:
     return _ledger_cli("confirm", "--id", rid).get("action") == "closed"
 
 
+# What Not done says: the row is open, and held until the owner wants it
+# (ledger.is_held: new mail on its thread or its date two days away brings
+# it back on its own).
+HOLD_SAID = "Not done. Tacitus holds it until you want it."
+
+
+def _hold_row(rid: str) -> None:
+    """Not done means "still open, not now": the row is held (ledger.py
+    hold), out of Home's list and the briefing until it comes back. A hold
+    that is not written leaves the row on the list, as before."""
+    out = _ledger_cli("hold", "--id", rid)
+    if not out.get("ok"):
+        log.warning(f"Not done kept {rid} open but did not hold it: {out.get('error') or out}")
+
+
 def _keep_open_proposed(rid: str) -> bool:
-    """Not done on a close card (and on Home): the row stays open
-    and the evidence is vetoed for it."""
-    return bool(_ledger_cli("reject", "--id", rid).get("ok"))
+    """Not done on a close card (and on Home): the row stays open, the
+    evidence is vetoed for it, and it is held."""
+    ok = bool(_ledger_cli("reject", "--id", rid).get("ok"))
+    if ok:
+        _hold_row(rid)
+    return ok
 
 
 def _reopen_closed(rid: str) -> bool:
     """Not done on a promoted close's note (and on Home): the row opens
     again through the ledger's reopen, which vetoes the signal for the
-    row, and the hill climb moves the signal back to proposing."""
+    row, and the hill climb moves the signal back to proposing; the row
+    is then held."""
     day = datetime.now().strftime("%Y-%m-%d")
     out = _ledger_cli("update", "--id", rid, "--status", "open", "--last-action",
                       f"{day}: reopened by the owner from the close note")
-    return (out.get("entry") or {}).get("status") in _LEDGER_OPEN_STATUSES and not out.get("warning")
+    ok = (out.get("entry") or {}).get("status") in _LEDGER_OPEN_STATUSES and not out.get("warning")
+    if ok:
+        _hold_row(rid)
+    return ok
 
 
 def _home_close(rid: str, keep: bool) -> dict:
@@ -5450,8 +5472,7 @@ def _home_close(rid: str, keep: bool) -> dict:
     proposal: the close card's own Done or Not done."""
     if keep:
         ok = _keep_open_proposed(rid)
-        return {"ok": ok, "said": "Not done. It stays on your list." if ok
-                else "Nothing was done. Try again in a minute."}
+        return {"ok": ok, "said": HOLD_SAID if ok else "Nothing was done. Try again in a minute."}
     ok = _confirm_proposed(rid)
     return {"ok": ok, "said": "Done. It is off your list." if ok
             else "It changed since you opened it. Nothing was done."}
@@ -5460,8 +5481,7 @@ def _home_close(rid: str, keep: bool) -> dict:
 def _home_reopen(rid: str) -> dict:
     """Home's Not done on a row Tacitus closed: the auto-close note's Not done."""
     ok = _reopen_closed(rid)
-    return {"ok": ok, "said": "Not done. It is back on your list." if ok
-            else "It changed since you opened it. Nothing was done."}
+    return {"ok": ok, "said": HOLD_SAID if ok else "It changed since you opened it. Nothing was done."}
 
 
 @app.action("review_proposed")
@@ -5519,8 +5539,7 @@ def handle_keep_open_proposed(ev: "_chat.ActionEvent"):
     rid, batch_id, _ids = _proposal_value(ev)
     if rid:
         _keep_open_proposed(rid)
-    _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                 ":pushpin: Not done. It stays on your list.")
+    _replace_buttons_with_status(ev.card.channel, ev.card.id, f":pushpin: {HOLD_SAID}")
     _close_batch_answered(batch_id)
 
 
@@ -5537,8 +5556,7 @@ def handle_reopen_closed(ev: "_chat.ActionEvent"):
         return
     ok = _reopen_closed(rid)
     _replace_buttons_with_status(ev.card.channel, ev.card.id,
-                                 ":leftwards_arrow_with_hook: Not done. It is back on your list. "
-                                 "Next time I ask first." if ok
+                                 f":leftwards_arrow_with_hook: {HOLD_SAID} Next time I ask first." if ok
                                  else ":information_source: It changed since the card. Nothing was done.")
 
 

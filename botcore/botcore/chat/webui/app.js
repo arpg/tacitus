@@ -1376,10 +1376,10 @@ function renderHome(box) {
       x.left.length ? h('button', { type: 'button', class: 'btn primary', onclick: openFirst }, 'Open the first one') : null));
   }
   if (x.left.length) main.push(h('section', { class: 'h-card' }, h('h2', {}, `Left for you (${x.left.length})`), items(x.left, 'Left for you', 'left')));
-  if (x.held && x.held.length) {
-    main.push(h('details', { class: 'h-card h-peek', open: was('h-peek') }, h('summary', {}, md.kind === 'vacation' ? 'Peek anyway' : `Show the rest (${x.held.length})`),
-      items(x.held, 'Held for later', 'held')));
-  }
+  // What waits for later, folded at the bottom: what travel holds, then what the owner said Not done to ("Open, not now").
+  const n = (x.held || []).length, label = away ? 'Held for later' : 'Open, not now';
+  const held = n ? h('details', { class: 'h-card h-peek', open: was('h-peek') }, h('summary', {}, md.kind === 'vacation' ? 'Peek anyway'
+    : `${away ? 'Show the rest' : label} (${n})`), items(x.held, label, 'held')) : null;
   const q = x.question;
   if (q) {
     main.push(h('section', { class: 'h-card h-question' }, h('h2', {}, `One question (${q.left} left)`), h('p', {}, q.text),
@@ -1410,7 +1410,7 @@ function renderHome(box) {
       h('summary', {}, r.title), h('div', { class: 'text' }, markdown(r.text)),
       h('button', { type: 'button', class: 'btn small', onclick: () => askAbout(`About ${r.title.toLowerCase()}: `) }, 'Ask')));
   }
-  keepOpen(box, [h('div', { class: 'h-page' }, h('div', { class: 'h-main' }, ...main), h('div', { class: 'h-side' }, ...side))],
+  keepOpen(box, [h('div', { class: 'h-page' }, h('div', { class: 'h-main' }, ...main), h('div', { class: 'h-side' }, ...side), held)],
     S.homeOpen && `.h-block[data-ref="${CSS.escape(S.homeOpen)}"]`);
   const focus = S.homeFocus && $(`home-${S.homeFocus}`);
   if (focus) { S.homeFocus = ''; focus.scrollIntoView({ block: 'start' }); }
@@ -1442,7 +1442,8 @@ const cardsOff = () => Boolean(S.me && S.me.card_actions === false); // the rule
 const itemLi = (ref) => $('thread-list').querySelector(`.h-block[data-ref="${CSS.escape(ref)}"]`);
 const listOf = (ref) => ['left', 'held', 'done'].find((k) => (S.home[k] || []).some((it) => refOf(it) === ref));
 const listed = (ref) => (listOf(ref) ? S.home[listOf(ref)].find((it) => refOf(it) === ref) : (S.homeActed.get(ref) || {}).it);
-const withActed = (list, kind) => [...S.homeActed].reduce((out, [ref, a]) => (a.list === kind && !out.some((it) => refOf(it) === ref)
+// An item a choice took off Home holds its place until its line has been read; one Home lists again (in any list) is not drawn twice.
+const withActed = (list, kind) => [...S.homeActed].reduce((out, [ref, a]) => (a.list === kind && !listOf(ref)
   ? [...out.slice(0, a.at), a.it, ...out.slice(a.at)] : out), list);
 
 // Gives `parent` the children `kids`, where those it holds already stay in the page: a focused field among them keeps
@@ -1692,7 +1693,7 @@ async function homeAct(it, choice, arg) {
   S.homeIn = null;
   const ms = out.undo ? undoLeft(out.undo_until) : S.undoMs;
   const req = /^#\//.test(out.goto || '') && (chan(decodeURIComponent(out.goto.split('/')[1] || '')) || {}).kind === 'dm';
-  if (out.undo) Object.assign(spot, { said: out.said, undo: out.undo, back: false, end: Date.now() + ms });
+  if (out.undo || out.held) Object.assign(spot, { said: out.said, undo: out.undo || '', back: false, end: Date.now() + ms }); // a Not done: its line alone
   else S.homeSaid.set(ref, { text: choice === 'note' ? '' : out.said || '', goto: req ? out.goto : '' }); // a draft's place: a link, Home stays
   setTimeout(() => { if (S.homeActed.get(ref) === spot) { S.homeActed.delete(ref); if (S.homeView) renderThreads(); } }, ms);
   homeSoon();

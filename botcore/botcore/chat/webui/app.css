@@ -1101,6 +1101,9 @@ button.h-row { min-height: 44px; border: 0; background: none; } .h-done .h-body 
 .h-title { overflow-wrap: anywhere; }
 .h-detail { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .h-peek > .h-items { margin-top: 4px; }
+/* What waits for later (Open, not now; what travel holds) is folded across the foot of the page, one line an item until a tap opens it. */
+.h-page > .h-peek { grid-column: 1 / -1; } .h-peek .h-block:not(.open) :is(.h-top, .h-detail), .h-peek .h-block:not(.open) > .h-acts { display: none; }
+.h-peek .h-block:not(.open) > .h-item { grid-template-columns: minmax(0, 1fr); } .h-peek .h-block:not(.open) .h-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .h-question .btn { margin-top: 12px; min-height: 44px; }
 .h-since ul, .h-done ul, .h-cal ul { list-style: none; margin: 0; padding: 0; }
 .h-since li, .h-done li, .h-cal li { border-top: 1px solid var(--border); }

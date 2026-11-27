@@ -175,12 +175,15 @@ def _clean(text, cap: int = 300) -> str:
 # found stale is shown as stale. A message in a thread he answered earlier
 # is news only when it asks something new: that is the model's call, told
 # by `replied_earlier`, since a reply after the message never gets here.
+# A row the owner holds (his Not done: ledger.is_held) is not live either:
+# the preprocessor leaves it out, and the rooms' slices read the whole ledger.
 _NOT_LIVE = ("snoozed", "follow_up", "completed", "closed")
 _RECONCILED = "[auto-reconciled-drafts"
 
 
 def _live_row(o: dict, today: date) -> bool:
-    return o.get("status", "open") not in _NOT_LIVE and not _ledger.parked_until(o, today)
+    return o.get("status", "open") not in _NOT_LIVE and not _ledger.parked_until(o, today) \
+        and not _ledger.is_held(o, today)
 
 
 def _last_action(o: dict) -> str:

@@ -100,8 +100,7 @@ def test_home_holds_a_decision_a_close_proposal_and_a_letter_each_answered_in_pl
     expect(block.locator("[data-part='brief']")).to_contain_text("Tacitus thinks it is done: The slides went out on Friday")
     block.get_by_role("button", name="Not done").click()
     wait_for(lambda: stub.home_presses == [("close", "task-s2", True)])
-    expect(block.locator(".h-note")).to_have_text(
-        "Not done. It stays on your list.")
+    expect(block.locator(".h-said")).to_have_text("Not done. Tacitus holds it until you want it.")  # its line alone
     letter = opened(page, "letter:lc-made-up-1")
     expect(letter.locator("[data-part='choices'] .btn").first).to_be_visible()
     names = letter.locator("[data-part='choices'] .btn").all_inner_texts()

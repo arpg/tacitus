@@ -6,6 +6,13 @@ repository that preceded it.
 
 ## Unreleased
 
+- **Not done means "still open, not now".** Not done on something that
+  looks done, or on something Tacitus closed, keeps it open and takes it
+  off Left for you at once. It waits in "Open, not now" at the foot of
+  Home, one line each, and stays out of the briefings and the reply list.
+  It comes back by itself when new mail arrives on it or it is due in two
+  days. A tap on a line opens it with its usual choices; a note, a draft,
+  Later or Done there brings it back for good.
 - **You answer on Home; Action requests holds only what needs your lock.**
   On the web chat a reply that waits, something that looks done, a
   letter, a form, a review or a report, and a "which one was it?"

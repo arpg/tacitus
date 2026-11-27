@@ -487,8 +487,9 @@ def test_not_done_yet_reopens_a_row_closed_today(monkeypatch):
     monkeypatch.setattr(I._wts(), "RUN", led)
     _fe, h, _bot, _c = home()
     out, _after = h.act("closed:row-c1", "reopen")
-    assert out == {"ok": True, "said": "Not done. It is back on your list."}
-    assert ("ledger.py", "update") in led.verbs() and ("item_feedback.py", "--id") in led.verbs()
+    assert out == {"ok": True, "said": "Not done. Tacitus holds it until you want it.", "held": True}
+    assert led.verbs()[:2] == [("ledger.py", "update"), ("ledger.py", "hold")]   # opened, then held
+    assert ("item_feedback.py", "--id") in led.verbs()
 
 
 # ── the choices that wait for an undo ───────────────────────────────

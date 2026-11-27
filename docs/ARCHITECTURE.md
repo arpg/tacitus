@@ -2917,6 +2917,19 @@ scrubber moves past a refused signal to the next one, so stale evidence
 does not hide newer evidence of another kind. Plugin rows keep their own
 lifecycle: their closes are recorded, never second-guessed.
 
+"Not done" also means "not now": after the reject or the reopen, the bot
+and the web chat's write-back run `ledger.py hold` (owner processes only),
+which records `hold` (when, and the thread's latest inbound then) in the
+row's metadata. The row stays open and closure signals still reach it,
+but `ledger.is_held` keeps it out of Home's list (folded into "Open, not
+now", `home_screen.on_hold`), the briefing's lists
+(`preprocess.without_held`, `remote_briefing._live_row`), the reply queue
+(`reply_backlog`) and the "Looks done?" line, until a newer inbound
+message, its date two days away (`HOLD_DUE_DAYS`) or a new proposal ends
+it at read time, or the owner's work on it ends it for good (`ledger.py
+unhold`, or any status `update` sets). `ledger.py list` marks a held row
+`held: true` for the hosted lane (docs/webchat.md, Open, not now).
+
 The table is where each signal starts. The closure hill climb
 (`preprocessor/closure_policy.py`) moves whole signals by the owner's
 record with them, read nightly from `ledger_events`: a signal whose

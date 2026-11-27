@@ -45,6 +45,15 @@ choice (GET /api/home/item, POST /api/home/act, POST /api/home/undo; Home's
 item, act and undo). A Done, No reply needed, Waiting or Later takes the item
 off Home at once and is written when its undo window ends (`hidden`, the
 tick).
+
+Open, not now: Not done on a "Looks done" item, or on a row Tacitus closed,
+holds the row (ledger.py hold: still open, not now). A held row leaves the
+list at once and is one line of `held`, folded at the bottom of Home, built
+in code from the row (on_hold). It comes back to the list by itself when
+ledger.is_held says the hold ended: new mail on its thread, its date two
+days away, or the owner's own work on it (a note, a draft, an answer, Ask,
+Later), which ends the hold for good (ledger.py unhold, or the status the
+choice sets). The briefing asks the same predicate, so the two agree.
 """
 from __future__ import annotations
 
@@ -567,6 +576,11 @@ def left(src: Sources) -> list[dict]:
       a reply an earlier run turned into a decision is that question; one
       it found needs none, or the owner said gets none, is not here; a kept
       thread shows its subject and the post's fixed words only.
+    - A row the owner holds (ledger.is_held: his Not done, "still open,
+      not now") is in none of these, nor is a conversation about it: it is
+      on_hold()'s, folded at the bottom of Home. Once its hold ends (new
+      mail, its date two days away, his own work on it) it is back here
+      at once, whether or not today's briefing listed it (_returned).
 
     Each is {"id", "kind", "label", "title", "detail", "urgency", "due",
     "fire", "mins", "href"?}: a request opens its block in Action requests;
@@ -577,6 +591,11 @@ def left(src: Sources) -> list[dict]:
     out: list[dict] = []
     named_ids: set = set()
     named_convs: set = set()
+    held = held_rows(src)
+    held_convs = {str(r.get("conversation_id")) for r in held.values() if r.get("conversation_id")}
+
+    def holds(lid: str, conv: str) -> bool:
+        return bool(lid and lid in held) or bool(conv and conv in held_convs)
 
     def taken(lid: str, conv: str) -> bool:
         return bool(lid and lid in named_ids) or bool(conv and conv in named_convs)
@@ -631,7 +650,7 @@ def left(src: Sources) -> list[dict]:
     for v in kept_views:
         for it in v.get("items") or []:
             lid, conv = str(it.get("ledger_id") or ""), str(it.get("conversation_id") or "")
-            if taken(lid, conv) or lid in gone_ids or (conv and conv in gone_convs):
+            if taken(lid, conv) or lid in gone_ids or (conv and conv in gone_convs) or holds(lid, conv):
                 continue
             take(lid, conv)
             label, asks = VIEW_SECTIONS.get(it.get("section"), ("To do", False))
@@ -662,7 +681,7 @@ def left(src: Sources) -> list[dict]:
         if not isinstance(e, dict):
             continue
         lid, conv = str(e.get("id") or ""), str(e.get("conversation_id") or "")
-        if taken(lid, conv) or lid in gone_ids or (conv and conv in gone_convs):
+        if taken(lid, conv) or lid in gone_ids or (conv and conv in gone_convs) or holds(lid, conv):
             continue
         age = int(e.get("age_days") or 0)
         queued = e.get("queued") if isinstance(e.get("queued"), dict) else {}
@@ -702,7 +721,8 @@ def left(src: Sources) -> list[dict]:
             ref = str(t.get("ref") or "")
             row = rows.get(ref)
             if ref and (taken(ref, "") or (src.open_ids is not None and ref not in src.open_ids)
-                        or ref in merged or _off_list(row, today) or _no_reply(row)):
+                        or ref in merged or _off_list(row, today) or _no_reply(row)
+                        or holds(ref, str((row or {}).get("conversation_id") or ""))):
                 continue
             title = _plain(t.get("title"), 120)
             if not title:
@@ -727,12 +747,13 @@ def left(src: Sources) -> list[dict]:
                         "urgency": urgency, "due": due, "fire": _fire(urgency, due, now),
                         "mins": MINUTES["item"], "_lid": ref,
                         "_conv": str((row or {}).get("conversation_id") or "")})
+    _returned(out, src, taken, take, gone_ids, gone_convs)
     for it in stand_ins:
         out = _stand_in(out, it)
     out = _cases_left(out, src)
     if src.one_list:
         _writing(out, src)
-        _conversations(out, src)
+        _conversations(out, src, set(held), held_convs)
         _noted(out, src)
     rank = {"overdue": 0, "soon": 1, "calm": 2}
     kinds = {"request": 0, "proposal": 1, "which": 1, "question": 1, "reply": 2, "item": 3, "letter": 3,
@@ -769,6 +790,109 @@ def _proposals(out: list[dict], src: Sources, taken, take) -> None:
             continue
         out.append({**base, "title": _plain(row.get("description"), 120) or "An item",
                     "detail": _plain(row["close_proposal"].get("why"), 160)})
+
+
+# ── what the owner holds: "Open, not now" ────────────────────────────
+
+# The most lines "Open, not now" carries.
+HELD_MAX = 60
+
+
+def _ledger():
+    try:
+        import ledger
+    except ModuleNotFoundError:  # imported as preprocessor.home_screen
+        from preprocessor import ledger
+    return ledger
+
+
+def held_rows(src: Sources) -> dict:
+    """The open rows the owner holds now (ledger.is_held on his own date:
+    his Not done, "still open, not now"), by id; never a plugin's row."""
+    led, today = _ledger(), _today(src)
+    return {lid: row for lid, row in (src.rows or {}).items()
+            if lid and isinstance(row, dict) and not row.get("source") and led.is_held(row, today)}
+
+
+def _row_item(src: Sources, lid: str, row: dict) -> dict:
+    """A list item made from the row alone: what the replies or the
+    briefing would call it (a reply owed, its question, a to-do), under
+    their ref, so it keeps its place as it moves between "Open, not now"
+    and the list. A kept row has keep_gate's fixed words."""
+    led, now = _ledger(), src.now
+    conv = str(row.get("conversation_id") or "")
+    brief = row.get("thread_brief") if isinstance(row.get("thread_brief"), dict) else {}
+    queued = row.get("reply_queue") if isinstance(row.get("reply_queue"), dict) else {}
+    owes = led.reply_owed(row)
+    asks = owes and queued.get("outcome") == "decision" and bool(queued.get("note")) \
+        and queued.get("inbound") == led.reply_target(row)["since"]
+    kind = "question" if asks else "reply" if owes else "item"
+    day = led.row_date(row)
+    due = _due_at(day, src.zone) if day else None
+    urgency = _urgency(due, now)
+    who = _plain(row.get("from_name") or row.get("from_email"), 60)
+    base = {"id": f"{'reply' if owes else 'item'}:{lid}", "kind": kind,
+            "label": {"question": "Answer needed", "reply": "Reply owed", "item": "To do"}[kind],
+            "urgency": urgency, "due": due, "fire": _fire(urgency, due, now), "mins": MINUTES[kind],
+            "_lid": lid, "_conv": conv}
+    level = row.get("keep_level")
+    if is_kept(level):
+        return {**base, "title": kept_title(level, day=_mail_day(row.get("kept_received") or row.get("date_identified"),
+                                                                  src.zone),
+                                            who=who, subject=_plain(brief.get("subject"), 100)),
+                "detail": "", "kept": level}
+    if asks:
+        title = _plain(queued["note"], 200)
+        detail = " · ".join(x for x in (_plain(brief.get("subject"), 120), f"From {who}" if who else "") if x)
+    elif owes:
+        title, detail = _plain(brief.get("subject") or row.get("description"), 120), f"From {who}" if who else ""
+    else:
+        title, detail = _plain(row.get("description"), 120), ""
+    return {**base, "title": title or "An item", "detail": detail if detail != title else ""}
+
+
+def on_hold(src: Sources) -> list[dict]:
+    """The rows the owner holds ("Open, not now", folded at the bottom of
+    Home), the one he set aside last first, one line per thread, HELD_MAX
+    at most. Each is made from its row alone (_row_item) in code: no model
+    reads anything for the list. A tap unfolds one in place with its usual
+    choices (home_items), and working on it ends the hold. `_held` is when
+    he set it aside."""
+    led = _ledger()
+    rows = sorted(held_rows(src).items(), key=lambda kv: str(led.hold_of(kv[1]).get("at") or ""), reverse=True)
+    out: list[dict] = []
+    convs: set = set()
+    for lid, row in rows:
+        conv = str(row.get("conversation_id") or "")
+        if conv and conv in convs:
+            continue
+        convs.add(conv)
+        out.append({**_row_item(src, lid, row), "_held": str(led.hold_of(row).get("at") or "")})
+    return out[:HELD_MAX]
+
+
+def _returned(out: list[dict], src: Sources, taken, take, gone_ids: set, gone_convs: set) -> None:
+    """A row whose hold has ended (new mail on its thread, its date two
+    days away, the owner's own work on it) is back on the list at once,
+    made from its row (_row_item), whether or not today's briefing listed
+    it; unless another part names it already, the post set it aside, or
+    it is parked, waits on others, or the owner said no reply goes out. A
+    hold that ended in a close, or in a new close proposal (its own
+    "Looks done" item), is not one."""
+    led, today = _ledger(), _today(src)
+    for lid, row in (src.rows or {}).items():
+        if not isinstance(row, dict) or row.get("source") or not led.hold_of(row) \
+                or led.hold_released(row, today) not in ("worked", "mail", "due"):
+            continue
+        conv = str(row.get("conversation_id") or "")
+        if taken(lid, conv) or lid in gone_ids or (conv and conv in gone_convs) \
+                or (src.open_ids is not None and lid not in src.open_ids):
+            continue
+        if str(row.get("status") or "open") != "open" or led.parked_until(row, today) \
+                or _off_list(row, today) or _no_reply(row):
+            continue
+        take(lid, conv)
+        out.append(_row_item(src, lid, row))
 
 
 def _stand_in(out: list[dict], req: dict) -> list[dict]:
@@ -826,14 +950,17 @@ def _noted(out: list[dict], src: Sources) -> None:
             x["detail"] = line
 
 
-def _conversations(out: list[dict], src: Sources) -> None:
+def _conversations(out: list[dict], src: Sources, held_ids: set = frozenset(),
+                   held_convs: set = frozenset()) -> None:
     """One list: each conversation that needs the owner (what Needs you
     listed: its state is needs_you, by a rule or the model) is an item of
     kind `conversation`, "Answer needed", unless it is already about an
     item on the list (a row or a mail thread it names, a case, an item's
-    own conversation). A stale one (quiet for a week) comes last."""
-    ids = {x.get("_lid") for x in out if x.get("_lid")} | {x.get("_case") for x in out if x.get("_case")}
-    convs = {x.get("_conv") for x in out if x.get("_conv")}
+    own conversation) or about a row the owner holds (`held_ids`,
+    `held_convs`). A stale one (quiet for a week) comes last."""
+    ids = {x.get("_lid") for x in out if x.get("_lid")} | {x.get("_case") for x in out if x.get("_case")} \
+        | set(held_ids)
+    convs = {x.get("_conv") for x in out if x.get("_conv")} | set(held_convs)
     from urllib.parse import quote
     for r in src.conversations or []:
         if not isinstance(r, dict) or r.get("state") != "needs_you" or not r.get("channel"):
@@ -1265,7 +1392,10 @@ def greeting_prompt(f: dict, tone: str, liked: list[str], disliked: list[str]) -
 
 def build(src: Sources) -> dict:
     """Home as the app draws it, from `src` alone. The greeting is the
-    template's; Home.payload() puts the model's line in where it has one."""
+    template's; Home.payload() puts the model's line in where it has one.
+    `held` is one folded list: what travel or a vacation keeps for later,
+    then the rows the owner holds (on_hold, "Open, not now"); the counts
+    the greeting and the mode line say are travel's alone."""
     evs = events(src)
     md = mode(src, evs)
     todo = [x for x in left(src) if x["id"] not in src.hidden]
@@ -1279,7 +1409,9 @@ def build(src: Sources) -> dict:
         shown = [x for x in todo if x["urgency"] == "overdue" or (x["due"] is not None and x["due"] < back)]
     else:
         shown = [x for x in todo if x["fire"]]
-    held = [x for x in todo if x not in shown]
+    away = [x for x in todo if x not in shown]
+    # what the owner holds (his Not done) folds in after what travel holds
+    held = away + [x for x in on_hold(src) if x["id"] not in src.hidden]
     gap = next_gap(src, evs, shown)
     f = facts(src, todo, got, md, gap, shown)
     tone = src.tone if src.tone in TONES else DEFAULT_TONE
@@ -1292,7 +1424,7 @@ def build(src: Sources) -> dict:
                    and _local_day(float(r.get("at") or 0), src.zone) == today), key=lambda r: -float(r["at"]))
     mode_out = dict(md)
     if md["kind"] != "normal":
-        mode_out.update(line=mode_line(md, len(shown), len(held), today), held=len(held))
+        mode_out.update(line=mode_line(md, len(shown), len(away), today), held=len(away))
     if src.one_list:
         items = _items()
         for x in shown + held:
