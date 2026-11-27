@@ -216,19 +216,41 @@ def _place_agent(ctx: Context, src: Path, name: str, state_dirs) -> None:
             raise PluginError(f"could not make {dest / s}")
 
 
+def _resident_rm(ctx: Context, path: Path) -> str:
+    """Remove the tree at `path` as the resident (in place on a host
+    without one: tests, a dev box). Returns "" or why it stopped."""
+    if ctx.local_copy:
+        shutil.rmtree(path, ignore_errors=True)
+        return ""
+    p = subprocess.run(["sudo", "-n", "-u", RESIDENT_USER, "rm", "-rf", "--", str(path)],
+                       capture_output=True, text=True)
+    return "" if p.returncode == 0 else (p.stderr.strip()[-300:] or f"rm exit {p.returncode}")
+
+
 def _remove_agent(ctx: Context, name: str) -> None:
-    """Remove <agent dir>/<name>: as the resident through sudo on a host
-    with one, in place on a host without (tests, a dev box)."""
-    dest = ctx.agent_dir / name
+    """Remove <agent dir>/<name>. The directory leaves its name first, in
+    one rename, so a removal that stops partway never leaves half a plugin
+    where the bot loads one. The resident then removes it, and the owner
+    removes what the resident may not (a file the owner made in there). A
+    rest that neither removes is named and stays under its hidden name.
+
+    The plugins directory is resolved here: the owner reaches it through
+    a link in the owner's home, a path the resident cannot follow."""
+    root = Path(os.path.realpath(ctx.agent_dir))
+    dest = root / name
     if not os.path.lexists(dest):
         return
-    if ctx.local_copy:
-        shutil.rmtree(dest)
-        return
-    p = subprocess.run(["sudo", "-n", "-u", RESIDENT_USER, "rm", "-rf", "--", str(dest)],
-                       capture_output=True, text=True)
-    if p.returncode != 0:
-        raise PluginError(f"removing {dest} failed: {p.stderr[-300:]}")
+    aside = dest
+    if not name.startswith("."):
+        aside = root / f".{name}.old-{os.urandom(4).hex()}"
+        if not _rio.move(dest, aside):
+            raise PluginError(f"could not move {dest} aside; nothing was removed")
+    why = _resident_rm(ctx, aside)
+    if os.path.lexists(aside):
+        shutil.rmtree(aside, ignore_errors=True)
+    if os.path.lexists(aside):
+        ctx.out(f"  part of the old files is left at {aside}"
+                f"{': ' + why if why else ''}; delete that directory by hand")
 
 
 def _swap_agent(ctx: Context, src: Path, name: str, state_dirs) -> None:
@@ -674,7 +696,8 @@ def listing(ctx: Context) -> list[dict]:
                      "commit": (src.get("commit") or "")[:12], "url": src.get("url", ""),
                      "managed": True})
     try:
-        dirs = sorted(p for p in ctx.agent_dir.iterdir() if (p / PM.MANIFEST_FILE).is_file())
+        dirs = sorted(p for p in ctx.agent_dir.iterdir()
+                      if not p.name.startswith(".") and (p / PM.MANIFEST_FILE).is_file())
     except OSError:
         dirs = []
     for d in dirs:

@@ -128,7 +128,7 @@ repository's config or hooks would run as the owner.
 | `verify [<name> ...]` | compare installed files with the lock. Exit 1 on a problem. |
 | `update <name> [--ref <ref>]` | fetch the release, ask for consent again when a capability changed, replace the files, keep the state directories. |
 | `enable <name>` / `disable <name>` | flip `enabled`. Enable asks for consent when the accepted digest no longer matches. |
-| `uninstall <name> --yes` | remove the files and the lock entry. An adopted v1 plugin keeps its directory. |
+| `uninstall <name> --yes` | remove the files and the lock entry. An adopted v1 plugin keeps its directory. The directory leaves its name first, so a removal that stops partway leaves no half plugin; files nobody could remove are named and stay under a dot name. |
 | `list [--json]` | every locked plugin, and any unmanaged plugin directory |
 | `show <name>` | the capabilities, as the lock holds them |
 | `cron-lines` | crontab lines for the owner plugins' cron jobs |
