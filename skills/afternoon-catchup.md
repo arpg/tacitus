@@ -22,6 +22,7 @@ Often 0 tokens if nothing changed.
 
 - Read `~/.ea/state/briefing-latest.json` (focus on delta since AM)
 - Check OPEN obligations: `python3 /home/ea-bot/ea-system/preprocessor/ledger.py list --status open` (updates since morning)
+  A row with `held: true` is one the user set aside (Not done): never brief it.
 - Also load recently-handled items: `python3 /home/ea-bot/ea-system/preprocessor/ledger.py list --status completed`. Anything completed/closed (including work done since this morning) is DONE; the ledger wins over any inbox or DocuSign reminder.
 - Do NOT re-read config files unless needed
 - If the briefing JSON has a non-empty `calendar_fetch_errors` list,

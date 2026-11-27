@@ -213,8 +213,8 @@ def test_done_on_a_proposal_waits_for_its_undo_then_runs_the_close_cards_done(mo
 def test_not_done_on_a_proposal_is_the_close_cards_not_done_at_once():
     h, seen, _clock, fe = _home(one_list())
     got, _after = h.act("proposal:task-s2", "not_done")
-    assert got["ok"] and seen["close"] == [("task-s2", True)]
-    assert got["said"] == "Not done. It stays on your list."
+    assert got["ok"] and seen["close"] == [("task-s2", True)] and got["held"]
+    assert got["said"] == "Not done. Tacitus holds it until you want it."
     plain(got["said"])
     assert fe.changed
 
@@ -402,14 +402,16 @@ def test_homes_close_hooks_run_the_close_cards_own_ledger_verbs():
                 "update": {"entry": {"status": "open"}}}.get(a[0], {})
     ns["_ledger_cli"] = ledger_cli
     assert ns["_home_close"]("ae28", False) == {"ok": True, "said": "Done. It is off your list."}
-    assert ns["_home_close"]("ae28", True)["ok"]
-    assert ns["_home_reopen"]("t1")["ok"]
+    assert ns["_home_close"]("ae28", True) == {"ok": True, "said": "Not done. Tacitus holds it until you want it."}
+    assert ns["_home_reopen"]("t1") == {"ok": True, "said": "Not done. Tacitus holds it until you want it."}
+    # Not done is "still open, not now": the row is kept open or opened again, then held
     assert [a[:3] for a in cli] == [("confirm", "--id", "ae28"), ("reject", "--id", "ae28"),
-                                    ("update", "--id", "t1")]
+                                    ("hold", "--id", "ae28"), ("update", "--id", "t1"), ("hold", "--id", "t1")]
     ev = types.SimpleNamespace(value={"ledger_id": "x1", "batch": ""}, card=types.SimpleNamespace(channel="dm", id="m1"))
     ns["handle_keep_open_proposed"](ev)
     ns["handle_reopen_closed"](ev)
-    assert [a[:3] for a in cli[3:]] == [("reject", "--id", "x1"), ("update", "--id", "x1")]
+    assert [a[:3] for a in cli[5:]] == [("reject", "--id", "x1"), ("hold", "--id", "x1"),
+                                        ("update", "--id", "x1"), ("hold", "--id", "x1")]
 
 
 def _reply_ns(queue, fe, **kw):

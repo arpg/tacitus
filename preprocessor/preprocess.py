@@ -545,6 +545,25 @@ def _case_view(open_obligations: list, mail=None) -> dict:
         return {}
 
 
+def without_held(rows: list, deadlines: list, stale: list, today) -> tuple[list, list, list]:
+    """(rows, deadline items, stale rows) less what the owner holds: each
+    row ledger.is_held says he holds on `today` (his local date), any other
+    row on its thread, and the deadline mail on those threads (read from
+    the whole inbox, so it is no new mail). The rows kept lose their hold
+    record: a hold that ended is no fact for a lane."""
+    held = {o.get("id") for o in rows or [] if _ledger_mod.is_held(o, today)}
+    convs = {o.get("conversation_id") for o in rows or [] if o.get("id") in held and o.get("conversation_id")}
+    if held:
+        print(f"  Held by the owner: {len(held)} row(s) left out of the lists", file=sys.stderr)
+    keep = [o for o in rows or [] if o.get("id") not in held and o.get("conversation_id") not in convs]
+    old = [o for o in stale or [] if o.get("id") not in held and not (o.get("conversation_id")
+                                                                       and o["conversation_id"] in convs)]
+    # A hold that ended is history: the lanes read the row as any other.
+    for o in keep + old:
+        o.pop(_ledger_mod.HOLD, None)
+    return keep, [d for d in deadlines or [] if not (d.get("conversation_id") and d["conversation_id"] in convs)], old
+
+
 def briefing_rows(open_obligations: list, today_top: list, cap: int = 30) -> list:
     """The open rows the briefing JSON carries: the rows today_top names
     first, in its order, then the rest in theirs, `cap` in all. The lanes
@@ -2999,6 +3018,15 @@ def run_full_daily(force_full: bool = False) -> dict:
     except Exception as e:
         print(f"  Merge marks skipped: {e}", file=sys.stderr)
 
+    # The rows the owner holds (his Not done, "still open, not now":
+    # ledger.is_held, the predicate Home asks) are in none of the
+    # briefing's lists, nor is mail on their threads that is not new,
+    # until new mail, their date or his own work brings them back. The
+    # totals still count them: they are open.
+    all_open = open_obligations
+    open_obligations, deadlines, stale = without_held(open_obligations, deadlines, stale,
+                                                      datetime.now(_user_zone()).date())
+
     # Work cases (case_surface): one item per case, letters and every
     # other kind. Its parts' rows and their mail never rank or list on
     # their own; a new message on its threads is the case's news.
@@ -3024,10 +3052,10 @@ def run_full_daily(force_full: bool = False) -> dict:
             "total_inbox": len(inbox),
             "flagged_count": len(flagged),
             "events_next_14d": len(calendar),
-            "open_obligations": len(open_obligations),
+            "open_obligations": len(all_open),
             # ea-config.json "obligation_split": {"enabled": true}; off, the
             # footer keeps its one total.
-            **({"obligations_by_list": _obligations_by_list(open_obligations)}
+            **({"obligations_by_list": _obligations_by_list(all_open)}
                if _ea_config.obligation_split_enabled() else {}),
         },
         # Ranked queue, computed in code. The briefing LEADS with today_top

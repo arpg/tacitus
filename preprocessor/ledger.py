@@ -13,6 +13,7 @@ Usage:
     python3 ledger.py note-reply --id <id> --outcome drafted|decision|left|blocked [--draft-id <id>] [--note "<line>"]
     python3 ledger.py reply-queue [--min-age <days>]
     python3 ledger.py proposals | reject --id <id> | closure-report [--days 30]
+    python3 ledger.py hold --id <id> | unhold --id <id>   (the owner's Not done: still open, not now)
     python3 ledger.py get --id <id>
     python3 ledger.py list [--status open] [--type response_needed] [--stale <days>] [--limit 20]
     python3 ledger.py search --query <text>
@@ -1162,13 +1163,18 @@ def cmd_update(args) -> int:
         if delivered:
             meta_updates["delivered"] = {"at": now, "path": delivered}
 
-    if meta_updates:
+    # A status set on the row (a snooze, a wait, a reopen, a close) or a
+    # follow-up date is a new decision on it: the owner's hold ends for good.
+    drop_hold = bool(raw_status or args.snooze_until or args.follow_up_after) and HOLD in _meta_of(row)
+    if meta_updates or drop_hold:
         existing_meta = {}
         try:
             existing_meta = json.loads(row["metadata"] or "{}")
         except (json.JSONDecodeError, TypeError):
             pass
         existing_meta.update(meta_updates)
+        if drop_hold:
+            existing_meta.pop(HOLD, None)
         sets.append("metadata = ?")
         params.append(json.dumps(existing_meta))
 
@@ -1505,6 +1511,66 @@ def cmd_reject(args) -> int:
     return 0
 
 
+def _meta_of(row) -> dict:
+    try:
+        meta = json.loads(row["metadata"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        meta = {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def cmd_hold(args) -> int:
+    """The owner's Not done: the open row is held, still open and not now
+    (is_held). It records when (and the user's local date then, which the
+    date rule counts from), and the other side's latest message then, so a
+    newer one ends the hold. The owner's tap alone: a model lane
+    never holds a row. updated_at stays: a hold is no work on the item."""
+    import closure
+    if not _is_owner():
+        _output({"error": "hold is the owner's Not done on Home or a card; a model lane never holds a row"})
+        return 1
+    db = _get_db()
+    row = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
+    if row is None or row["status"] not in OPEN_STATUSES:
+        db.close()
+        _output({"error": f"No open row: {args.id}"})
+        return 1
+    meta = _meta_of(row)
+    rec = {"at": _now(), "day": local_today().isoformat(), "inbound": latest_inbound(_row_to_dict(row)),
+           "by": args.actor or "user"}
+    meta[HOLD] = rec
+    db.execute("UPDATE ledger SET metadata = ? WHERE id = ?", (json.dumps(meta, sort_keys=True), args.id))
+    closure.record_event(db, args.id, "hold", actor=rec["by"], evidence={"inbound": rec["inbound"]})
+    db.commit()
+    db.close()
+    _output({"ok": True, "id": args.id, "hold": rec})
+    return 0
+
+
+def cmd_unhold(args) -> int:
+    """The owner works on a held row (a note, a draft, an answer, Ask): its
+    hold ends for good (`ended`), and Home lists it again at once. A row
+    with no hold, or one already ended, is left as it is."""
+    import closure
+    db = _get_db()
+    row = db.execute("SELECT * FROM ledger WHERE id = ?", (args.id,)).fetchone()
+    if row is None:
+        db.close()
+        _output({"error": f"Entry not found: {args.id}"})
+        return 1
+    meta = _meta_of(row)
+    rec = hold_of(meta)
+    ended = bool(rec) and not rec.get("ended")
+    if ended:
+        meta[HOLD] = {**rec, "ended": _now()}
+        db.execute("UPDATE ledger SET metadata = ? WHERE id = ?", (json.dumps(meta, sort_keys=True), args.id))
+        closure.record_event(db, args.id, "unhold", actor=args.actor or "user", note=args.why or "")
+        db.commit()
+    db.close()
+    _output({"ok": True, "id": args.id, "ended": ended})
+    return 0
+
+
 def cmd_proposals(args) -> int:
     """Open rows that carry a close proposal. `--mark-carded` notes that
     the listed ids are on a confirm card, so the next card skips them."""
@@ -1595,7 +1661,7 @@ def cmd_get(args) -> int:
         _output({"error": f"Entry not found: {args.id}"})
         return 1
 
-    _output(_row_to_dict(row))
+    _output(shown_hold(_row_to_dict(row)))
     return 0
 
 
@@ -1660,7 +1726,8 @@ def cmd_list(args) -> int:
     ).fetchall()
     db.close()
 
-    entries = [_row_to_dict(r) for r in rows]
+    today = local_today()
+    entries = [shown_hold(_row_to_dict(r), today) for r in rows]
     _output({"count": len(entries), "entries": entries})
     return 0
 
@@ -1713,7 +1780,8 @@ def cmd_search(args) -> int:
     """, params + [args.limit or 20]).fetchall()
     db.close()
 
-    entries = [_row_to_dict(r) for r in rows]
+    today = local_today()
+    entries = [shown_hold(_row_to_dict(r), today) for r in rows]
     out = {"count": len(entries), "query": args.query, "entries": entries}
     if conv_id:
         out["conversation_id"] = conv_id
@@ -2286,6 +2354,155 @@ def local_today() -> date:
         return datetime.now().astimezone().date()
 
 
+def _local_day(at: datetime) -> date:
+    """The user's local date (user_tz, else the machine's) of an aware time."""
+    try:
+        try:
+            import user_tz as _user_tz
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import user_tz as _user_tz
+        return at.astimezone(_user_tz.zone()).date()
+    except Exception:
+        return at.astimezone().date()
+
+
+# ── The owner's "not now": a held row ───────────────────────────────────
+# Not done on a "Looks done" item, or on a row Tacitus closed, means "still
+# open, not now". The row stays open (closure signals still reach it) and
+# carries a hold (`hold` in its metadata: {"at", "day" (the user's local
+# date then), "inbound", "by"}, and "ended" once the owner works on it).
+# While the hold stands the row is
+# left out of Home's list, the briefing's lists, the reply queue and the
+# "Looks done" lines; Home folds it into "Open, not now". It ends on its own
+# at read time (is_held), and for good when a status is set on the row
+# (update --status, a snooze, a follow-up) or the owner works on it
+# (`unhold`). Only an owner process holds a row: the owner's own tap.
+
+HOLD = "hold"
+# A held row comes back when its date comes this many days away (or
+# passes) after the hold began; a date already that near when the owner held
+# it never brings it back.
+HOLD_DUE_DAYS = 2
+
+
+def _utc(value) -> datetime | None:
+    """A timestamp as an aware UTC datetime (a naive one is UTC), or None."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+def latest_inbound(entry: dict) -> str:
+    """When the other side last wrote on the row's thread, as the thread
+    brief records it (its newest message not the user's own, else its
+    `last_inbound`), else when the row's kept mail came (`kept_received`);
+    '' with none. A row with no mail behind it has none."""
+    brief = entry.get("thread_brief") if isinstance(entry.get("thread_brief"), dict) else {}
+    times = [m.get("received") for m in brief.get("messages") or [] if isinstance(m, dict) and not m.get("own")]
+    times += [brief.get("last_inbound"), entry.get("kept_received")]
+    got = [(t, _utc(t)) for t in times if _utc(t) is not None]
+    return str(max(got, key=lambda x: x[1])[0]) if got else ""
+
+
+def hold_of(entry: dict) -> dict:
+    """The row's hold record, or {}."""
+    rec = (entry or {}).get(HOLD)
+    return rec if isinstance(rec, dict) and rec.get("at") else {}
+
+
+def hold_due(entry: dict) -> date | None:
+    """The date that brings a held row back: its own (row_date), else the
+    one its thread names; None with neither."""
+    raw = row_date(entry)
+    if not raw:
+        brief = entry.get("thread_brief") if isinstance(entry.get("thread_brief"), dict) else {}
+        raw = str(brief.get("deadline") or "")[:10]
+    try:
+        return date.fromisoformat(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def hold_day(rec: dict) -> date | None:
+    """The user's local date the hold began: the `day` it records, else the
+    local date of its `at`; None with neither."""
+    try:
+        return date.fromisoformat(str(rec.get("day") or "")[:10])
+    except ValueError:
+        at = _utc(rec.get("at"))
+        return _local_day(at) if at is not None else None
+
+
+def hold_date_counts(entry: dict) -> bool:
+    """The row's date can bring its hold back: it has one, and it was more
+    than HOLD_DUE_DAYS days after the day the hold began. A date already
+    that near (or past) then was known to the owner when he held the row,
+    so it never ends the hold; a date moved later to one that was not near
+    then does."""
+    due, began = hold_due(entry), hold_day(hold_of(entry))
+    return due is not None and began is not None and due > began + timedelta(days=HOLD_DUE_DAYS)
+
+
+def hold_released(entry: dict, today=None) -> str:
+    """Why the row's hold no longer stands, or '' while it holds (or the
+    row has none): `worked` (the owner worked on it), `closed`,
+    `looks_done` (a new close proposal), `mail` (the other side wrote
+    after the hold began), `due` (its date came HOLD_DUE_DAYS days away,
+    or passed, after the hold began: hold_date_counts)."""
+    rec = hold_of(entry)
+    if not rec:
+        return ""
+    if rec.get("ended"):
+        return "worked"
+    if str(entry.get("status") or "open") not in OPEN_STATUSES:
+        return "closed"
+    if isinstance(entry.get("close_proposal"), dict):
+        return "looks_done"
+    now_in, mark = _utc(latest_inbound(entry)), _utc(rec.get("inbound")) or _utc(rec.get("at"))
+    if now_in is not None and mark is not None and now_in > mark:
+        return "mail"
+    due = hold_due(entry)
+    if today is None:
+        today = local_today()
+    if hold_date_counts(entry) and due <= today + timedelta(days=HOLD_DUE_DAYS):
+        return "due"
+    return ""
+
+
+def is_held(entry: dict, today=None) -> bool:
+    """The owner holds this open row ("Not done": still open, not now). It
+    is held until a new message from the other side comes in on its thread
+    after the hold began, its date comes HOLD_DUE_DAYS days away (or passes)
+    after the hold began (a date already that near when he held it does not
+    count: hold_date_counts), it looks done again (a new close proposal), or
+    the owner works on it.
+    Pure: Home and the briefing both ask it, so the two never disagree.
+    `today` is the user's local date (local_today by default)."""
+    return bool(hold_of(entry)) and not hold_released(entry, today)
+
+
+def without_held(rows: list[dict], today=None) -> list[dict]:
+    """`rows` less the ones the owner holds (is_held)."""
+    return [o for o in rows or [] if not is_held(o, today)]
+
+
+def shown_hold(entry: dict, today=None) -> dict:
+    """A row as `get`, `list` and `search` print it: `held` true (with
+    `held_since`) while the owner holds it, and no hold record otherwise.
+    A model lane never briefs a held row (docs/ea/briefing-data.md)."""
+    rec = hold_of(entry)
+    entry.pop(HOLD, None)
+    if rec and is_held({**entry, HOLD: rec}, today):
+        entry["held"] = True
+        entry["held_since"] = str(rec.get("at") or "")
+    return entry
+
+
 # A file the EA made for a row, named in the last action it records for
 # it (CLAUDE.md rule 8a: "<date>: <what and where>").
 _DELIVERED_RE = re.compile(r"(?:~|/home/[\w.-]+)/\.ea/(?:docs|letters)/[^\s'\"<>|]+?"
@@ -2440,9 +2657,10 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
     the ladder's first step has no `rung`.
 
     Pure. A row is out while it is parked, snoozed, in follow-up, waiting
-    on the other side or proposed for closing, and while the Scheduling
-    channel holds its thread (sched_held). `draft_convs` are the
-    conversations with a draft in the Drafts folder: `has_draft` says a
+    on the other side or proposed for closing, while the owner holds it
+    (is_held), and while the Scheduling channel holds its thread
+    (sched_held). `draft_convs` are the conversations with a draft in
+    the Drafts folder: `has_draft` says a
     reply is already staged (None when the folder could not be read and
     `draft_convs` is None). `queued` is the row's `reply_queue` record
     when it is about this same message (a draft made or a decision asked
@@ -2461,7 +2679,7 @@ def reply_backlog(rows: list[dict], today=None, *, draft_convs=(), zone=None,
         if o.get("status", "open") != "open" or o.get("source") or not reply_owed(o):
             continue
         if parked_until(o, today) or isinstance(o.get("close_proposal"), dict) \
-                or waiting_on_reply(o, today):
+                or waiting_on_reply(o, today) or is_held(o, today):
             continue
         age = reply_age(o, today, zone)
         if age is None or age < max(min_days, 0):
@@ -3467,6 +3685,17 @@ def main():
     p_rej.add_argument("--id", required=True)
     p_rej.add_argument("--actor", default="user")
 
+    p_hold = sub.add_parser("hold", help="The owner's Not done: still open, not now (owner processes)",
+                            allow_abbrev=False)
+    p_hold.add_argument("--id", required=True)
+    p_hold.add_argument("--actor", default="user")
+
+    p_unhold = sub.add_parser("unhold", help="The owner works on a held row: its hold ends",
+                              allow_abbrev=False)
+    p_unhold.add_argument("--id", required=True)
+    p_unhold.add_argument("--actor", default="user")
+    p_unhold.add_argument("--why", help="What the owner did (a note, a draft, an answer)")
+
     p_props = sub.add_parser("proposals", help="List open rows that carry a close proposal", allow_abbrev=False)
     p_props.add_argument("--mark-carded", nargs="*", metavar="ID",
                          help="Note these ids are on a confirm card")
@@ -3565,6 +3794,8 @@ def main():
         "reply-queue": cmd_reply_queue,
         "confirm": cmd_confirm,
         "reject": cmd_reject,
+        "hold": cmd_hold,
+        "unhold": cmd_unhold,
         "proposals": cmd_proposals,
         "closure-report": cmd_closure_report,
         "promoted": cmd_promoted,

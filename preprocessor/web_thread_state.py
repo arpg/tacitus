@@ -66,8 +66,11 @@ web chat's store. This module gives it what only the EA has:
         that is its Still open, and the card gives way to a status line);
         on one whose row a signal closed in the last REOPEN_DAYS days (not
         the owner's own word, nor a duplicate fold) reopens it (`ledger.py
-        update --status open`, which vetoes the closing signal). Each then
-        gets item_feedback's `still_open`.
+        update --status open`, which vetoes the closing signal). Either way
+        the row is then held, still open and not now (`ledger.py hold`,
+        ledger.is_held: out of Home's list and the briefing until new mail,
+        its date or the owner brings it back), and gets item_feedback's
+        `still_open`.
 
       Nothing is written for an automated post (a briefing names many
       rows), for more than WRITEBACK_CAP rows, or for several open rows
@@ -407,8 +410,20 @@ RUN = _cli
 CARD_STATUS = None
 # The status line a proposal card takes when a tap on its thread answered it.
 CARD_DONE = {"confirm": ":white_check_mark: Done. It is off your list.",
-             "reject": ":pushpin: Not done. It stays on your list.",
+             "reject": ":pushpin: Not done. Tacitus holds it until you want it.",
              "none": ":information_source: It changed since the card. Nothing was done."}
+
+
+def _hold(lid: str, kept_open) -> None:
+    """Not done is "still open, not now": a row the tap kept open or opened
+    again is held (`ledger.py hold`). A hold that is not written leaves the
+    row on the list as before, and says so in the log."""
+    if not kept_open:
+        return
+    res = RUN("ledger.py", "hold", "--id", lid, "--actor", WEB_SOURCE)
+    if not res.get("ok"):
+        log.warning("web chat: ledger row %s was kept open but not held: %s", lid,
+                    res.get("error") or res.get("_exit"))
 
 
 def run_writeback(plan: dict) -> list[dict]:
@@ -428,11 +443,14 @@ def run_writeback(plan: dict) -> list[dict]:
                         WEB_DONE_PHRASE, "--source", WEB_SOURCE, "--quiet")
             elif op == "reject":
                 res = RUN("ledger.py", "reject", "--id", lid, "--actor", WEB_SOURCE)
+                _hold(lid, res.get("ok"))
                 RUN("item_feedback.py", "--id", lid, "--kind", "still_open", "--source", WEB_SOURCE)
             elif op == "reopen":
                 res = RUN("ledger.py", "update", "--id", lid, "--status", "open", "--last-action",
                           f"{today}: reopened; the owner marked the conversation as needing "
                           f"them (web chat)")
+                _hold(lid, res.get("ok") and not res.get("warning")
+                      and (res.get("entry") or {}).get("status", "open") in _ledger.OPEN_STATUSES)
                 RUN("item_feedback.py", "--id", lid, "--kind", "still_open", "--source", WEB_SOURCE)
             else:
                 continue

@@ -1848,11 +1848,15 @@ def test_needs_me_rejects_a_proposal_and_reopens_a_recent_auto_close(writeback):
     calls = writeback(rows, "needs_you")
     note = next(c[-1] for c in calls if c[:2] == ("ledger.py", "update"))
     assert "reopened" in note and "web chat" in note
+    # Not done is "still open, not now": each row kept open or opened again is held
     assert [c for c in calls if c[0] == "ledger.py"] == [
         ("ledger.py", "reject", "--id", "deadline-Ac1=", "--actor", "web-chat"),
+        ("ledger.py", "hold", "--id", "deadline-Ac1=", "--actor", "web-chat"),
         ("ledger.py", "update", "--id", "response-Aa1=", "--status", "open", "--last-action",
          note),
-        ("ledger.py", "update", "--id", "task-Ab1=", "--status", "open", "--last-action", note)]
+        ("ledger.py", "hold", "--id", "response-Aa1=", "--actor", "web-chat"),
+        ("ledger.py", "update", "--id", "task-Ab1=", "--status", "open", "--last-action", note),
+        ("ledger.py", "hold", "--id", "task-Ab1=", "--actor", "web-chat")]
     assert [c for c in calls if c[0] == "item_feedback.py"] == [
         ("item_feedback.py", "--id", rid, "--kind", "still_open", "--source", "web-chat")
         for rid in ("deadline-Ac1=", "response-Aa1=", "task-Ab1=")]

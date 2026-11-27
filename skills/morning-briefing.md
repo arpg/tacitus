@@ -21,6 +21,7 @@ scheduling, take autonomous action where trusted, and post to chat.
   - `handled_by_reply`: items the user already answered by email (matched
     against sent mail). One recap line, never surfaced as open asks.
 - Check OPEN obligations: `python3 /home/ea-bot/ea-system/preprocessor/ledger.py list --status open`
+  A row with `held: true` is one the user set aside (Not done): never brief it.
 - Check what was RECENTLY HANDLED so you never resurface it:
   `python3 /home/ea-bot/ea-system/preprocessor/ledger.py list --status completed`. Anything
   completed or closed (including work the user did since the last

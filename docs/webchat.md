@@ -292,7 +292,7 @@ subset and escapes everything else; it never injects HTML from text.
 | GET | `/api/relay/status` | `{"enabled": bool, ...}`: the relay client's state (`connected`, `install_id`, `bot_public`, `client_key`, `sign_public`, `devices`, `pending`, ...), how a phone can pair (`pair_own`, `pair_relay`, and `bundle`, the bundle hash or null), and `handoff` (a code for a computer would work now) with `hosted_app` (where that computer opens the app, "" when off) |
 | GET | `/api/settings/{name}` | the page's data; for `routing` (the EA's routing table, `docs/llm-lanes.md` 1.1): `{"local": {"configured", "model", "reachable", "detail"}, "source", "values", "hosted_default", "simple": {"model", "choices": [{"model", "name", "ready"}], "line", "custom", "custom_line"}, "rows": [{"task", "label", "what", "value", "allowed", "locked", "floor", "effective", "why"}]}`; for `notify` (Notifications): `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}`, the settings in force; for `debug` (Debug mode): `{"on": bool}`; for `home` (Home): `{"tone", "briefing"}`; 404 for a page the host did not register |
 | POST | `/api/settings/{name}` | for `routing`, `{"tasks": {"<task>": "local" \| "hosted" \| "auto"}}`, or the pick at the top alone, `{"hosted_default": "claude" \| "codex"}`, → the page's data with `"saved": true`; the bot writes the owner-private `routing.json`, never `ea-config.json`. 400 with the reason for an unknown task or value or a value under a floor. For `notify`, the keys to change, any of `{"briefings": bool, "replies": bool, "rooms": bool, "quiet": "queue" \| "send"}` → the page's data with `"saved": true`; the bot merges them over the web block's `notify_push` in the owner-private `chat.json` (every other key kept, mode 0600; `preprocessor/web_notify_settings.py`) and pushes by them at once. 400 with the reason for an unknown key, a switch that is not true or false, another `quiet`, an empty body, or a process that is not the owner's. For `debug`, `{"on": bool}` → `{"on": bool, "saved": true}`; the bot writes the chat block's `diagnostics` into the owner-private `chat.json` the same way and sends the health room's row with its `hidden` mark as a `channel` event; 400 "Debug mode takes on or off." for any other body. For `home`, any of `{"tone": "breezy" \| "dry" \| "facts", "briefing": "home" \| "post"}` → the page's data with `"saved": true`, written as the web block's `home` the same way; 400 with the reason for anything else. Every page: 403 for a relayed request (settings change only in the owner's own web chat) |
-| GET | `/api/home?tz=<zone>&checkin=1` | Home as the app draws it (Home): `{"as_of", "date", "day", "greeting": {"text", "by": "code" \| "model", "tone", "plain"}, "facts", "mode": {"kind": "normal" \| "travel" \| "vacation", "until", "why", "line"?, "held"?}, "tally": {"done", "left"}, "left": [item], "held": [item], "done": [{"id", "kind", "by": "you" \| "tacitus", "title", "at", "href"?}], "next": {"line", "minutes", "event", "fits"} \| null, "since": {"at", "lines": [{"text", "href"?}]} \| null, "calendar": [{"title", "start", "end", "all_day"}], "question": {...} \| null, "reports": [{"kind", "title", "text", "at"}], "clear", "light"}`; an item is `{"id", "kind": "request" \| "reply" \| "item", "label", "title", "detail", "urgency", "due", "fire", "href"? \| "ask"?, "project"?}`. `tz` is the device's IANA zone (another is ignored); `checkin=1` says the owner opened Home (a visit). Any device that reads may read it, as Action requests; 404 where the bot runs no Home |
+| GET | `/api/home?tz=<zone>&checkin=1` | Home as the app draws it (Home): `{"as_of", "date", "day", "greeting": {"text", "by": "code" \| "model", "tone", "plain"}, "facts", "mode": {"kind": "normal" \| "travel" \| "vacation", "until", "why", "line"?, "held"?}, "tally": {"done", "left"}, "left": [item], "held": [item] (what travel holds, then "Open, not now"), "done": [{"id", "kind", "by": "you" \| "tacitus", "title", "at", "href"?}], "next": {"line", "minutes", "event", "fits"} \| null, "since": {"at", "lines": [{"text", "href"?}]} \| null, "calendar": [{"title", "start", "end", "all_day"}], "question": {...} \| null, "reports": [{"kind", "title", "text", "at"}], "clear", "light"}`; an item is `{"id", "kind": "request" \| "reply" \| "item", "label", "title", "detail", "urgency", "due", "fire", "href"? \| "ask"?, "project"?}`. `tz` is the device's IANA zone (another is ignored); `checkin=1` says the owner opened Home (a visit). Any device that reads may read it, as Action requests; 404 where the bot runs no Home |
 | POST | `/api/home/vote` | `{"vote": "up" \| "down", "text": "<the greeting>"}` → `{"ok": true, "vote"}`: the owner's thumbs on the greeting, a calibration line in the preferences store under the scope `home`; 400 for another body. A chat action, like a reaction |
 | GET | `/api/status` | `{"level": "ok" \| "warn" \| "problem", "line", "conditions": [{"id", "level", "title", "line", "todo", "since", "until"?, "action"?, "read"}], "cleared": [{"id", "level", "title", "line", "since", "until", "how": "fixed" \| "read"}], "as_of", "details": bool}`: the status light (Status light); `details` says whether this device may open a condition's details; 404 where the bot runs no light |
 | GET | `/api/status/{id}` | `{"id", "detail", "log": [...], "log_from"}`: one condition's technical detail and the log lines of its part, bounded and masked (Status light); 404 for an id the light does not show; 403 "Details show only in Tacitus on your own network." for a relayed request |
@@ -686,7 +686,8 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 - Normal: the greeting with its thumbs, the ring, the next gap, Left for
   you, the question of the day, then (beside them from 1200 px) Since
   you last checked in, So far today, Today's calendar and the briefing,
-  each folded where it is long.
+  each folded where it is long; at the foot of the page, across it,
+  "Open, not now (N)" folded, when the owner holds anything (below).
 - Done (nothing left): "You are clear for today. Nothing waits for you.
   Close the app and go do something else." The greeting says the same,
   and there is no gap to fill.
@@ -697,7 +698,8 @@ it. The briefing's own post is gone from the web chat: Home shows it.
 - Travel: "You are away until Saturday. Only what cannot wait shows
   here. Tacitus holds 4 other things for when you are back." Left for you
   holds what is overdue or due before the day after the trip; the rest
-  is under "Show the rest".
+  is under "Show the rest", folded at the foot of the page, with what
+  the owner holds after it.
 - Vacation: the greeting "Nothing is on fire.", "You are off until
   Sunday." under it, no gap to fill, and the held
   items folded under "Peek anyway"; only an overdue item, or one due in
@@ -1033,8 +1035,8 @@ bot (`home_items.Hooks`):
 | Card it replaces | Home item | Its answers run |
 |---|---|---|
 | A reply that waits (the daily blocks, a turn's question or could-not card) | `reply` or `question`, from its first day | the Replies card's draft turn and No reply needed (`_home_draft`, `_home_not_needed`) |
-| A close proposal | `proposal`, "Looks done": Done (after its Undo), Not done | the close card's Done and Not done (`_home_close`: `ledger.py confirm`, `reject`) |
-| A close made at once (the auto-close note with Not done) | its row in So far today, with Not done | the note's Not done (`_home_reopen`) |
+| A close proposal | `proposal`, "Looks done": Done (after its Undo), Not done | the close card's Done and Not done (`_home_close`: `ledger.py confirm`, `reject` then `hold`) |
+| A close made at once (the auto-close note with Not done) | its row in So far today, with Not done | the note's Not done (`_home_reopen`: the reopen, then `hold`) |
 | A work case's decision, date and block | `letter` or `case`, with "Is this the same person?" first while that is open | the case card's press (`_home_kind`) |
 | "Which one was it?" | `which`, "Answer needed", one button per answer | the card's pick (`_home_which`, `case_surface.answer_which`) |
 
@@ -1159,7 +1161,7 @@ Draft, Draft with my words, an answer and Ask: The item unfolded, below):
 | request | Open it in Action requests | nothing: Send and Create stay there |
 | proposal (one list) | Done, Not done, Ask | the close card's Done (after the Undo window) and Not done |
 | which (one list) | its answers | the "Which one was it?" card's pick |
-| closed today | Not done | the web chat's Not done (reopen); with one list, a row Tacitus closed: the auto-close note's Not done |
+| closed today | Not done | the web chat's Not done (reopen, then hold); with one list, a row Tacitus closed: the auto-close note's Not done |
 
 Done is the thread header's Done: a row Tacitus proposed is confirmed;
 any other closes on the owner's word ("marked done in the web chat") and
@@ -1200,6 +1202,55 @@ tell `home_briefing_queue` of each open row they write (`ledger._row_written`, t
 `ledger.ROW_WRITTEN_HOOKS`, each loaded only when its source defines
 `row_written`, since the resident's process cannot cache bytecode in the
 install tree); a hook that is missing or fails never fails the write.
+
+### Open, not now
+
+Not done means "still open, not now". On a "Looks done" item (Home's row,
+the close card, the thread header of its card's thread) it rejects the
+proposal as before (`ledger.py reject`: the evidence is vetoed); on a row
+Tacitus closed (So far today, the close note, the thread header of a
+conversation whose row a signal closed) it opens the row again as
+before. Then the row is held (`ledger.py hold`, the owner's processes
+alone: `hold` in its metadata with the time and the other side's latest
+message then), and the line after the tap is "Not done. Tacitus holds it
+until you want it."
+
+- **Where it is.** A held row leaves Left for you at once (the item
+  shows its line alone for a moment, as a Done does) and is one line of
+  `held` (`home_screen.on_hold`): "Open, not now (N)", folded at the foot
+  of Home, the one held last first, built in code from the row (no model
+  reads anything for it). A conversation about it is not an "Answer
+  needed" item either. A tap on a line unfolds it in place like any item,
+  with its usual choices and two lines in its briefing: when the owner set
+  it aside, and what brings it back (new mail, its date, both, or only his
+  own work).
+- **The briefing holds it too.** `ledger.is_held` is the one predicate:
+  Home asks it, and so do the preprocessor (`preprocess.without_held`:
+  the ranked `today_top`, `open_obligations`, the reply backlog, the
+  "Looks done" proposals, the stale rows and the deadline mail on its
+  thread), the remote lane (`remote_briefing._live_row`) and the reply
+  queue (`ledger.reply_backlog`); `ledger.py list`, `get` and `search`
+  mark a held row `held: true` for the hosted lane, which never briefs one
+  (docs/ea/briefing-data.md). No line counts what is held.
+- **It comes back on its own** when the other side writes on its thread
+  after the hold began (the thread record's latest inbound, as the reply
+  queue reads it, newer than the one recorded at the hold), or its date
+  (its deadline, the date its description names, else its thread's) comes
+  two days away or passes (`ledger.HOLD_DUE_DAYS`), both read when Home or
+  the briefing reads the row. The date counts only when it was more than two
+  days after the owner's local day of the hold (`ledger.hold_date_counts`):
+  a date already that near, or past, when he tapped Not done was known to
+  him and never brings it back; a date moved later to one that was further
+  off does. The item's briefing says which of the two can bring it back,
+  or that only his own work will. A new close proposal (new evidence) shows it as
+  "Looks done" again. It is then back in Left for you at once, from its
+  row, whether or not today's briefing listed it (`home_screen._returned`).
+- **The owner brings it back** by working on it: a note (Tell Tacitus), a
+  draft, an answer or Ask ends the hold for good (`ledger.py unhold`); Later,
+  Later: waiting on them, Done and No reply needed end it with the status
+  they write (any `ledger.py update --status`, `--snooze-until` or
+  `--follow-up-after` drops the hold). Unfolding it alone does not.
+- A kept row is held the same way: the hold records times, never text.
 
 ### The item unfolded (one list)
 
@@ -1708,8 +1759,8 @@ Every button the owner presses, on a card, on Home or in a thread's
 header, is one of six verbs, or Edit for a draft that exists, or Tell
 Tacitus for the note on a Home item, and the
 line after the press says what happened in the same verb, then the one
-fact he needs ("Done. It is off your list.", "Not done. It stays on your
-list.", "Later. It comes back on Friday."). A line after a failure says what did not happen and the one
+fact he needs ("Done. It is off your list.", "Not done. Tacitus holds it
+until you want it.", "Later. It comes back on Friday."). A line after a failure says what did not happen and the one
 thing to do next ("Nothing was done. Try again in a minute.").
 
 | Verb | Its forms | Instead of |

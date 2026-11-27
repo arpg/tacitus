@@ -67,7 +67,13 @@ What each choice runs is the machinery that already does it:
       starts with the owner's message naming the item and his answer,
       sent at once, as if he typed it (WebFrontend.web_message)
   Not done
-      the web chat's thread Not done on a closed row (run_writeback's reopen)
+      the web chat's thread Not done on a closed row (run_writeback's reopen),
+      or the close card's Not done on a "Looks done" item (Hooks.close):
+      the row is open and held, "still open, not now" (ledger.py hold). It
+      leaves the list for "Open, not now" at the bottom of Home (on_hold),
+      where a tap unfolds it with its usual choices. A note, a draft, an
+      answer or Ask on it ends the hold (ledger.py unhold); Later, Waiting,
+      Done and No reply needed end it with what they write
 
 Done, No reply needed, Waiting and Later say what they did at once and the
 item leaves Home at once; the ledger write waits UNDO_S seconds, so Undo
@@ -168,8 +174,19 @@ OPEN = {"id": "open", "label": "Open it in Action requests", "style": "primary"}
 OUTLOOK = {"id": "outlook", "label": "Open in Outlook", "style": "primary"}
 REOPEN = {"id": "reopen", "label": "Not done"}
 # A close proposal's answers on Home (one list): Done confirms it, after the
-# Undo window; Not done keeps the row open and vetoes the evidence.
+# Undo window; Not done keeps the row open, vetoes the evidence and holds
+# the row ("Open, not now", ledger.is_held).
 NOT_DONE = {"id": "not_done", "label": "Not done"}
+# What Not done says, on a proposal and on a row Tacitus closed.
+HOLD_SAID = "Not done. Tacitus holds it until you want it."
+# A held item's own lines in its quick briefing: when the owner set it
+# aside, and what brings it back (ledger.hold_released): new mail where
+# the row has a mail thread, its date where that can (hold_date_counts: a
+# date already near or past when he held it never does).
+HOLD_BACK = {(True, True): "It comes back when new mail arrives or it is due in two days.",
+             (True, False): "It comes back when new mail arrives.",
+             (False, True): "It comes back when it is due in two days.",
+             (False, False): "It stays here until you work on it."}
 # One list: the note box's one filled button. The owner's words (a
 # question, a direction, or both) go to the item's one conversation and
 # start one turn (Hooks.note).
@@ -317,12 +334,14 @@ class Found:
 
 
 def find(src, ref: str) -> Found | None:
-    """The item `ref` names on Home now (what is left, held or not, and
-    what got done today), or None."""
+    """The item `ref` names on Home now (what is left, held or not, what
+    the owner holds, and what got done today), or None."""
     hs = _hs()
     if not ref:
         return None
     hit = next((x for x in hs.left(src) if x.get("id") == ref), None)
+    if hit is None:
+        hit = next((x for x in hs.on_hold(src) if x.get("id") == ref), None)
     if hit is None:
         hit = next((x for x in hs.done(src) if x.get("id") == ref), None)
     if hit is None:
@@ -521,12 +540,28 @@ def _subject(f: Found) -> str:
     return _plain((f.reply or {}).get("subject") or _thread(f).get("subject"), 100)
 
 
+def _set_aside(d: date, today: date) -> str:
+    """"today", "yesterday", "on Monday" (this past week), "on November 3"."""
+    days = (today - d).days
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return f"on {d.strftime('%A')}" if days < 7 else f"on {d.strftime('%B')} {d.day}"
+
+
 def _standing(f: Found, src) -> list[str]:
     """Where it stands: how long it has waited, the owner's last message and
     his earlier word, what Tacitus did, a close it proposed, a meeting asked."""
     hs = _hs()
     out: list[str] = []
     reply, row, thread, queued = f.reply or {}, f.row or {}, _thread(f), _queued(f)
+    held = hs._ts(f.item.get("_held"))
+    if held:
+        d = datetime.fromtimestamp(held, src.zone).date()
+        mail = bool(row.get("conversation_id") or row.get("kept_received") or _thread(f))
+        out += [f"You set it aside {_set_aside(d, _today(src))}.",
+                HOLD_BACK[(mail, _ledger().hold_date_counts(row))]]
     if f.item.get("kind") in ("reply", "question") and reply:
         age = int(reply.get("age_days") or 0)
         out.append("It came in today." if age <= 0 else
@@ -1682,8 +1717,9 @@ class Acts:
                 done = _wts().run_writeback({"ops": [("reopen", f.lid)]})
                 ok = any(d.get("ok") for d in done)
             home.changed()
-            return {"ok": ok, "said": "Not done. It is back on your list." if ok
-                    else "Nothing was done. Try again in a minute."}, None
+            # `held`: the item left the list for "Open, not now"; the app shows the line alone, as a Done's
+            return ({"ok": True, "said": HOLD_SAID, "held": True} if ok
+                    else {"ok": False, "said": "Nothing was done. Try again in a minute."}), None
         if choice.startswith("which:"):
             if hooks.which is None:
                 return {"ok": False, "said": "Tacitus cannot do that from here."}, None
@@ -1696,9 +1732,9 @@ class Acts:
             got = hooks.close(f.lid, True) or {}
             home.changed()
             log.info("home: not done on %s: %s", f.lid, "kept open" if got.get("ok") else "refused")
-            return {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or
-                    ("Not done. It stays on your list."
-                     if got.get("ok") else "Nothing was done. Try again in a minute.")}, None
+            out = {"ok": bool(got.get("ok")), "said": _plain(got.get("said"), 200) or
+                   (HOLD_SAID if got.get("ok") else "Nothing was done. Try again in a minute.")}
+            return ({**out, "held": True} if out["ok"] else out), None
         if choice == NOTE["id"]:
             return self._note(f, it, arg), None
         words = one_line(arg)
@@ -1754,11 +1790,16 @@ class Acts:
             if route:
                 out["goto"] = route
             if out["ok"]:
+                self._worked(f, "draft" if choice in ("draft", "say") else "answer")
                 home.changed()  # one list: its line says the reply is being written
             log.info("home: %s on %s: %s", choice, f.lid, "started" if out["ok"] else "refused")
             return out, None
         if choice == "start":
-            return self._ask(f, it), None
+            out = self._ask(f, it)
+            if out.get("ok"):
+                self._worked(f, "ask")
+                home.changed()
+            return out, None
         if choice == "answer":
             if not words:
                 return {"ok": False, "said": "Write your answer first."}, None
@@ -1772,8 +1813,23 @@ class Acts:
             route = f"#/{quote(str(row.get('channel') or channel), safe='')}/" \
                     f"{quote(str(row.get('thread_key') or row.get('id') or ''), safe='')}"
             log.info("home: %s opened a conversation for %s", choice, f.lid or f.item.get("id"))
+            self._worked(f, "answer")
             return {"ok": True, "said": "Opened a conversation with Tacitus about it.", "goto": route}, after
         return {"ok": False, "said": NO_CHOICE}, None
+
+    def _worked(self, f: Found, what: str) -> None:
+        """The owner works on a row he held (a note, a draft, an answer,
+        Ask): its hold ends for good (ledger.py unhold), so the row is on
+        the list again. Later, Waiting, Done and No reply needed end it
+        with the status they write. Nothing is run for a row with no hold."""
+        rec = _ledger().hold_of(f.row or {}) if f.lid else {}
+        if not rec or rec.get("ended"):
+            return
+        try:
+            res = _wts().RUN("ledger.py", "unhold", "--id", f.lid, "--why", f"the owner's {what} on Home")
+            log.info("home: the hold on %s ended: %s", f.lid, "ok" if res.get("ok") else res.get("error"))
+        except Exception as e:
+            log.warning("home: the hold on %s did not end: %s", f.lid, e)
 
     def _note(self, f: Found, it: dict, arg: str) -> dict:
         """One list: the owner's note goes to the item's one conversation and
@@ -1790,6 +1846,8 @@ class Acts:
             return {"ok": False, "said": "Tacitus cannot do that from here."}
         got = hooks.note(note_info(f, it), words) or {}
         ok = bool(got.get("ok"))
+        if ok:
+            self._worked(f, "note")
         self.home.changed()
         log.info("home: a note on %s: %s", f.lid or f.item.get("id"), "started" if ok else "refused")
         return {"ok": ok, "said": _plain(got.get("said"), 200) or
