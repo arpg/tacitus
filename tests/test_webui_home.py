@@ -235,6 +235,23 @@ def test_the_briefing_waits_at_the_bottom_and_a_link_opens_it(app):
     assert not errors, errors
 
 
+def test_a_foldable_open_gives_home_and_action_requests_the_whole_width(app):
+    """Between 600 and 999px the channels are a drawer, so a full page
+    starts at the left edge in both orientations."""
+    from playwright.sync_api import expect
+    for width, height in ((669, 951), (951, 669)):
+        page, stub, errors = home_app(app, viewport={"width": width, "height": height},
+                                      context={"has_touch": True, "is_mobile": True, **CLOCK})
+        expect(page.locator(".h-greet")).to_be_visible()
+        for place in ("home", "requests"):
+            if place == "requests":
+                page.evaluate("location.hash = '#/stream%3A7'")
+                page.wait_for_selector("body.requests")
+            box = page.locator("#threads").bounding_box()
+            assert (box["x"], box["width"]) == (0, width), (place, width, box)
+        assert not errors, errors
+
+
 def test_since_and_done_link_to_their_places_and_back_returns_home(app):
     from playwright.sync_api import expect
     page, stub, errors = home_app(app, viewport={"width": 390, "height": 844},
