@@ -38,7 +38,9 @@ def held_sources(state: dict):
         got.one_list = True
         got.rows["response-r1"]["source_message_id"] = "m-r1"
         for lid, days in (("task-s2", 1), ("response-r1", 3)):
-            got.rows[lid]["hold"] = {"at": _iso(got.now - days * 86400), "inbound": "", "by": "user"}
+            at = got.now - days * 86400
+            got.rows[lid]["hold"] = {"at": _iso(at), "day": datetime.fromtimestamp(at, F.ZONE).date().isoformat(),
+                                     "inbound": "", "by": "user"}
         if state.get("proposal"):
             got.rows["deadline-w1"]["close_proposal"] = {"why": "The reviews went in", "first_at": _iso(got.now)}
         return got

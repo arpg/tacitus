@@ -1222,7 +1222,8 @@ until you want it."
   reads anything for it). A conversation about it is not an "Answer
   needed" item either. A tap on a line unfolds it in place like any item,
   with its usual choices and two lines in its briefing: when the owner set
-  it aside, and what brings it back.
+  it aside, and what brings it back (new mail, its date, both, or only his
+  own work).
 - **The briefing holds it too.** `ledger.is_held` is the one predicate:
   Home asks it, and so do the preprocessor (`preprocess.without_held`:
   the ranked `today_top`, `open_obligations`, the reply backlog, the
@@ -1234,9 +1235,14 @@ until you want it."
 - **It comes back on its own** when the other side writes on its thread
   after the hold began (the thread record's latest inbound, as the reply
   queue reads it, newer than the one recorded at the hold), or its date
-  (its deadline, the date its description names, else its thread's) is two
-  days away or past (`ledger.HOLD_DUE_DAYS`), both read when Home or the
-  briefing reads the row. A new close proposal (new evidence) shows it as
+  (its deadline, the date its description names, else its thread's) comes
+  two days away or passes (`ledger.HOLD_DUE_DAYS`), both read when Home or
+  the briefing reads the row. The date counts only when it was more than two
+  days after the owner's local day of the hold (`ledger.hold_date_counts`):
+  a date already that near, or past, when he tapped Not done was known to
+  him and never brings it back; a date moved later to one that was further
+  off does. The item's briefing says which of the two can bring it back,
+  or that only his own work will. A new close proposal (new evidence) shows it as
   "Looks done" again. It is then back in Left for you at once, from its
   row, whether or not today's briefing listed it (`home_screen._returned`).
 - **The owner brings it back** by working on it: a note (Tell Tacitus), a

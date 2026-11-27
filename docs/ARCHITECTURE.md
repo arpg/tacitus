@@ -2925,8 +2925,9 @@ but `ledger.is_held` keeps it out of Home's list (folded into "Open, not
 now", `home_screen.on_hold`), the briefing's lists
 (`preprocess.without_held`, `remote_briefing._live_row`), the reply queue
 (`reply_backlog`) and the "Looks done?" line, until a newer inbound
-message, its date two days away (`HOLD_DUE_DAYS`) or a new proposal ends
-it at read time, or the owner's work on it ends it for good (`ledger.py
+message, its date coming two days away (`HOLD_DUE_DAYS`; only a date that
+was further off on the day of the hold, `hold_date_counts`) or a new
+proposal ends it at read time, or the owner's work on it ends it for good (`ledger.py
 unhold`, or any status `update` sets). `ledger.py list` marks a held row
 `held: true` for the hosted lane (docs/webchat.md, Open, not now).
 

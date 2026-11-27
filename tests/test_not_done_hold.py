@@ -36,6 +36,7 @@ from plain_words import JARGON  # noqa: E402
 # A pinned day for the predicate and the briefing's lists.
 TODAY = date(2026, 11, 20)
 HELD_AT = "2026-11-18T10:00:00Z"
+HELD_DAY = "2026-11-18"      # the owner's local day of HELD_AT
 
 
 def plain(text: str) -> None:
@@ -49,7 +50,7 @@ def _row(rid="task-h1", **kw) -> dict:
     row = {"id": rid, "type": "task", "status": "open", "description": "Order the poster tubes",
            "conversation_id": f"conv-{rid}",
            "thread_brief": {"last_inbound": "2026-11-17T09:00:00Z", "subject": "Poster tubes"},
-           "hold": {"at": HELD_AT, "inbound": "2026-11-17T09:00:00Z", "by": "user"}}
+           "hold": {"at": HELD_AT, "day": HELD_DAY, "inbound": "2026-11-17T09:00:00Z", "by": "user"}}
     row.update(kw)
     return row
 
@@ -72,30 +73,93 @@ def test_a_held_row_stays_held_until_new_mail_comes_on_its_thread():
 def test_mail_from_before_the_hold_never_ends_it():
     """A row held with no thread record yet: a record that comes later with
     mail from before the hold leaves it held; mail after it ends it."""
-    row = _row(thread_brief={}, hold={"at": HELD_AT, "inbound": "", "by": "user"})
+    row = _row(thread_brief={}, hold={"at": HELD_AT, "day": HELD_DAY, "inbound": "", "by": "user"})
     assert ledger.is_held(row, TODAY)
     row["thread_brief"] = {"last_inbound": "2026-11-18T09:59:00Z"}
     assert ledger.is_held(row, TODAY)
     row["thread_brief"] = {"last_inbound": "2026-11-18T10:01:00Z"}
     assert ledger.hold_released(row, TODAY) == "mail"
     # a row with no mail behind it ends only on its date or the owner's work
-    chat = _row(conversation_id="", thread_brief={}, hold={"at": HELD_AT, "inbound": "", "by": "user"})
+    chat = _row(conversation_id="", thread_brief={}, hold={"at": HELD_AT, "day": HELD_DAY, "inbound": "", "by": "user"})
     assert ledger.latest_inbound(chat) == "" and ledger.is_held(chat, TODAY)
 
 
 @pytest.mark.parametrize("due, held", [
     ("2026-11-23", True),     # three days away: still held
-    ("2026-11-22", False),    # two days away: back
-    ("2026-11-20", False),    # today
-    ("2026-11-02", False),    # past
+    ("2026-11-22", False),    # two days away, and four days after the hold: back
+    ("2026-11-21", False),    # tomorrow, three days after the hold: back
+    ("2026-11-20", True),     # today, but already two days away on the day of the hold
+    ("2026-11-02", True),     # past already when he held it
 ])
-def test_a_held_row_comes_back_two_days_before_its_date(due, held):
+def test_a_held_row_comes_back_two_days_before_a_date_that_was_further_off(due, held):
+    """Held on Nov 18, read on Nov 20: a date counts only when it was more
+    than two days after the day of the hold."""
     assert ledger.is_held(_row(deadline=due), TODAY) is held
     # the date its thread names counts when the row has none
     brief = {"last_inbound": "2026-11-17T09:00:00Z", "deadline": due}
     assert ledger.is_held(_row(thread_brief=brief), TODAY) is held
+    assert ledger.hold_date_counts(_row(deadline=due)) is (due > "2026-11-20")
     if not held:
         assert ledger.hold_released(_row(deadline=due), TODAY) == "due"
+
+
+def _held_on(day: date, **kw) -> dict:
+    """A row the owner held on `day` (his local date), at noon UTC."""
+    return _row(hold={"at": f"{day.isoformat()}T12:00:00Z", "day": day.isoformat(),
+                      "inbound": "2026-11-17T09:00:00Z", "by": "user"}, **kw)
+
+
+def test_a_row_held_with_its_date_past_stays_held():
+    """The owner holds a row whose date passed: he knew it, so the date
+    never brings it back; new mail still does."""
+    row = _held_on(TODAY, deadline=(TODAY - timedelta(days=3)).isoformat())
+    for later in range(0, 30, 3):
+        assert ledger.is_held(row, TODAY + timedelta(days=later)), later
+    # no date of its own, its thread's two days past (a reminder that came before)
+    brief = {"last_inbound": "2026-11-17T09:00:00Z", "deadline": (TODAY - timedelta(days=2)).isoformat()}
+    row = _held_on(TODAY, thread_brief=brief)
+    assert ledger.is_held(row, TODAY) and not ledger.hold_date_counts(row)
+    row["thread_brief"]["last_inbound"] = f"{TODAY.isoformat()}T15:00:00Z"
+    assert ledger.hold_released(row, TODAY) == "mail"
+
+
+def test_a_row_held_with_its_date_tomorrow_stays_held():
+    row = _held_on(TODAY, deadline=(TODAY + timedelta(days=1)).isoformat())
+    assert not ledger.hold_date_counts(row)
+    for later in (0, 1, 2, 5):
+        assert ledger.is_held(row, TODAY + timedelta(days=later)), later
+
+
+def test_a_row_held_ten_days_before_its_date_comes_back_two_days_before_it():
+    row = _held_on(TODAY, deadline=(TODAY + timedelta(days=10)).isoformat())
+    assert ledger.hold_date_counts(row)
+    for later in range(0, 8):
+        assert ledger.is_held(row, TODAY + timedelta(days=later)), later
+    assert ledger.hold_released(row, TODAY + timedelta(days=8)) == "due"
+    assert not ledger.is_held(row, TODAY + timedelta(days=12))             # and stays back after it
+
+
+def test_a_date_moved_after_the_hold_counts_once_it_was_further_off_than_two_days():
+    """Held with its date tomorrow (no return on that date); the date moves
+    to six days after the hold: it comes back two days before the new one.
+    A move to another date that was already near on the day of the hold
+    does not."""
+    row = _held_on(TODAY, deadline=(TODAY + timedelta(days=1)).isoformat())
+    assert ledger.is_held(row, TODAY + timedelta(days=3))
+    row["deadline"] = (TODAY + timedelta(days=6)).isoformat()
+    assert ledger.is_held(row, TODAY + timedelta(days=3))
+    assert ledger.hold_released(row, TODAY + timedelta(days=4)) == "due"
+    row["deadline"] = (TODAY + timedelta(days=2)).isoformat()
+    assert ledger.is_held(row, TODAY + timedelta(days=4))
+
+
+def test_the_day_of_a_hold_is_the_owners_local_day(monkeypatch):
+    """A hold records the owner's local day; one without it reads the local
+    date of its time (user_tz)."""
+    assert ledger.hold_day({"at": HELD_AT, "day": "2026-11-17"}) == date(2026, 11, 17)
+    monkeypatch.setattr(ledger, "_local_day", lambda at: (at - timedelta(hours=12)).date())
+    assert ledger.hold_day({"at": "2026-11-18T05:00:00Z"}) == date(2026, 11, 17)
+    assert ledger.hold_day({}) is None
 
 
 def test_the_owners_work_a_close_or_a_new_proposal_ends_it():
@@ -181,7 +245,7 @@ def test_hold_is_the_owners_tap_and_the_reply_queue_and_the_list_honour_it(owner
     assert [e["id"] for e in out["entries"]] == ["response-h1"]
     rc, out = _cli(monkeypatch, capsys, "hold", "--id", "response-h1", "--actor", "web-chat")
     rec = _meta("response-h1")["hold"]
-    assert rc == 0 and out["ok"] and rec["by"] == "web-chat" and rec["inbound"] == rec["inbound"].strip()
+    assert rc == 0 and out["ok"] and rec["by"] == "web-chat" and rec["day"] == ledger.local_today().isoformat()
     assert rec["inbound"] == ledger.latest_inbound(_meta("response-h1"))       # the mail it waits past
     _rc, out = _cli(monkeypatch, capsys, "reply-queue")
     assert out["entries"] == []                                               # out of the reply queue
@@ -244,7 +308,9 @@ def hold(src: H.Sources, lid: str, days_ago: float = 1.0) -> None:
     mail from the other side then."""
     row = src.rows[lid]
     row.pop("close_proposal", None)
-    row["hold"] = {"at": _iso(src.now - days_ago * 86400), "inbound": ledger.latest_inbound(row), "by": "user"}
+    at = src.now - days_ago * 86400
+    row["hold"] = {"at": _iso(at), "day": datetime.fromtimestamp(at, src.zone).date().isoformat(),
+                   "inbound": ledger.latest_inbound(row), "by": "user"}
 
 
 def held_sources(**over) -> H.Sources:
@@ -294,6 +360,18 @@ def test_a_held_item_unfolds_in_place_with_its_choices_and_what_brings_it_back()
     assert reply["brief"]["standing"][:2] == [f"You set it aside on {day}.", "It comes back when new mail arrives."]
     for line in it["brief"]["standing"] + reply["brief"]["standing"]:
         plain(line)
+
+
+def test_a_row_held_when_it_was_due_tomorrow_stays_in_open_not_now_and_says_only_mail_brings_it_back():
+    """The workshop review is due tomorrow when the owner taps Not done: it
+    stays held, and its briefing never promises a return on that date."""
+    src = held_sources()
+    assert "item:deadline-w1" in refs(H.build(src)["left"])
+    hold(src, "deadline-w1", 0)
+    p = H.build(src)
+    assert "item:deadline-w1" in refs(p["held"]) and "item:deadline-w1" not in refs(p["left"])
+    assert I.item(src, "item:deadline-w1")["brief"]["standing"][:2] == [
+        "You set it aside today.", "It comes back when new mail arrives."]
 
 
 def test_a_conversation_about_a_held_row_is_not_answer_needed():
@@ -464,7 +542,7 @@ def test_the_briefing_leaves_a_held_row_and_its_thread_out_of_every_list():
                  {"conversation_id": "conv-task-h3", "subject": "Other"}]
     rows, dl, stale = preprocess.without_held([held, sibling, free], deadlines, [held, free], TODAY)
     assert [o["id"] for o in rows] == ["task-h3"] and [o["id"] for o in stale] == ["task-h3"]
-    ended = _row("task-h4", hold={"at": HELD_AT, "inbound": "", "ended": "2026-11-19T12:00:00Z"})
+    ended = _row("task-h4", hold={"at": HELD_AT, "day": HELD_DAY, "inbound": "", "ended": "2026-11-19T12:00:00Z"})
     rows, _dl, _stale = preprocess.without_held([ended], [], [], TODAY)
     assert rows == [ended] and "hold" not in rows[0]                           # an ended hold is no fact for a lane
     assert [d["subject"] for d in dl] == ["Other"]
@@ -485,9 +563,9 @@ def test_the_remote_lane_never_sees_a_held_row():
     from test_remote_briefing import NOW, _briefing
     today = NOW.date()
     b = _briefing()
-    later = (today + timedelta(days=9)).isoformat()
-    b["open_obligations"] += [_row("row-held", description="Held slides", deadline=later)]
-    b["stale_obligations"] = [_row("row-held-stale", description="Held form", deadline=later)]
+    later, began = (today + timedelta(days=9)).isoformat(), today - timedelta(days=5)
+    b["open_obligations"] += [_held_on(began, id="row-held", description="Held slides", deadline=later)]
+    b["stale_obligations"] = [_held_on(began, id="row-held-stale", description="Held form", deadline=later)]
     c = rb.candidates(b, today=today)
     assert not {x.get("ledger_id") for x in c.values()} & {"row-held", "row-held-stale"}
     b["open_obligations"][-1]["deadline"] = (today + timedelta(days=1)).isoformat()      # its date: back

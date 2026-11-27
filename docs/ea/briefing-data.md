@@ -60,8 +60,8 @@ The preprocessor (Python, no Claude tokens) produces a DELTA briefing JSON:
 - Held rows: the user tapped Not done on a row ("still open, not now").
   It is in no list of this file. `ledger.py list`, `get` and `search` show
   it with `held: true`: never brief it, count it or draft for it. It comes
-  back on its own (new mail on its thread, its date two days away), and
-  `held` is gone then. When the user asks for one back in chat, run
+  back on its own (new mail on its thread, or a date that was further off
+  when it was held coming two days away), and `held` is gone then. When the user asks for one back in chat, run
   `ledger.py unhold --id <id>`.
 - `recently_closed`: ledger items closed in the last 7 days.
   DO-NOT-SURFACE list. Never brief anything here as open or pending.

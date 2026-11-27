@@ -181,7 +181,8 @@ NOT_DONE = {"id": "not_done", "label": "Not done"}
 HOLD_SAID = "Not done. Tacitus holds it until you want it."
 # A held item's own lines in its quick briefing: when the owner set it
 # aside, and what brings it back (ledger.hold_released): new mail where
-# the row has a mail thread, its date where it has one.
+# the row has a mail thread, its date where that can (hold_date_counts: a
+# date already near or past when he held it never does).
 HOLD_BACK = {(True, True): "It comes back when new mail arrives or it is due in two days.",
              (True, False): "It comes back when new mail arrives.",
              (False, True): "It comes back when it is due in two days.",
@@ -560,7 +561,7 @@ def _standing(f: Found, src) -> list[str]:
         d = datetime.fromtimestamp(held, src.zone).date()
         mail = bool(row.get("conversation_id") or row.get("kept_received") or _thread(f))
         out += [f"You set it aside {_set_aside(d, _today(src))}.",
-                HOLD_BACK[(mail, _ledger().hold_due(row) is not None)]]
+                HOLD_BACK[(mail, _ledger().hold_date_counts(row))]]
     if f.item.get("kind") in ("reply", "question") and reply:
         age = int(reply.get("age_days") or 0)
         out.append("It came in today." if age <= 0 else

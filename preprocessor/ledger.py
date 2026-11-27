@@ -1521,8 +1521,9 @@ def _meta_of(row) -> dict:
 
 def cmd_hold(args) -> int:
     """The owner's Not done: the open row is held, still open and not now
-    (is_held). It records when, and the other side's latest message then,
-    so a newer one ends the hold. The owner's tap alone: a model lane
+    (is_held). It records when (and the user's local date then, which the
+    date rule counts from), and the other side's latest message then, so a
+    newer one ends the hold. The owner's tap alone: a model lane
     never holds a row. updated_at stays: a hold is no work on the item."""
     import closure
     if not _is_owner():
@@ -1535,7 +1536,8 @@ def cmd_hold(args) -> int:
         _output({"error": f"No open row: {args.id}"})
         return 1
     meta = _meta_of(row)
-    rec = {"at": _now(), "inbound": latest_inbound(_row_to_dict(row)), "by": args.actor or "user"}
+    rec = {"at": _now(), "day": local_today().isoformat(), "inbound": latest_inbound(_row_to_dict(row)),
+           "by": args.actor or "user"}
     meta[HOLD] = rec
     db.execute("UPDATE ledger SET metadata = ? WHERE id = ?", (json.dumps(meta, sort_keys=True), args.id))
     closure.record_event(db, args.id, "hold", actor=rec["by"], evidence={"inbound": rec["inbound"]})
@@ -2352,11 +2354,24 @@ def local_today() -> date:
         return datetime.now().astimezone().date()
 
 
+def _local_day(at: datetime) -> date:
+    """The user's local date (user_tz, else the machine's) of an aware time."""
+    try:
+        try:
+            import user_tz as _user_tz
+        except ModuleNotFoundError:  # imported as preprocessor.<mod>
+            from preprocessor import user_tz as _user_tz
+        return at.astimezone(_user_tz.zone()).date()
+    except Exception:
+        return at.astimezone().date()
+
+
 # ── The owner's "not now": a held row ───────────────────────────────────
 # Not done on a "Looks done" item, or on a row Tacitus closed, means "still
 # open, not now". The row stays open (closure signals still reach it) and
-# carries a hold (`hold` in its metadata: {"at", "inbound", "by"}, and
-# "ended" once the owner works on it). While the hold stands the row is
+# carries a hold (`hold` in its metadata: {"at", "day" (the user's local
+# date then), "inbound", "by"}, and "ended" once the owner works on it).
+# While the hold stands the row is
 # left out of Home's list, the briefing's lists, the reply queue and the
 # "Looks done" lines; Home folds it into "Open, not now". It ends on its own
 # at read time (is_held), and for good when a status is set on the row
@@ -2364,7 +2379,9 @@ def local_today() -> date:
 # (`unhold`). Only an owner process holds a row: the owner's own tap.
 
 HOLD = "hold"
-# A held row comes back when its date is this many days away, or past.
+# A held row comes back when its date comes this many days away (or
+# passes) after the hold began; a date already that near when the owner held
+# it never brings it back.
 HOLD_DUE_DAYS = 2
 
 
@@ -2411,12 +2428,32 @@ def hold_due(entry: dict) -> date | None:
         return None
 
 
+def hold_day(rec: dict) -> date | None:
+    """The user's local date the hold began: the `day` it records, else the
+    local date of its `at`; None with neither."""
+    try:
+        return date.fromisoformat(str(rec.get("day") or "")[:10])
+    except ValueError:
+        at = _utc(rec.get("at"))
+        return _local_day(at) if at is not None else None
+
+
+def hold_date_counts(entry: dict) -> bool:
+    """The row's date can bring its hold back: it has one, and it was more
+    than HOLD_DUE_DAYS days after the day the hold began. A date already
+    that near (or past) then was known to the owner when he held the row,
+    so it never ends the hold; a date moved later to one that was not near
+    then does."""
+    due, began = hold_due(entry), hold_day(hold_of(entry))
+    return due is not None and began is not None and due > began + timedelta(days=HOLD_DUE_DAYS)
+
+
 def hold_released(entry: dict, today=None) -> str:
     """Why the row's hold no longer stands, or '' while it holds (or the
     row has none): `worked` (the owner worked on it), `closed`,
     `looks_done` (a new close proposal), `mail` (the other side wrote
-    after the hold began), `due` (its date is HOLD_DUE_DAYS days away, or
-    past)."""
+    after the hold began), `due` (its date came HOLD_DUE_DAYS days away,
+    or passed, after the hold began: hold_date_counts)."""
     rec = hold_of(entry)
     if not rec:
         return ""
@@ -2432,7 +2469,7 @@ def hold_released(entry: dict, today=None) -> str:
     due = hold_due(entry)
     if today is None:
         today = local_today()
-    if due is not None and due <= today + timedelta(days=HOLD_DUE_DAYS):
+    if hold_date_counts(entry) and due <= today + timedelta(days=HOLD_DUE_DAYS):
         return "due"
     return ""
 
@@ -2440,8 +2477,10 @@ def hold_released(entry: dict, today=None) -> str:
 def is_held(entry: dict, today=None) -> bool:
     """The owner holds this open row ("Not done": still open, not now). It
     is held until a new message from the other side comes in on its thread
-    after the hold began, its date is HOLD_DUE_DAYS days away (or past), it
-    looks done again (a new close proposal), or the owner works on it.
+    after the hold began, its date comes HOLD_DUE_DAYS days away (or passes)
+    after the hold began (a date already that near when he held it does not
+    count: hold_date_counts), it looks done again (a new close proposal), or
+    the owner works on it.
     Pure: Home and the briefing both ask it, so the two never disagree.
     `today` is the user's local date (local_today by default)."""
     return bool(hold_of(entry)) and not hold_released(entry, today)

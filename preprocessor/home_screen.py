@@ -50,10 +50,11 @@ Open, not now: Not done on a "Looks done" item, or on a row Tacitus closed,
 holds the row (ledger.py hold: still open, not now). A held row leaves the
 list at once and is one line of `held`, folded at the bottom of Home, built
 in code from the row (on_hold). It comes back to the list by itself when
-ledger.is_held says the hold ended: new mail on its thread, its date two
-days away, or the owner's own work on it (a note, a draft, an answer, Ask,
-Later), which ends the hold for good (ledger.py unhold, or the status the
-choice sets). The briefing asks the same predicate, so the two agree.
+ledger.is_held says the hold ended: new mail on its thread, a date that was
+further off at the hold coming two days away, or the owner's own work on it
+(a note, a draft, an answer, Ask, Later), which ends the hold for good
+(ledger.py unhold, or the status the choice sets). The briefing asks the
+same predicate, so the two agree.
 """
 from __future__ import annotations
 
@@ -579,7 +580,7 @@ def left(src: Sources) -> list[dict]:
     - A row the owner holds (ledger.is_held: his Not done, "still open,
       not now") is in none of these, nor is a conversation about it: it is
       on_hold()'s, folded at the bottom of Home. Once its hold ends (new
-      mail, its date two days away, his own work on it) it is back here
+      mail, a date coming two days away, his own work on it) it is back here
       at once, whether or not today's briefing listed it (_returned).
 
     Each is {"id", "kind", "label", "title", "detail", "urgency", "due",
@@ -872,7 +873,7 @@ def on_hold(src: Sources) -> list[dict]:
 
 
 def _returned(out: list[dict], src: Sources, taken, take, gone_ids: set, gone_convs: set) -> None:
-    """A row whose hold has ended (new mail on its thread, its date two
+    """A row whose hold has ended (new mail on its thread, a date coming two
     days away, the owner's own work on it) is back on the list at once,
     made from its row (_row_item), whether or not today's briefing listed
     it; unless another part names it already, the post set it aside, or

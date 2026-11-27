@@ -10,8 +10,8 @@ repository that preceded it.
   looks done, or on something Tacitus closed, keeps it open and takes it
   off Left for you at once. It waits in "Open, not now" at the foot of
   Home, one line each, and stays out of the briefings and the reply list.
-  It comes back by itself when new mail arrives on it or it is due in two
-  days. A tap on a line opens it with its usual choices; a note, a draft,
+  It comes back by itself when new mail arrives on it or, when its due
+  date was further off as you held it, two days before that date. A tap on a line opens it with its usual choices; a note, a draft,
   Later or Done there brings it back for good.
 - **You answer on Home; Action requests holds only what needs your lock.**
   On the web chat a reply that waits, something that looks done, a
